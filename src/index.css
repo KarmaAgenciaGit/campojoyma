@@ -1,0 +1,496 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Paleta de colores: blanco, negro y azul */
+    --background: 0 0% 100%; /* blanco */
+    --foreground: 0 0% 0%; /* negro */
+    
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+    
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+    
+    --primary: 214 84% 56%; /* azul principal */
+    --primary-foreground: 0 0% 100%;
+    
+    --secondary: 214 32% 91%; /* azul claro */
+    --secondary-foreground: 0 0% 0%;
+    
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    
+    --accent: 214 32% 91%;
+    --accent-foreground: 0 0% 0%;
+    
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 214 84% 56%;
+    
+    /* Sidebar colors */
+    --sidebar-background: 0 0% 100%; /* fondo blanco del sidebar */
+    --sidebar-foreground: 0 0% 0%; /* texto negro del sidebar */
+    --sidebar-primary: 214 84% 56%; /* azul principal del sidebar */
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 214 32% 91%; /* azul claro para hover */
+    --sidebar-accent-foreground: 0 0% 0%;
+    --sidebar-border: 214 32% 91%; /* bordes del sidebar */
+    --sidebar-ring: 214 84% 56%; /* anillo de foco del sidebar */
+    
+    --radius: 0.5rem;
+    
+    /* Gradientes personalizados */
+    --gradient-primary: linear-gradient(135deg, hsl(214 84% 56%), hsl(214 84% 66%));
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%), hsl(214 32% 98%));
+    
+    /* Sombras elegantes */
+    --shadow-card: 0 4px 6px -1px hsl(214 84% 56% / 0.1), 0 2px 4px -1px hsl(214 84% 56% / 0.06);
+    --shadow-button: 0 2px 4px hsl(214 84% 56% / 0.2);
+    
+    /* Transiciones suaves */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Colores para gráficos */
+    --chart-1: 214 84% 56%;
+    --chart-2: 160 84% 39%;
+    --chart-3: 36 100% 50%;
+    --chart-4: 0 84% 60%;
+    --chart-5: 190 90% 45%;
+  }
+
+  .dark {
+    --background: 222 84% 5%;
+    --foreground: 0 0% 98%;
+    
+    --card: 222 84% 5%;
+    --card-foreground: 0 0% 98%;
+    
+    --popover: 222 84% 5%;
+    --popover-foreground: 0 0% 98%;
+    
+    --primary: 214 84% 56%;
+    --primary-foreground: 0 0% 100%;
+    
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 0 0% 98%;
+    
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    
+    --accent: 217 33% 17%;
+    --accent-foreground: 0 0% 98%;
+    
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 98%;
+    
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 214 84% 56%;
+    
+    /* Sidebar colors for dark mode */
+    --sidebar-background: 222 84% 5%; /* fondo oscuro del sidebar */
+    --sidebar-foreground: 0 0% 98%; /* texto claro del sidebar */
+    --sidebar-primary: 214 84% 56%; /* azul principal del sidebar */
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217 33% 17%; /* color de hover en modo oscuro */
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 217 33% 17%; /* bordes del sidebar en oscuro */
+    --sidebar-ring: 214 84% 56%; /* anillo de foco del sidebar */
+
+    /* Colores para gráficos (modo oscuro) */
+    --chart-1: 214 90% 60%;
+    --chart-2: 160 70% 45%;
+    --chart-3: 38 95% 55%;
+    --chart-4: 0 72% 58%;
+    --chart-5: 190 90% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer components {
+  .card-gradient {
+    background: linear-gradient(145deg, hsl(0 0% 100%), hsl(214 32% 98%));
+    box-shadow: 
+      0 4px 6px -1px hsl(214 84% 56% / 0.1), 
+      0 2px 4px -1px hsl(214 84% 56% / 0.06),
+      0 0 0 1px hsl(214 32% 91% / 0.5);
+  }
+  
+  .button-primary {
+    background: linear-gradient(135deg, hsl(214 84% 56%), hsl(214 84% 66%));
+    box-shadow: 0 2px 4px hsl(214 84% 56% / 0.2);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .button-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px hsl(214 84% 56% / 0.3);
+  }
+
+  .login-button {
+    background: linear-gradient(135deg, #3d8bfd, #1f6feb);
+    box-shadow: 0 4px 12px rgba(63, 123, 255, 0.28);
+    color: #fff;
+    font-weight: 600;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .login-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(63, 123, 255, 0.32);
+  }
+
+  .login-button:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+  
+  .glass-effect {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+  
+  .dark .glass-effect {
+    background: rgba(17, 24, 39, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  /* Scrollbar personalizado */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground));
+    border-radius: 3px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary));
+  }
+  
+  .line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  /* Fondo y tarjeta del login */
+  .bg-login {
+    background: radial-gradient(120% 80% at 20% 20%, #f5f7fb 0%, #eef2fb 40%, #e7ebf7 75%, #e5e9f5 100%);
+  }
+
+  .login-card {
+    background-color: #ffffff !important;
+    background-image: none !important;
+    border: 1px solid #e6e9f2;
+    box-shadow:
+      0 16px 40px rgba(16, 24, 40, 0.12),
+      0 2px 8px rgba(16, 24, 40, 0.05);
+  }
+
+  .login-shell {
+    min-height: 100vh;
+    background: radial-gradient(120% 80% at 20% 20%, #f5f7fb 0%, #eef2fb 40%, #e7ebf7 75%, #e5e9f5 100%);
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+  }
+
+  .login-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    height: 100vh;
+  }
+
+  .login-panel {
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-right: 1px solid #e6e9f2;
+  }
+
+  .login-panel-inner {
+    width: min(520px, 92%);
+    margin: 0 auto;
+    padding: 2.5rem 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .login-logo-inline {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0;
+    justify-content: center;
+  }
+
+  .login-brand {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .login-form-card {
+    box-shadow: 0 10px 25px rgba(16, 24, 40, 0.08);
+  }
+
+  .login-visual {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, #3d8bfd, #1f6feb);
+    min-height: 500px;
+    display: flex;
+    align-items: stretch;
+  }
+
+  .login-visual::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.08) 0, transparent 40%),
+      radial-gradient(circle at 80% 30%, rgba(255, 255, 255, 0.05) 0, transparent 35%);
+    pointer-events: none;
+  }
+
+  .login-visual-overlay {
+    position: relative;
+    z-index: 1;
+    padding: 2.75rem 2.25rem 2.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    color: #fff;
+    justify-content: center;
+    max-width: 520px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .login-visual-card {
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 18px;
+    padding: 1.25rem;
+    backdrop-filter: blur(10px);
+    max-width: 480px;
+    width: 100%;
+    box-shadow:
+      0 18px 38px rgba(0, 0, 0, 0.18),
+      0 6px 14px rgba(0, 0, 0, 0.12);
+  }
+
+  .login-visual-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+
+  .login-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    font-weight: 600;
+    font-size: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .login-badge.muted {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e0e7ff;
+  }
+
+  .login-visual-metric {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 0.85rem;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.05));
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .login-visual-pill {
+    padding: 0.4rem 0.75rem;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    font-weight: 700;
+    font-size: 12px;
+  }
+
+  .login-visual-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .login-visual-tiles .tile {
+    padding: 0.75rem;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    display: grid;
+    gap: 0.15rem;
+  }
+
+  .login-visual-tiles .tile .label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.75);
+  }
+
+  .login-visual-tiles .tile .value {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  .login-visual-tiles .tile .value.muted {
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .login-visual-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding-top: 0.5rem;
+  }
+
+  .login-visual-checklist {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.5rem 0.35rem;
+  }
+
+  .login-visual-checklist .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: #8fe3ff;
+    box-shadow: 0 0 0 4px rgba(143, 227, 255, 0.15);
+  }
+
+  .login-visual-checklist .text .title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  .login-visual-checklist .text .caption {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.72);
+  }
+
+  .login-summary-card {
+    position: static;
+    border-radius: 16px;
+    padding: 1.5rem 1.1rem 1.75rem;
+    background: rgba(255, 255, 255, 0.14);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 16px 28px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    width: 100%;
+    min-height: 180px;
+    margin-top: 1.5rem;
+  }
+
+  .login-summary-skeleton {
+    display: grid;
+    gap: 0.4rem;
+    margin-top: 1rem;
+  }
+
+  .shimmer-line {
+    height: 10px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.2));
+    background-size: 200% 100%;
+    animation: shimmer 1.6s infinite;
+  }
+
+  .shimmer-line.short {
+    width: 60%;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  @media (max-width: 1024px) {
+    .login-grid {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+
+    .login-visual {
+      order: -1;
+      min-height: 360px;
+    }
+
+    .login-summary-card {
+      margin-top: 1.25rem;
+    }
+  }
+
+  /* Mezcla para logo en video: elimina fondo claro en modo oscuro */
+  .logo-video {
+    display: block;
+    filter: saturate(1.05) contrast(1.05);
+    mix-blend-mode: normal;
+  }
+
+  .dark .logo-video {
+    mix-blend-mode: screen;
+    filter: saturate(1.25) contrast(1.2);
+    opacity: 0.95;
+  }
+  
+  .word-wrap {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  
+  .hyphens-auto {
+    hyphens: auto;
+    -webkit-hyphens: auto;
+    -ms-hyphens: auto;
+  }
+}

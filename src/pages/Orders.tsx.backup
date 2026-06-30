@@ -1,0 +1,257 @@
+import { useEffect, useMemo, useState } from 'react';
+import { supabase } from '@/integrations/supabase/client';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { useToast } from '@/hooks/use-toast';
+import { format, isAfter, isBefore, parseISO, startOfDay, subDays, subMonths } from 'date-fns';
+import { es } from 'date-fns/locale';
+import { Loader2, Trash2, Eye, Package, Truck, Calendar, FileText, MapPin } from 'lucide-react';
+import type { Database } from '@/integrations/supabase/types';
+
+type Pedido = Database['public']['Tables']['pedidos']['Row'];
+type PedidoLinea = Database['public']['Tables']['pedido_linea']['Row'];
+type PedidoLineaCentro = Database['public']['Tables']['pedido_linea_centro']['Row'];
+
+interface PedidoWithDetails extends Pedido {
+  lineas?: (PedidoLinea & { centros?: PedidoLineaCentro[] })[];
+}
+
+const Orders = () => {
+  const { toast } = useToast();
+  const [pedidos, setPedidos] = useState<Pedido[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [newFecha, setNewFecha] = useState<string>(() => {
+    return format(new Date(), "yyyy-MM-dd'T'HH:mm");
+  });
+
+  const fetchPedidos = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('id, fecha, created_at')
+        .order('fecha', { ascending: false });
+
+      if (error) throw error;
+      setPedidos((data as Pedido[]) ?? []);
+    } catch (error) {
+      console.error('Error fetching pedidos', error);
+      toast({
+        title: 'Error',
+        description: 'No se pudieron cargar los pedidos.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPedidos();
+  }, []);
+
+  const createPedido = async () => {
+    if (!newFecha) {
+      toast({
+        title: 'Fecha obligatoria',
+        description: 'Selecciona una fecha para registrar el pedido.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setCreating(true);
+      const isoDate = new Date(newFecha).toISOString();
+      const { error } = await supabase.from('pedidos').insert([{ fecha: isoDate }]);
+      if (error) throw error;
+      toast({ title: 'Pedido añadido', description: 'El pedido se registró correctamente.' });
+      setNewFecha(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
+      fetchPedidos();
+    } catch (error) {
+      console.error('Error creating pedido', error);
+      toast({
+        title: 'Error',
+        description: 'No se pudo registrar el pedido.',
+        variant: 'destructive',
+      });
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const deletePedido = async (id: Pedido['id']) => {
+    try {
+      const { error } = await supabase.from('pedidos').delete().eq('id', id);
+      if (error) throw error;
+      toast({ title: 'Pedido eliminado', description: 'El pedido se ha eliminado correctamente.' });
+      setPedidos((prev) => prev.filter((pedido) => pedido.id !== id));
+    } catch (error) {
+      console.error('Error deleting pedido', error);
+      toast({
+        title: 'Error',
+        description: 'No se pudo eliminar el pedido.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const stats = useMemo(() => {
+    const now = startOfDay(new Date());
+    const last7DaysStart = subDays(now, 6);
+    const last30DaysStart = subDays(now, 29);
+    const lastMonthStart = subMonths(now, 1);
+
+    const total = pedidos.length;
+    const last7Days = pedidos.filter((pedido) => {
+      const date = parseISO(pedido.fecha);
+      return isAfter(date, last7DaysStart) || date.getTime() === last7DaysStart.getTime();
+    }).length;
+    const last30Days = pedidos.filter((pedido) => {
+      const date = parseISO(pedido.fecha);
+      return isAfter(date, last30DaysStart) || date.getTime() === last30DaysStart.getTime();
+    }).length;
+    const older = pedidos.filter((pedido) => {
+      const date = parseISO(pedido.fecha);
+      return isBefore(date, lastMonthStart);
+    }).length;
+
+    return {
+      total,
+      last7Days,
+      last30Days,
+      older,
+    };
+  }, [pedidos]);
+
+  return (
+    <div className="container mx-auto px-2 py-8 space-y-8">
+      <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm text-muted-foreground">Pedidos totales</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{stats.total}</p>
+            <p className="text-xs text-muted-foreground">Registro histórico</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm text-muted-foreground">Últimos 7 días</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{stats.last7Days}</p>
+            <p className="text-xs text-muted-foreground">Pedidos recientes</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm text-muted-foreground">Últimos 30 días</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{stats.last30Days}</p>
+            <p className="text-xs text-muted-foreground">Actividad mensual</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm text-muted-foreground">Más de 1 mes</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{stats.older}</p>
+            <p className="text-xs text-muted-foreground">Pedidos antiguos</p>
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* Temporarily hidden: Registrar nuevo pedido block */}
+      {/* <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold">Registrar nuevo pedido</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col sm:flex-row gap-4">
+          <div className="flex-1">
+            <label className="text-sm text-muted-foreground block mb-2">Fecha del pedido</label>
+            <Input
+              type="datetime-local"
+              value={newFecha}
+              max={format(new Date(), "yyyy-MM-dd'T'HH:mm")}
+              onChange={(event) => setNewFecha(event.target.value)}
+            />
+          </div>
+          <Button onClick={createPedido} disabled={creating}>
+            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            <span className="ml-2">Registrar</span>
+          </Button>
+        </CardContent>
+      </Card> */}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold">Historial de pedidos</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {loading ? (
+            <div className="flex items-center justify-center py-10 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin mr-2" />
+              Cargando pedidos...
+            </div>
+          ) : pedidos.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border/60 bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+              Aún no hay pedidos registrados. Comienza añadiendo uno desde el formulario superior.
+            </div>
+          ) : (
+            pedidos.map((pedido) => {
+              const fecha = pedido.fecha ? parseISO(pedido.fecha) : null;
+              const esReciente =
+                fecha !== null && isAfter(fecha, subDays(startOfDay(new Date()), 6));
+              const displayId = String(pedido.id);
+
+              return (
+                <div
+                  key={displayId}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border border-border/60 rounded-lg p-4 bg-background shadow-sm"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">
+                      Pedido #{displayId.slice(0, 8)}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {fecha
+                        ? format(fecha, "dd MMM yyyy · HH:mm'h'", { locale: es })
+                        : 'Fecha no registrada'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Badge variant={esReciente ? 'default' : 'secondary'}>
+                      {esReciente ? 'Reciente' : 'Histórico'}
+                    </Badge>
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      onClick={() => deletePedido(pedido.id)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+export default Orders;

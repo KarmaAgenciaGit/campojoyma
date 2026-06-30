@@ -1,0 +1,23 @@
+{
+  "name": "AGRO xFuego",
+  "short_name": "AGRO xFuego",
+  "description": "Gestión empresarial inteligente",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#372afc",
+  "icons": [
+    {
+      "src": "/lovable-uploads/agro-logo-comprimido-light.webp",
+      "sizes": "192x192",
+      "type": "image/webp",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/lovable-uploads/agro-logo-comprimido-light.webp",
+      "sizes": "512x512",
+      "type": "image/webp",
+      "purpose": "any maskable"
+    }
+  ]
+}

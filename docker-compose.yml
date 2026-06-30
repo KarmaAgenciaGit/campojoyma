@@ -1,0 +1,27 @@
+services:
+  agroiris:
+    build: .
+    container_name: agroiris
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      # Fuerza a Traefik a usar la red 'proxy'
+      - "traefik.docker.network=proxy"
+      # Router HTTPS para el subdominio
+      - "traefik.http.routers.agroiris.rule=Host(`agroiris.karmaia.app`)"
+      - "traefik.http.routers.agroiris.entrypoints=websecure"
+      - "traefik.http.routers.agroiris.tls.certresolver=le"
+      # Nombra explícitamente el service y su puerto interno
+      - "traefik.http.routers.agroiris.service=agroiris-svc"
+      - "traefik.http.services.agroiris-svc.loadbalancer.server.port=80"
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true

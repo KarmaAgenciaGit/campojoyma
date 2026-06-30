@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          var stored = localStorage.getItem('theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var isDark = stored ? stored === 'dark' : prefersDark;
+          if (isDark) document.documentElement.classList.add('dark');
+          else document.documentElement.classList.remove('dark');
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="icon" href="/lovable-uploads/agro-logo-comprimido-light.webp" type="image/webp">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/lovable-uploads/agro-logo-comprimido-light.webp">
+    <meta name="theme-color" content="#372afc">
+    <title>AGRO xFuego</title>
+    <meta name="description" content="AGRO xFuego - Gestión empresarial inteligente" />
+    <meta name="author" content="AGRO xFuego" />
+    
+    <!-- Cache busting for title update -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    
+    <!-- Force title update -->
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        document.title = 'AGRO xFuego';
+      });
+    </script>
+
+    <meta property="og:title" content="AGRO xFuego" />
+    <meta property="og:description" content="AGRO xFuego - Gestión empresarial inteligente" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/lovable-uploads/agro-logo-comprimido-light.webp" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="AGRO xFuego" />
+    <meta name="twitter:description" content="AGRO xFuego - Gestión empresarial inteligente" />
+    <meta name="twitter:image" content="/lovable-uploads/agro-logo-comprimido-light.webp" />
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

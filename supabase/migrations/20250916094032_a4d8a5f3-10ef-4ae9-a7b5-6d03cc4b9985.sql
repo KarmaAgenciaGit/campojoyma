@@ -1,0 +1,1 @@
+UPDATE modules SET icon = 'Sprout' WHERE name = 'semillas';
