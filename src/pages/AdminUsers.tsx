@@ -164,9 +164,9 @@ function RouteSelector({ routes, onRoutesChange }: RouteSelectorProps) {
   const sortedRoutes = [...USER_ROUTE_OPTIONS].sort((left, right) => left.path.localeCompare(right.path));
 
   return (
-    <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+    <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-900/70">
       <div className="hidden">
-        <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm">
+        <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm dark:border-slate-800 dark:bg-slate-950">
           <Checkbox
             checked={pedidosChecked ? true : pedidosPartial ? 'indeterminate' : false}
             onCheckedChange={(checked) =>
@@ -174,11 +174,11 @@ function RouteSelector({ routes, onRoutesChange }: RouteSelectorProps) {
             }
           />
           <span>
-            <span className="block font-medium text-slate-900">Gestión de pedidos</span>
-            <span className="mt-1 block text-xs text-slate-500">Previsiones, pedidos y cambios.</span>
+            <span className="block font-medium text-slate-900 dark:text-slate-100">Gestión de pedidos</span>
+            <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Previsiones, pedidos y cambios.</span>
           </span>
         </label>
-        <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm">
+        <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm dark:border-slate-800 dark:bg-slate-950">
           <Checkbox
             checked={controlChecked ? true : controlPartial ? 'indeterminate' : false}
             onCheckedChange={(checked) =>
@@ -186,11 +186,11 @@ function RouteSelector({ routes, onRoutesChange }: RouteSelectorProps) {
             }
           />
           <span>
-            <span className="block font-medium text-slate-900">Control de entrada</span>
-            <span className="mt-1 block text-xs text-slate-500">Avisos y buscador de archivos.</span>
+            <span className="block font-medium text-slate-900 dark:text-slate-100">Control de entrada</span>
+            <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Avisos y buscador de archivos.</span>
           </span>
         </label>
-        <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm">
+        <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm dark:border-slate-800 dark:bg-slate-950">
           <Checkbox
             checked={correosChecked ? true : correosPartial ? 'indeterminate' : false}
             onCheckedChange={(checked) =>
@@ -198,22 +198,22 @@ function RouteSelector({ routes, onRoutesChange }: RouteSelectorProps) {
             }
           />
           <span>
-            <span className="block font-medium text-slate-900">Correos</span>
-            <span className="mt-1 block text-xs text-slate-500">Buzones de pedidos y cuentas.</span>
+            <span className="block font-medium text-slate-900 dark:text-slate-100">Correos</span>
+            <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Buzones de pedidos y cuentas.</span>
           </span>
         </label>
       </div>
 
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {sortedRoutes.map((route) => (
-          <label key={route.path} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm">
+          <label key={route.path} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm dark:border-slate-800 dark:bg-slate-950">
             <Checkbox
               checked={routes.includes(route.path)}
               onCheckedChange={(checked) => onRoutesChange(toggleRouteSet(routes, route.path, Boolean(checked)))}
             />
             <span className="min-w-0">
-              <span className="block font-medium text-slate-900">{route.label}</span>
-              <span className="mt-1 block truncate font-mono text-xs text-slate-500">{route.path}</span>
+              <span className="block font-medium text-slate-900 dark:text-slate-100">{route.label}</span>
+              <span className="mt-1 block truncate font-mono text-xs text-slate-500 dark:text-slate-400">{route.path}</span>
             </span>
           </label>
         ))}
@@ -590,7 +590,7 @@ const AdminUsers = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#eef3f8]">
+    <div className="min-h-screen bg-[#eef3f8] text-slate-950 dark:bg-slate-950 dark:text-slate-100">
       <main className="mx-auto flex max-w-[1188px] flex-col gap-5 px-4 py-8 lg:px-6">
         <section className="relative overflow-hidden rounded-lg bg-gradient-to-br from-[#2f7df1] to-[#4b93f1] px-7 py-7 text-white shadow-[0_18px_52px_rgba(37,99,235,0.18)]">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.22),transparent_42%)]" />
@@ -610,7 +610,7 @@ const AdminUsers = () => {
               variant="outline"
               onClick={handleRefreshUsers}
               disabled={loadingList || loadingUsers}
-              className="h-10 gap-2 rounded-lg border-slate-200 bg-white text-slate-900 shadow-sm hover:bg-slate-50"
+              className="h-10 gap-2 rounded-lg border-slate-200 bg-white text-slate-900 shadow-sm hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
             >
               <RefreshCw className={`h-4 w-4 ${loadingList || loadingUsers ? 'animate-spin' : ''}`} />
               Refrescar
@@ -624,7 +624,7 @@ const AdminUsers = () => {
               Crear usuario
             </Button>
           </div>
-          <p className="text-sm font-medium text-slate-500">
+          <p className="text-sm font-medium text-slate-500 dark:text-slate-400">
             {filteredUsers.length > 0
               ? `Mostrando ${usersPageStart}-${usersPageEnd} de ${filteredUsers.length}`
               : '0 usuarios visibles'}
@@ -632,10 +632,10 @@ const AdminUsers = () => {
           </p>
         </section>
 
-        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-6 py-5">
-            <h2 className="text-base font-semibold text-slate-950">Filtros de usuarios</h2>
-            <p className="mt-1 text-sm text-slate-500">Busca cuentas y acota por rol o módulo habilitado.</p>
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="border-b border-slate-200 px-6 py-5 dark:border-slate-800">
+            <h2 className="text-base font-semibold text-slate-950 dark:text-slate-100">Filtros de usuarios</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Busca cuentas y acota por rol o módulo habilitado.</p>
           </div>
           <div className="grid gap-4 px-6 py-5 md:grid-cols-3">
             <div className="space-y-2 md:col-span-1">
@@ -647,14 +647,14 @@ const AdminUsers = () => {
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Nombre, email, ID o módulo..."
-                  className="h-10 rounded-lg border-slate-200 bg-white pl-9"
+                  className="h-10 rounded-lg border-slate-200 bg-white pl-9 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
                 />
               </div>
             </div>
             <div className="space-y-2">
               <Label>Rol de plataforma</Label>
               <Select value={roleFilter} onValueChange={(value) => setRoleFilter(value as RoleFilter)}>
-                <SelectTrigger className="h-10 rounded-lg border-slate-200 bg-white">
+                <SelectTrigger className="h-10 rounded-lg border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -669,7 +669,7 @@ const AdminUsers = () => {
             <div className="space-y-2">
               <Label>Módulo</Label>
               <Select value={moduleFilter} onValueChange={(value) => setModuleFilter(value)}>
-                <SelectTrigger className="h-10 rounded-lg border-slate-200 bg-white">
+                <SelectTrigger className="h-10 rounded-lg border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -684,14 +684,14 @@ const AdminUsers = () => {
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           {loadingList && loadingUsers ? (
-            <div className="flex min-h-[240px] items-center justify-center text-sm text-slate-500">
+            <div className="flex min-h-[240px] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
               Cargando usuarios...
             </div>
           ) : filteredUsers.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-slate-300 px-5 py-7 text-sm text-slate-500">
-              <p className="font-medium text-slate-900">No hay cuentas que coincidan con los filtros.</p>
+            <div className="rounded-lg border border-dashed border-slate-300 px-5 py-7 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+              <p className="font-medium text-slate-900 dark:text-slate-100">No hay cuentas que coincidan con los filtros.</p>
               <p className="mt-2">Ajusta la búsqueda o limpia los filtros para recuperar resultados.</p>
               {hasFilters ? (
                 <Button
@@ -744,7 +744,7 @@ const AdminUsers = () => {
                         openEditor(entry);
                       }
                     }}
-                    className="grid cursor-pointer gap-3 rounded-lg border border-slate-200 bg-white px-4 py-4 text-left transition hover:border-blue-300 hover:bg-blue-50/30 hover:shadow-sm"
+                    className="grid cursor-pointer gap-3 rounded-lg border border-slate-200 bg-white px-4 py-4 text-left transition hover:border-blue-300 hover:bg-blue-50/30 hover:shadow-sm dark:border-slate-800 dark:bg-slate-950 dark:hover:border-blue-500/70 dark:hover:bg-blue-950/20"
                   >
                     <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                       <div className="flex min-w-0 items-center gap-3">
@@ -769,27 +769,27 @@ const AdminUsers = () => {
                         </span>
                         <div className="min-w-0">
                           <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <h3 className="truncate text-sm font-bold text-slate-950">{entry.email || 'Sin email'}</h3>
-                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500">
+                            <h3 className="truncate text-sm font-bold text-slate-950 dark:text-slate-100">{entry.email || 'Sin email'}</h3>
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
                               <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
                               {getRoleLabel(entry.role, entry.configured)}
                             </span>
-                            {isCurrent ? <span className="text-xs font-semibold text-slate-500">Cuenta actual</span> : null}
+                            {isCurrent ? <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Cuenta actual</span> : null}
                           </div>
-                          <p className="mt-1 flex min-w-0 items-center gap-1 text-xs text-slate-500">
+                          <p className="mt-1 flex min-w-0 items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
                             <Mail className="h-3.5 w-3.5 shrink-0" />
                             <span className="truncate">{entry.id}</span>
                           </p>
                         </div>
                       </div>
-                      <div className="flex flex-wrap justify-start gap-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm md:justify-end">
+                      <div className="flex flex-wrap justify-start gap-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900 md:justify-end">
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
                             openEditor(entry);
                           }}
-                          className="flex h-9 w-10 items-center justify-center border-r border-slate-200 text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
+                          className="flex h-9 w-10 items-center justify-center border-r border-slate-200 text-slate-500 transition hover:bg-blue-50 hover:text-blue-700 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
                           aria-label={`Editar ${entry.email ?? entry.id}`}
                         >
                           <Edit2 className="h-4 w-4" />
@@ -801,7 +801,7 @@ const AdminUsers = () => {
                             requestDelete(entry);
                           }}
                           disabled={deletingId === entry.id}
-                          className="inline-flex h-9 items-center gap-2 px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-50"
+                          className="inline-flex h-9 items-center gap-2 px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30"
                         >
                           {deletingId === entry.id ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                           Eliminar
@@ -809,22 +809,22 @@ const AdminUsers = () => {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs text-slate-500">
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-400">
                       <span className="inline-flex items-center gap-2">
                         <span>Acceso</span>
-                        <strong className="font-semibold text-slate-800">{getAccessLabel(entry)}</strong>
+                        <strong className="font-semibold text-slate-800 dark:text-slate-100">{getAccessLabel(entry)}</strong>
                       </span>
-                      <span className="h-4 w-px bg-slate-200" />
+                      <span className="h-4 w-px bg-slate-200 dark:bg-slate-700" />
                       <span className="inline-flex items-center gap-2" title={routesTooltip}>
                         <span>Módulos</span>
-                        <strong className="border-b border-dotted border-slate-400 font-semibold text-slate-800">
+                        <strong className="border-b border-dotted border-slate-400 font-semibold text-slate-800 dark:border-slate-500 dark:text-slate-100">
                           {getModulesLabel(entry)}
                         </strong>
                       </span>
-                      <span className="h-4 w-px bg-slate-200" />
+                      <span className="h-4 w-px bg-slate-200 dark:bg-slate-700" />
                       <span className="inline-flex items-center gap-2">
                         <span>Estado</span>
-                        <strong className="font-semibold text-slate-800">{entry.configured ? 'Configurado' : 'Pendiente'}</strong>
+                        <strong className="font-semibold text-slate-800 dark:text-slate-100">{entry.configured ? 'Configurado' : 'Pendiente'}</strong>
                       </span>
                     </div>
                   </article>
@@ -832,8 +832,8 @@ const AdminUsers = () => {
               })}
 
               {filteredUsers.length > USERS_PAGE_SIZE ? (
-                <div className="mt-2 flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm text-slate-500">
+                <div className="mt-2 flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
                     Mostrando {usersPageStart}-{usersPageEnd} de {filteredUsers.length}
                   </p>
                   <div className="flex items-center justify-end gap-2">
@@ -841,7 +841,7 @@ const AdminUsers = () => {
                       type="button"
                       onClick={() => setUsersPage(1)}
                       disabled={safePage <= 1}
-                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
                       aria-label="Primera página"
                     >
                       <ChevronsLeft className="h-4 w-4" />
@@ -850,19 +850,19 @@ const AdminUsers = () => {
                       type="button"
                       onClick={() => setUsersPage((current) => Math.max(1, current - 1))}
                       disabled={safePage <= 1}
-                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
                       aria-label="Página anterior"
                     >
                       <ChevronLeft className="h-4 w-4" />
                     </button>
-                    <span className="min-w-14 text-center text-sm text-slate-500">
-                      <strong className="text-slate-900">{safePage}</strong> / {totalPages}
+                    <span className="min-w-14 text-center text-sm text-slate-500 dark:text-slate-400">
+                      <strong className="text-slate-900 dark:text-slate-100">{safePage}</strong> / {totalPages}
                     </span>
                     <button
                       type="button"
                       onClick={() => setUsersPage((current) => Math.min(totalPages, current + 1))}
                       disabled={safePage >= totalPages}
-                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
                       aria-label="Página siguiente"
                     >
                       <ChevronRight className="h-4 w-4" />
@@ -871,7 +871,7 @@ const AdminUsers = () => {
                       type="button"
                       onClick={() => setUsersPage(totalPages)}
                       disabled={safePage >= totalPages}
-                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
                       aria-label="Última página"
                     >
                       <ChevronsRight className="h-4 w-4" />
@@ -895,20 +895,20 @@ const AdminUsers = () => {
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-user-title"
-            className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.2)] md:h-auto md:max-h-[92vh] md:rounded-lg"
+            className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.2)] dark:border-slate-800 dark:bg-slate-950 md:h-auto md:max-h-[92vh] md:rounded-lg"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-5 md:px-8">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-5 dark:border-slate-800 md:px-8">
               <div className="flex min-w-0 items-start gap-4">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-950/40 dark:text-blue-300">
                   <UserPlus className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Alta</p>
-                  <h2 id="create-user-title" className="mt-2 text-xl font-semibold tracking-tight text-slate-950">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Alta</p>
+                  <h2 id="create-user-title" className="mt-2 text-xl font-semibold tracking-tight text-slate-950 dark:text-slate-100">
                     Crear usuario del panel
                   </h2>
-                  <p className="mt-1 text-sm text-slate-500">Configura cuenta, rol y módulos visibles.</p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Configura cuenta, rol y módulos visibles.</p>
                 </div>
               </div>
               <Button type="button" variant="outline" className="h-10 w-10 p-0" onClick={closeCreateDialog} disabled={creating}>
@@ -916,10 +916,10 @@ const AdminUsers = () => {
               </Button>
             </div>
 
-            <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50/70 px-5 py-5 md:px-8">
-              <section className="rounded-lg border border-slate-200 bg-white p-5">
-                <h3 className="text-sm font-semibold text-slate-950">Datos base</h3>
-                <p className="mt-1 text-xs text-slate-500">Cuenta y contraseña inicial para dejar el acceso operativo.</p>
+            <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50/70 px-5 py-5 dark:bg-slate-900/70 md:px-8">
+              <section className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-950">
+                <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Datos base</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Cuenta y contraseña inicial para dejar el acceso operativo.</p>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="create-email">Email</Label>
@@ -946,9 +946,9 @@ const AdminUsers = () => {
                 </div>
               </section>
 
-              <section className="rounded-lg border border-slate-200 bg-white p-5">
-                <h3 className="text-sm font-semibold text-slate-950">Acceso del panel</h3>
-                <p className="mt-1 text-xs text-slate-500">Define el rol de plataforma y los módulos disponibles.</p>
+              <section className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-950">
+                <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Acceso del panel</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Define el rol de plataforma y los módulos disponibles.</p>
                 <div className="mt-4 space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="create-role">Rol inicial</Label>
@@ -963,7 +963,7 @@ const AdminUsers = () => {
                     </Select>
                   </div>
                   {createRole === 'admin' ? (
-                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-950/40 dark:text-blue-200">
                       Los administradores tienen acceso completo sin limitar por módulos.
                     </div>
                   ) : (
@@ -973,7 +973,7 @@ const AdminUsers = () => {
               </section>
             </div>
 
-            <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 md:flex-row md:items-center md:justify-end md:px-8">
+            <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 dark:border-slate-800 dark:bg-slate-950 md:flex-row md:items-center md:justify-end md:px-8">
               <Button type="button" variant="outline" onClick={resetCreateForm} disabled={creating}>
                 Limpiar
               </Button>
@@ -995,25 +995,25 @@ const AdminUsers = () => {
             role="dialog"
             aria-modal="true"
             aria-labelledby="user-editor-title"
-            className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.2)] md:h-auto md:max-h-[92vh] md:rounded-lg"
+            className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden rounded-none border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.2)] dark:border-slate-800 dark:bg-slate-950 md:h-auto md:max-h-[92vh] md:rounded-lg"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-5 md:px-8">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-5 dark:border-slate-800 md:px-8">
               <div className="flex min-w-0 items-start gap-4">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
                   <Edit2 className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Edición</p>
-                  <h2 id="user-editor-title" className="mt-2 break-all text-xl font-semibold tracking-tight text-slate-950">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Edición</p>
+                  <h2 id="user-editor-title" className="mt-2 break-all text-xl font-semibold tracking-tight text-slate-950 dark:text-slate-100">
                     Configurar {editorEmail || editorUserId}
                   </h2>
-                  <p className="mt-1 text-sm text-slate-500">Ajusta rol y rutas visibles para esta cuenta.</p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Ajusta rol y rutas visibles para esta cuenta.</p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-500">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
                       {editorRole === 'admin' ? 'Administrador' : 'Usuario normal'}
                     </span>
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-500">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
                       {editorRole === 'admin' ? 'Todos los módulos' : `${normalizeAllowedRoutes(editorRoutes).length} módulos activos`}
                     </span>
                   </div>
@@ -1024,10 +1024,10 @@ const AdminUsers = () => {
               </Button>
             </div>
 
-            <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50/70 px-5 py-5 md:px-8">
-              <section className="rounded-lg border border-slate-200 bg-white p-5">
-                <h3 className="text-sm font-semibold text-slate-950">Perfil y acceso</h3>
-                <p className="mt-1 text-xs text-slate-500">Datos identificativos y configuración principal.</p>
+            <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50/70 px-5 py-5 dark:bg-slate-900/70 md:px-8">
+              <section className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-950">
+                <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Perfil y acceso</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Datos identificativos y configuración principal.</p>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label>ID de usuario</Label>
@@ -1052,14 +1052,14 @@ const AdminUsers = () => {
                 </div>
               </section>
 
-              <section className="rounded-lg border border-slate-200 bg-white p-5">
-                <h3 className="text-sm font-semibold text-slate-950">Módulos permitidos</h3>
-                <p className="mt-1 text-xs text-slate-500">
+              <section className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-950">
+                <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Módulos permitidos</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                   Si vacías esta lista, la cuenta no tendrá acceso a navegación protegida.
                 </p>
                 <div className="mt-4">
                   {editorRole === 'admin' ? (
-                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-950/40 dark:text-blue-200">
                       Los administradores tienen acceso completo sin limitar por módulos.
                     </div>
                   ) : (
@@ -1069,7 +1069,7 @@ const AdminUsers = () => {
               </section>
             </div>
 
-            <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 md:flex-row md:items-center md:justify-between md:px-8">
+            <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 dark:border-slate-800 dark:bg-slate-950 md:flex-row md:items-center md:justify-between md:px-8">
               <Button
                 type="button"
                 variant="outline"
@@ -1077,7 +1077,7 @@ const AdminUsers = () => {
                   setDeleteConfigTarget({ userId: editorUserId, email: editorEmail || null });
                 }}
                 disabled={saving || Boolean(deletingId) || currentUser?.id === editorUserId}
-                className="gap-2 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                className="gap-2 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800 dark:border-rose-500/30 dark:text-rose-300 dark:hover:bg-rose-950/30 dark:hover:text-rose-200"
               >
                 <Trash2 className="h-4 w-4" />
                 Eliminar cuenta
@@ -1109,7 +1109,7 @@ const AdminUsers = () => {
               Elige si quieres eliminar solo permisos y rutas, o también eliminar el usuario de Auth.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="space-y-1 rounded-md border bg-slate-50 p-3 text-sm">
+          <div className="space-y-1 rounded-md border bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
             <p>
               <span className="font-medium">Usuario:</span> {deleteConfigTarget?.email ?? 'Sin email'}
             </p>
@@ -1163,14 +1163,14 @@ const AdminUsers = () => {
               Esta acción borrará el usuario de Supabase Auth y también su configuración de permisos.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="space-y-1 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm">
+          <div className="space-y-1 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm dark:border-rose-500/30 dark:bg-rose-950/30 dark:text-rose-100">
             <p>
               <span className="font-medium">Usuario:</span> {deleteUserTarget?.email ?? 'Sin email'}
             </p>
             <p className="break-all">
               <span className="font-medium">ID:</span> {deleteUserTarget?.userId}
             </p>
-            <p className="flex items-center gap-2 font-medium text-rose-700">
+            <p className="flex items-center gap-2 font-medium text-rose-700 dark:text-rose-300">
               <AlertTriangle className="h-4 w-4" />
               Esta acción no se puede deshacer.
             </p>
