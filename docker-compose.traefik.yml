@@ -1,0 +1,17 @@
+services:
+  agroiris:
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "proxy"
+      traefik.http.routers.campojoyma.rule: "Host(`campojoyma.multiplicaxfuego.com`)"
+      traefik.http.routers.campojoyma.entrypoints: "websecure"
+      traefik.http.routers.campojoyma.tls: "true"
+      traefik.http.routers.campojoyma.tls.certresolver: "le"
+      traefik.http.services.campojoyma.loadbalancer.server.port: "80"
+    networks:
+      proxy: {}
+
+networks:
+  proxy:
+    external: true
+    name: proxy
