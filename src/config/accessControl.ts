@@ -12,6 +12,7 @@ export const ADMIN_USER_IDS: string[] = [
 
 export const ROUTE_PERMISSIONS: Record<string, UserRole[]> = {
   '/': ['admin', 'user'],
+  '/dashboard': ['admin', 'user'],
   '/facturas-recibidas': ['admin', 'user'],
   '/usuarios': ['admin'],
 };
@@ -33,10 +34,10 @@ export const canAccessPath = (path: string, access: UserAccess) => {
 };
 
 export const getFirstAllowedPath = (access: UserAccess): string | null => {
-  if (access.role === 'admin') return '/facturas-recibidas';
+  if (access.role === 'admin') return '/dashboard';
 
   const normalizedAllowed = access.allowedRoutes?.map(normalizePath);
-  const order = ['/facturas-recibidas', '/usuarios'];
+  const order = ['/dashboard', '/facturas-recibidas', '/usuarios'];
 
   if (normalizedAllowed && Array.isArray(normalizedAllowed)) {
     for (const path of order) {

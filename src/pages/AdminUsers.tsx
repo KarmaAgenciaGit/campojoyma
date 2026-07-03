@@ -47,14 +47,16 @@ type UserListEntry = {
 
 const USERS_PAGE_SIZE = 10;
 
+const DASHBOARD_GROUP_ROUTES = ['/dashboard'];
 const FACTURAS_GROUP_ROUTES = ['/facturas-recibidas'];
 const PEDIDOS_GROUP_ROUTES: string[] = [];
 const CONTROL_ENTRADA_GROUP_ROUTES: string[] = [];
 const CORREOS_GROUP_ROUTES: string[] = [];
 const USER_ROUTE_OPTIONS = [
-  { path: '/facturas-recibidas', label: 'Facturas recibidas' },
+  { path: '/dashboard', label: 'Dashboard' },
+  { path: '/facturas-recibidas', label: 'Facturas de compra' },
 ];
-const DEFAULT_USER_ROUTES = [...FACTURAS_GROUP_ROUTES];
+const DEFAULT_USER_ROUTES = [...DASHBOARD_GROUP_ROUTES, ...FACTURAS_GROUP_ROUTES];
 const ACTIVE_ROUTE_PATHS = new Set(USER_ROUTE_OPTIONS.map((route) => route.path));
 
 const LEGACY_ROUTE_ALIASES: Record<string, string> = {
@@ -74,7 +76,7 @@ const ROLE_FILTER_OPTIONS: Array<{ value: RoleFilter; label: string }> = [
 
 const MODULE_FILTER_OPTIONS: Array<{ value: ModuleFilter; label: string }> = [
   { value: 'all', label: 'Todos' },
-  { value: 'facturas', label: 'Facturas recibidas' },
+  { value: 'facturas', label: 'Facturas de compra' },
   ...USER_ROUTE_OPTIONS,
 ];
 

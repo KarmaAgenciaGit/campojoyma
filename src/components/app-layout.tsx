@@ -1,104 +1,170 @@
-import { BotMessageSquare, LogOut, UserCircle } from "lucide-react";
-import { useAuth } from "@/hooks/useAuth";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { LogOut, PanelLeft, Settings, UserCircle } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+
 import { AppSidebar } from "@/components/app-sidebar";
-import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { canAccessPath } from "@/config/accessControl";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/useAuth";
 import { useOnlinePresence } from "@/hooks/useOnlinePresence";
 
-const IA_EXTERNAL_URL = "https://agents-agroiris.multiplicaxfuego.com";
-
 interface AppLayoutProps {
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
 export function AppLayout({ children }: AppLayoutProps) {
-  const { user, signOut, role, allowedRoutes } = useAuth();
-  const canAccessIa = canAccessPath("/ia", { role, allowedRoutes });
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, signOut } = useAuth();
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+
   useOnlinePresence(user);
 
   const handleSignOut = async () => {
     try {
+      setIsUserMenuOpen(false);
       await signOut();
+      navigate("/auth", { replace: true });
     } catch (error) {
-      console.error('Error signing out:', error);
+      console.error("Error signing out:", error);
     }
   };
 
+  const handleGoToSettings = () => {
+    setIsUserMenuOpen(false);
+    navigate("/usuarios");
+  };
+
+  useEffect(() => {
+    setIsUserMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!isUserMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!userMenuRef.current) return;
+      const target = event.target;
+      if (target instanceof Node && !userMenuRef.current.contains(target)) {
+        setIsUserMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsUserMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("touchstart", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("touchstart", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isUserMenuOpen]);
+
   return (
-    <SidebarProvider>
-      <div className="min-h-screen flex w-full">
-        <AppSidebar />
-        
-        <div className="flex-1 flex flex-col bg-muted">
-          {/* Header */}
-          <header className="border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-            <div className="flex items-center justify-between px-6 py-4">
-              <div className="flex items-center gap-4">
-                <SidebarTrigger />
-              </div>
-              
-              <div className="flex items-center gap-3">
-                <ThemeToggle />
-                {canAccessIa && (
-                  <Button
-                    asChild
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-foreground"
+    <div className="app-shell min-h-screen flex w-full">
+      {isMobileMenuOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
+      <AppSidebar
+        isCollapsed={isCollapsed}
+        isMobileOpen={isMobileMenuOpen}
+        onMobileClose={() => setIsMobileMenuOpen(false)}
+      />
+
+      <div className="app-content flex-1 flex min-w-0 flex-col bg-muted">
+        <header className="app-topbar relative z-40 overflow-visible border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <div className="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+            <div className="flex items-center gap-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={isCollapsed ? "Expandir sidebar" : "Colapsar sidebar"}
+                onClick={() => {
+                  if (window.innerWidth < 768) {
+                    setIsMobileMenuOpen(true);
+                    return;
+                  }
+
+                  setIsCollapsed((state) => !state);
+                }}
+                className="min-h-0 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground"
+              >
+                <PanelLeft className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <ThemeToggle />
+
+              <div ref={userMenuRef} className="relative z-50">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={isUserMenuOpen}
+                  aria-haspopup="menu"
+                  aria-label="Cuenta"
+                  onClick={() => setIsUserMenuOpen((open) => !open)}
+                  className="min-h-0 rounded-lg px-2 py-2 text-muted-foreground hover:text-foreground"
+                >
+                  <UserCircle className="h-4 w-4 text-muted-foreground" />
+                </Button>
+
+                {isUserMenuOpen && (
+                  <div
+                    role="menu"
+                    aria-label="Menú de usuario"
+                    className="absolute right-0 top-[calc(100%+0.5rem)] z-[70] w-56 rounded-xl border border-border bg-background p-1 shadow-xl"
                   >
-                    <a href={IA_EXTERNAL_URL} aria-label="Abrir Inteligencia Artificial" className="gap-2">
-                      <BotMessageSquare className="h-4 w-4" />
-                    </a>
-                  </Button>
-                )}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Cuenta"
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <UserCircle className="h-4 w-4 text-muted-foreground" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuLabel className="text-xs font-medium text-muted-foreground">
-                      Cuenta
-                    </DropdownMenuLabel>
-                    <DropdownMenuLabel className="max-w-[220px] truncate font-normal text-sm text-foreground">
+                    <div className="px-3 py-2">
+                      <p className="text-xs font-medium text-muted-foreground">Cuenta</p>
+                    </div>
+                    <div className="max-w-[220px] truncate px-3 py-2 text-sm text-foreground">
                       {user?.email ?? "Usuario"}
-                    </DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      className="text-rose-600 focus:text-rose-600"
-                      onSelect={() => void handleSignOut()}
+                    </div>
+                    <div className="my-1 h-px bg-border" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleGoToSettings}
+                      className="flex w-full items-center rounded-lg px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted/70 focus:outline-none"
+                    >
+                      <Settings className="mr-2 h-4 w-4" />
+                      Configuración
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleSignOut}
+                      className="flex w-full items-center rounded-lg px-3 py-2 text-sm text-rose-600 transition-colors hover:bg-muted/70 focus:outline-none"
                     >
                       <LogOut className="mr-2 h-4 w-4" />
                       Cerrar sesión
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
-          </header>
+          </div>
+        </header>
 
-          {/* Main Content */}
-          <main className="flex-1">
-            {children}
-          </main>
-        </div>
+        <main className="app-main relative flex-1 min-w-0">
+          {children}
+        </main>
       </div>
-    </SidebarProvider>
+    </div>
   );
 }

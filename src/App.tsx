@@ -76,6 +76,7 @@ const AppContent = () => {
     <BrowserRouter future={routerFutureConfig}>
       <Routes>
         <Route path="/" element={<Index />} />
+        <Route path={ROUTE_BASES.dashboard} element={<Index />} />
         <Route path={ROUTE_BASES.facturasRecibidas} element={<Index />} />
         <Route path={`${ROUTE_BASES.facturasRecibidas}/:facturaId`} element={<Index />} />
         <Route path="/usuarios" element={<Index />} />

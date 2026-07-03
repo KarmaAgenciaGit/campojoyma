@@ -1,189 +1,233 @@
-import { useState } from "react"
-import { ChevronRight, FileText, LifeBuoy, Settings, Users } from "lucide-react"
-import { NavLink, useLocation } from "react-router-dom"
-import { useAuth } from "@/hooks/useAuth"
-import { canAccessPath } from "@/config/accessControl"
+import { BarChart3, ChevronRight, FileText, LifeBuoy, Settings, Users, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubItem,
-  useSidebar,
-} from "@/components/ui/sidebar"
+type AppSidebarProps = {
+  isCollapsed: boolean;
+  isMobileOpen: boolean;
+  onMobileClose: () => void;
+};
 
-const facturasRoute = { path: "/facturas-recibidas", label: "Facturas recibidas", Icon: FileText }
-const adminRoutes = [
-  { path: "/usuarios", label: "Usuarios", Icon: Users },
-] as const
+type NavRoute = {
+  path: string;
+  label: string;
+  Icon: typeof FileText;
+};
+
+const facturasRoute: NavRoute = {
+  path: "/facturas-recibidas",
+  label: "Facturas de compra",
+  Icon: FileText,
+};
+
+const dashboardRoute: NavRoute = {
+  path: "/dashboard",
+  label: "Dashboard",
+  Icon: BarChart3,
+};
+
+const adminRoute: NavRoute = {
+  path: "/usuarios",
+  label: "Usuarios",
+  Icon: Users,
+};
+
+const navBaseClass =
+  "flex w-full min-w-0 items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-all duration-300 focus-visible:ring-2";
 
 const getNavClasses = (active: boolean) => {
   return active
     ? "bg-gradient-to-r from-[#2b75ff] to-[#4895ff] text-white font-semibold border border-transparent shadow-md"
-    : "hover:bg-blue-50 hover:text-blue-700 text-muted-foreground transition-all duration-300 cursor-pointer dark:hover:bg-blue-900/20 dark:hover:text-blue-300 hover:scale-[1.02] hover:shadow-sm"
-}
+    : "text-muted-foreground hover:bg-blue-50 hover:text-blue-700 hover:scale-[1.02] hover:shadow-sm dark:hover:bg-blue-900/20 dark:hover:text-blue-300";
+};
 
-export function AppSidebar() {
-  const { state } = useSidebar()
-  const { role, allowedRoutes } = useAuth()
-  const location = useLocation()
-  const currentPath = location.pathname
-  const isCollapsed = state === "collapsed"
-  const access = { role, allowedRoutes }
+export function AppSidebar({ isCollapsed, isMobileOpen, onMobileClose }: AppSidebarProps) {
+  const location = useLocation();
+  const currentPath = location.pathname;
+  const isDashboardActive = currentPath === dashboardRoute.path || currentPath.startsWith(`${dashboardRoute.path}/`);
+  const isFacturasActive =
+    currentPath === facturasRoute.path || currentPath.startsWith(`${facturasRoute.path}/`);
+  const isAdminRouteActive = currentPath === adminRoute.path || currentPath.startsWith(`${adminRoute.path}/`);
+  const [isAdminExpanded, setIsAdminExpanded] = useState(isAdminRouteActive);
 
-  const hasFacturasAccess = canAccessPath(facturasRoute.path, access)
-  const allowedAdminRoutes = adminRoutes.filter((route) => canAccessPath(route.path, access))
-  const hasAdminAccess = allowedAdminRoutes.length > 0
-  const AdminIcon = allowedAdminRoutes[0]?.Icon ?? Settings
-  const isAdminRouteActive = allowedAdminRoutes.some((route) => {
-    return currentPath === route.path || currentPath.startsWith(`${route.path}/`)
-  })
-  const [isAdminExpanded, setIsAdminExpanded] = useState(isAdminRouteActive)
-  const logoTarget = facturasRoute.path
+  useEffect(() => {
+    if (isAdminRouteActive) {
+      setIsAdminExpanded(true);
+    }
+  }, [isAdminRouteActive]);
 
   return (
-    <Sidebar collapsible="icon">
-      <SidebarContent>
-        <div className={isCollapsed ? "p-4 border-b border-border" : "border-b border-border"}>
-          <div className={isCollapsed ? "flex items-center gap-3" : "flex justify-center"}>
-            <NavLink
-              to={logoTarget}
-              aria-label="Ir al modulo principal"
-              className={isCollapsed ? "h-10 w-10" : "h-28 w-full"}
-            >
-              <img
-                src={isCollapsed ? "/lovable-uploads/agro-logo-comprimido-light.webp" : "/lovable-uploads/agro-logo-light.webp"}
-                alt="Agro logo"
-                className={`${isCollapsed ? "h-10 w-10 object-contain" : "h-full w-full object-contain"} block dark:hidden`}
-                loading="lazy"
-              />
-              <img
-                src={isCollapsed ? "/lovable-uploads/agro-logo-comprimido-dark.webp" : "/lovable-uploads/agro-logo-dark.webp"}
-                alt="Agro logo modo oscuro"
-                className={`${isCollapsed ? "h-10 w-10 object-contain" : "h-full w-full object-contain"} hidden dark:block`}
-                loading="lazy"
-              />
-            </NavLink>
-          </div>
-        </div>
+    <aside
+      className={`
+        app-sidebar fixed inset-y-0 left-0 z-50 flex h-screen w-72 shrink-0 flex-col overflow-hidden border-r border-border bg-background text-foreground transition-[transform,width] duration-300
+        md:sticky md:top-0 md:left-auto md:inset-y-auto md:z-auto
+        ${isMobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
+        ${isCollapsed ? "md:w-20" : "md:w-64"}
+      `}
+    >
+      <div className="h-[77px] border-b border-border">
+        <div className={`${isCollapsed ? "flex items-center justify-center" : "flex justify-start"} relative h-full`}>
+          <button
+            type="button"
+            onClick={onMobileClose}
+            aria-label="Cerrar menú"
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-900/20 dark:hover:text-blue-300 md:hidden"
+          >
+            <X className="h-4 w-4" />
+          </button>
 
-        {hasFacturasAccess && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Facturas</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <NavLink
-                    to={facturasRoute.path}
-                    end
-                    className={({ isActive }) => `
-                      flex w-full items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-all duration-300 focus-visible:ring-2
-                      ${isCollapsed ? "justify-center" : ""}
-                      ${getNavClasses(isActive)}
-                      ${!isActive ? "hover:bg-blue-50 hover:text-blue-700 hover:scale-[1.02] hover:shadow-sm dark:hover:bg-blue-900/20 dark:hover:text-blue-300" : ""}
-                    `}
-                  >
-                    <facturasRoute.Icon className="h-4 w-4" />
-                    {!isCollapsed && <span>{facturasRoute.label}</span>}
-                  </NavLink>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {hasAdminAccess && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Administracion</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  {isCollapsed ? (
-                    <NavLink
-                      to={allowedAdminRoutes[0].path}
-                      end
-                      className={({ isActive }) => `
-                        flex w-full items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-all duration-300 focus-visible:ring-2
-                        justify-center
-                        ${getNavClasses(isActive)}
-                        ${!isActive ? "hover:bg-blue-50 hover:text-blue-700 hover:scale-[1.02] hover:shadow-sm dark:hover:bg-blue-900/20 dark:hover:text-blue-300" : ""}
-                      `}
-                    >
-                      <AdminIcon className="h-4 w-4" />
-                    </NavLink>
-                  ) : (
-                    <>
-                      <SidebarMenuButton
-                        onClick={() => setIsAdminExpanded(!isAdminExpanded)}
-                        className={`
-                          w-full transition-all duration-300 focus-visible:ring-2
-                          ${getNavClasses(isAdminRouteActive)}
-                          ${!isAdminRouteActive ? "hover:bg-blue-50 hover:text-blue-700 hover:scale-[1.02] hover:shadow-sm dark:hover:bg-blue-900/20 dark:hover:text-blue-300" : ""}
-                        `}
-                      >
-                        <div className="flex w-full items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Settings className="h-4 w-4" />
-                            <span>Administracion</span>
-                          </div>
-                          <ChevronRight
-                            className={`h-4 w-4 transition-transform duration-200 ${isAdminExpanded ? "rotate-90" : ""}`}
-                          />
-                        </div>
-                      </SidebarMenuButton>
-
-                      {isAdminExpanded && (
-                        <SidebarMenuSub>
-                          {allowedAdminRoutes.map((route) => (
-                            <SidebarMenuSubItem key={route.path}>
-                              <NavLink
-                                to={route.path}
-                                end
-                                className={({ isActive }) => `
-                                  flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm transition-all duration-300
-                                  ${isActive
-                                    ? "bg-gradient-to-r from-[#2b75ff] to-[#4895ff] text-white font-semibold border border-transparent shadow"
-                                    : "text-muted-foreground hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-900/20 dark:hover:text-blue-300"}
-                                `}
-                              >
-                                <route.Icon className="h-4 w-4" />
-                                <span>{route.label}</span>
-                              </NavLink>
-                            </SidebarMenuSubItem>
-                          ))}
-                        </SidebarMenuSub>
-                      )}
-                    </>
-                  )}
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-      </SidebarContent>
-      <div className="mt-auto p-3 space-y-2">
-        <div className="hidden lg:block">
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild>
-                <a
-                  href="mailto:info@multiplicaxfuego.com"
-                  className={`flex w-full items-center gap-2 rounded-md p-2 text-sm text-muted-foreground hover:text-blue-700 hover:bg-blue-50 transition-all duration-300 dark:hover:bg-blue-900/20 dark:hover:text-blue-300 ${isCollapsed ? "justify-center" : ""}`}
-                >
-                  <LifeBuoy className="h-4 w-4" />
-                  {!isCollapsed && <span>Soporte</span>}
-                </a>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <NavLink
+            to={dashboardRoute.path}
+            aria-label="Ir al módulo principal"
+            onClick={onMobileClose}
+            className={isCollapsed ? "h-10 w-10" : "flex h-full w-full items-center justify-start pl-3 pr-10"}
+          >
+            <img
+              src={
+                isCollapsed
+                  ? "/lovable-uploads/agro-logo-comprimido-light.webp"
+                  : "/lovable-uploads/agro-logo-light.webp"
+              }
+              alt="AGRO xFuego"
+              className={`${isCollapsed ? "h-10 w-10 object-contain" : "h-full w-auto max-w-[150px] object-contain object-left"} block dark:hidden`}
+              loading="lazy"
+            />
+            <img
+              src={
+                isCollapsed
+                  ? "/lovable-uploads/agro-logo-comprimido-dark.webp"
+                  : "/lovable-uploads/agro-logo-dark.webp"
+              }
+              alt="AGRO xFuego"
+              className={`${isCollapsed ? "h-10 w-10 object-contain" : "h-full w-auto max-w-[150px] object-contain object-left"} hidden dark:block`}
+              loading="lazy"
+            />
+          </NavLink>
         </div>
       </div>
-    </Sidebar>
-  )
+
+      <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto px-3 py-4">
+        <div className={isCollapsed ? "space-y-3" : "space-y-5"}>
+          <section className={isCollapsed ? "space-y-1" : "space-y-2"}>
+            {!isCollapsed && (
+              <h2 className="px-2 text-xs font-semibold leading-5 text-sidebar-foreground/70">
+                Resumen
+              </h2>
+            )}
+            <NavLink
+              to={dashboardRoute.path}
+              end
+              onClick={onMobileClose}
+              className={`
+                ${navBaseClass}
+                ${isCollapsed ? "justify-center" : ""}
+                ${getNavClasses(isDashboardActive)}
+              `}
+            >
+              <dashboardRoute.Icon className="h-4 w-4 shrink-0" />
+              {!isCollapsed && <span className="min-w-0 truncate">{dashboardRoute.label}</span>}
+            </NavLink>
+          </section>
+
+          <section className={isCollapsed ? "space-y-1" : "space-y-2"}>
+            {!isCollapsed && (
+              <h2 className="px-2 text-xs font-semibold leading-5 text-sidebar-foreground/70">
+                Facturas
+              </h2>
+            )}
+            <NavLink
+              to={facturasRoute.path}
+              end
+              onClick={onMobileClose}
+              className={`
+                sidebar-nav-link
+                ${navBaseClass}
+                ${isCollapsed ? "justify-center" : ""}
+                ${getNavClasses(isFacturasActive)}
+              `}
+            >
+              <facturasRoute.Icon className="h-4 w-4 shrink-0" />
+              {!isCollapsed && <span className="min-w-0 truncate">{facturasRoute.label}</span>}
+            </NavLink>
+          </section>
+
+          <section className={isCollapsed ? "space-y-1" : "space-y-2"}>
+            {!isCollapsed && (
+              <h2 className="px-2 text-xs font-semibold leading-5 text-sidebar-foreground/70">
+                Administración
+              </h2>
+            )}
+            {isCollapsed ? (
+              <NavLink
+                to={adminRoute.path}
+                end
+                onClick={onMobileClose}
+                className={`
+                  ${navBaseClass}
+                  justify-center
+                  ${getNavClasses(isAdminRouteActive)}
+                `}
+              >
+                <Settings className="h-4 w-4 shrink-0" />
+              </NavLink>
+            ) : (
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setIsAdminExpanded((expanded) => !expanded)}
+                  className={`
+                    ${navBaseClass}
+                    ${getNavClasses(isAdminRouteActive)}
+                  `}
+                >
+                  <Settings className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 truncate">Administración</span>
+                  <ChevronRight
+                    className={`ml-auto h-4 w-4 shrink-0 transition-transform duration-200 ${
+                      isAdminExpanded ? "rotate-90" : ""
+                    }`}
+                  />
+                </button>
+
+                {isAdminExpanded && (
+                  <div className="ml-4 space-y-1 border-l border-border/70 pl-3">
+                    <NavLink
+                      to={adminRoute.path}
+                      end
+                      onClick={onMobileClose}
+                      className={`
+                        flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-all duration-300
+                        ${
+                          isAdminRouteActive
+                            ? "bg-gradient-to-r from-[#2b75ff] to-[#4895ff] text-white font-semibold border border-transparent shadow"
+                            : "text-muted-foreground hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-900/20 dark:hover:text-blue-300"
+                        }
+                      `}
+                    >
+                      <adminRoute.Icon className="h-4 w-4 shrink-0" />
+                      <span className="min-w-0 truncate">{adminRoute.label}</span>
+                    </NavLink>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+
+      <div className="mt-auto p-3">
+        <div className="hidden lg:block">
+          <a
+            href="mailto:info@multiplicaxfuego.com"
+            className={`flex w-full items-center gap-2 rounded-md p-2 text-sm text-muted-foreground transition-all duration-300 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-900/20 dark:hover:text-blue-300 ${
+              isCollapsed ? "justify-center" : ""
+            }`}
+          >
+            <LifeBuoy className="h-4 w-4" />
+            {!isCollapsed && <span>Soporte</span>}
+          </a>
+        </div>
+      </div>
+    </aside>
+  );
 }

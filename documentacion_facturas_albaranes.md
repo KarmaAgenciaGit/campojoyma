@@ -134,8 +134,14 @@ Endpoints principales:
 | `GET /albaranes/entrada/{albaran_id}` | Cabecera de albaran de entrada. |
 | `GET /albaranes/entrada/{albaran_id}/lineas` | Lineas de albaran de entrada. |
 | `GET /facturas-agricultores` | Lista paginada de facturas/liquidaciones a agricultores. |
+| `GET /acreedores` | Lista/busqueda paginada de proveedores/acreedores. Filtros: `limit`, `offset`, `q`, `nombre`, `nif`, `codigo`. |
+| `GET /acreedores/{acreedor_id}` | Ficha completa del acreedor por `ACR_Codigo`. |
+| `GET /facturasrecibidas` | Lista paginada de facturas recibidas. Filtros: `limit`, `offset`, `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura`. |
+| `GET /facturasrecibidas/{factura_id}` | Cabecera completa de factura recibida con datos del acreedor asociado. |
+| `GET /facturasrecibidas/{factura_id}/ctb` | Desglose contable de una factura recibida. |
+| `GET /facturasrecibidas_ctb?factura_id={id}` | Variante de consulta del desglose contable por `FRC_idfacturarecibida`. |
 
-Nota operativa: la API actual de pruebas ya expone clientes, facturas emitidas y albaranes. Todavia no expone endpoints especificos para `acreedores`, `facturasrecibidas` ni `facturasrecibidas_ctb`; esta documentacion deja descrita su estructura real para implementar esos endpoints de solo lectura sin inventar campos.
+Nota operativa: los endpoints de facturas recibidas son de solo lectura contra la copia local de MariaDB del VPS intermedio. Produccion no se toca desde esta API.
 
 ## Flujo OCR para PDFs de facturas en correos
 

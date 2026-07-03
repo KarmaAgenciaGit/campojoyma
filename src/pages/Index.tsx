@@ -3,6 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useEffect } from 'react';
 import { AppLayout } from '@/components/app-layout';
 import FacturasRecibidas from './FacturasRecibidas';
+import Dashboard from './Dashboard';
 import { canAccessPath, getFirstAllowedPath } from '@/config/accessControl';
 import { normalizeRoutePath, resolveAccessPath, ROUTE_BASES } from '@/utils/entityRoutes';
 import AdminUsers from './AdminUsers';
@@ -58,6 +59,8 @@ const Index = () => {
     switch (resolvedPath) {
       case '/':
         return getFirstAllowedPath(access) ? <Navigate to={getFirstAllowedPath(access)!} replace /> : null;
+      case ROUTE_BASES.dashboard:
+        return <Dashboard />;
       case ROUTE_BASES.facturasRecibidas:
         return <FacturasRecibidas />;
       case '/usuarios':
