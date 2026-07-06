@@ -13,11 +13,11 @@ import { Link } from 'react-router-dom';
 
 import {
   buildFacturasSummary,
-  facturaGsbaseStatusLabels,
-  isFacturaInGys,
+  facturaERPStatusLabels,
+  isFacturaInERP,
   getFacturaActivityDate,
-  type FacturaGsbaseStatus,
-  type FacturaGsbaseSummary,
+  type FacturaERPStatus,
+  type FacturaERPSummary,
 } from '../lib/facturasSummary';
 import type { FacturaRecibida } from '../services/apiContracts';
 import { fetchFacturasRecibidas } from '../services/facturas';
@@ -74,13 +74,13 @@ const invoiceNumber = (factura: FacturaRecibida) =>
 const invoiceProvider = (factura: FacturaRecibida) =>
   cleanText(factura.proveedor_nombre) || cleanText(factura.proveedor_nif) || 'Proveedor sin identificar';
 
-const gsbaseStatusTone: Record<FacturaGsbaseStatus, { bar: string; dot: string; text: string }> = {
-  en_gys: {
+const erpStatusTone: Record<FacturaERPStatus, { bar: string; dot: string; text: string }> = {
+  en_erp: {
     bar: 'bg-emerald-500',
     dot: 'bg-emerald-500',
     text: 'text-emerald-700 dark:text-emerald-300',
   },
-  fuera_gys: {
+  fuera_erp: {
     bar: 'bg-amber-500',
     dot: 'bg-amber-500',
     text: 'text-amber-700 dark:text-amber-300',
@@ -109,7 +109,7 @@ type DashboardPanelProps = {
   totalUnit: string;
   modulePath: string;
   progressLabel: string;
-  statusRows: FacturaGsbaseSummary[];
+  statusRows: FacturaERPSummary[];
   progressRows: ProgressItem[];
   emptyLabel: string;
 };
@@ -154,9 +154,9 @@ const DashboardPanel = ({
 
       <div className="grid border-t border-border/60 bg-background md:grid-cols-2">
         <div className="min-h-[292px] border-b border-border/60 p-6 md:border-b-0 md:border-r">
-          <h3 className="text-sm font-semibold text-foreground">Envio Netagro</h3>
+          <h3 className="text-sm font-semibold text-foreground">Envio ERP</h3>
           <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
-            Reparto operativo segun si la factura esta enviada a Netagro o pendiente.
+            Reparto operativo segun si la factura esta enviada a ERP o pendiente.
           </p>
 
           {hasStatusData ? (
@@ -165,16 +165,16 @@ const DashboardPanel = ({
                 <div key={row.status} className="space-y-2">
                   <div className="flex items-center justify-between gap-3 text-sm">
                     <span className="flex min-w-0 items-center gap-2 font-semibold text-foreground">
-                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${gsbaseStatusTone[row.status].dot}`} />
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${erpStatusTone[row.status].dot}`} />
                       <span className="truncate">{row.label}</span>
                     </span>
-                    <span className={`shrink-0 text-xs font-semibold ${gsbaseStatusTone[row.status].text}`}>
+                    <span className={`shrink-0 text-xs font-semibold ${erpStatusTone[row.status].text}`}>
                       {formatNumber(row.count)}
                     </span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-border/60">
                     <div
-                      className={`h-full rounded-full ${gsbaseStatusTone[row.status].bar}`}
+                      className={`h-full rounded-full ${erpStatusTone[row.status].bar}`}
                       style={{ width: `${Math.max(row.percentage, row.count > 0 ? 4 : 0)}%` }}
                     />
                   </div>
@@ -193,7 +193,7 @@ const DashboardPanel = ({
         <div className="min-h-[292px] p-6">
           <h3 className="text-sm font-semibold text-foreground">Movimientos pendientes</h3>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Cola de trabajo para revision, envio a Netagro y control de incidencias.
+            Cola de trabajo para revision, envio a ERP y control de incidencias.
           </p>
           <div className="mt-6 space-y-4">
             {progressRows.map((item) => {
@@ -254,7 +254,7 @@ const DashboardResumenModule = () => {
   const now = lastSyncAt ?? new Date();
   const formattedDate = formatLongDate(now);
   const syncTime = formatSyncTime(now);
-  const statusRows = summary.gsbaseBreakdown;
+  const statusRows = summary.erpBreakdown;
   const latestActivityDate = summary.latestFactura ? getFacturaActivityDate(summary.latestFactura) : null;
 
   const summaryMetricCards: SummaryMetric[] = [
@@ -266,20 +266,18 @@ const DashboardResumenModule = () => {
         summary.totalCount > 0 ? `${formatMoney(summary.totalAmount)} acumulados.` : 'Sin facturas registradas todavia.',
     },
     {
-      label: 'Albaranes',
-      value: formatNumber(summary.albaranCount),
-      unit: 'refs',
+      label: 'Base',
+      value: formatMoney(summary.baseAmount),
+      unit: '',
       description:
-        summary.albaranCount > 0
-          ? `${formatNumber(summary.invoicesWithAlbaranes)} facturas con albaran vinculado.`
-          : 'Sin albaranes vinculados en facturas.',
+        summary.baseAmount > 0 ? `${formatMoney(summary.ivaAmount)} de IVA registrado.` : 'Sin importes registrados todavia.',
     },
     {
       label: 'Lineas',
       value: formatNumber(summary.lineCount),
       unit: 'registros',
       description:
-        summary.lineCount > 0 ? 'Detalle extraido de facturas de compra.' : 'Sin lineas de factura registradas todavia.',
+        summary.lineCount > 0 ? 'Apuntes contables de facturas recibidas.' : 'Sin apuntes contables registrados todavia.',
     },
   ];
 
@@ -292,24 +290,24 @@ const DashboardResumenModule = () => {
       tone: 'bg-amber-500',
     },
     {
-      label: 'Listas para Netagro',
-      value: summary.readyForGsbaseCount,
-      target: Math.max(summary.totalCount, summary.readyForGsbaseCount),
-      helper: `${formatNumber(summary.readyForGsbaseCount)} docs`,
+      label: 'Listas para ERP',
+      value: summary.readyForERPCount,
+      target: Math.max(summary.totalCount, summary.readyForERPCount),
+      helper: `${formatNumber(summary.readyForERPCount)} docs`,
       tone: 'bg-blue-500',
     },
     {
-      label: 'Con error Netagro',
-      value: summary.gsbaseErrorCount,
-      target: Math.max(summary.totalCount, summary.gsbaseErrorCount),
-      helper: `${formatNumber(summary.gsbaseErrorCount)} docs`,
+      label: 'Con error ERP',
+      value: summary.erpErrorCount,
+      target: Math.max(summary.totalCount, summary.erpErrorCount),
+      helper: `${formatNumber(summary.erpErrorCount)} docs`,
       tone: 'bg-rose-500',
     },
   ];
 
   const economicProgressRows: ProgressItem[] = [
     {
-      label: 'Con proveedor Netagro',
+      label: 'Con proveedor ERP',
       value: summary.invoicesWithProviderCode,
       target: Math.max(summary.totalCount, summary.invoicesWithProviderCode),
       helper: `${formatNumber(summary.invoicesWithProviderCode)} docs`,
@@ -454,17 +452,17 @@ const DashboardResumenModule = () => {
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-1">
-                        <p className="text-sm font-semibold text-foreground">Netagro</p>
+                        <p className="text-sm font-semibold text-foreground">ERP</p>
                         <p className="text-xs text-muted-foreground">Envio y validacion</p>
                       </div>
                       <p className="shrink-0 text-right text-sm font-semibold leading-tight text-foreground">
-                        {formatNumber(summary.sentToGsbaseCount)}
+                        {formatNumber(summary.sentToERPCount)}
                       </p>
                     </div>
                     <p className="text-xs leading-relaxed text-muted-foreground">
-                      {summary.readyForGsbaseCount > 0
-                        ? `${formatNumber(summary.readyForGsbaseCount)} listas para enviar.`
-                        : 'Sin envios pendientes a Netagro.'}
+                      {summary.readyForERPCount > 0
+                        ? `${formatNumber(summary.readyForERPCount)} listas para enviar.`
+                        : 'Sin envios pendientes a ERP.'}
                     </p>
                   </div>
                 </div>
@@ -492,7 +490,7 @@ const DashboardResumenModule = () => {
           <section className="grid gap-6 xl:grid-cols-2">
             <DashboardPanel
               title="Facturas"
-              subtitle="Seguimiento operativo de facturas de compra y envio a Netagro."
+              subtitle="Seguimiento operativo de facturas de compra y envio a ERP."
               progressLabel="Ver modulo"
               totalValue={formatNumber(summary.totalCount)}
               totalUnit="reg."
@@ -531,13 +529,13 @@ const DashboardResumenModule = () => {
                 <div className="min-h-[292px] border-b border-border/60 p-6 md:border-b-0 md:border-r">
                   <h3 className="text-sm font-semibold text-foreground">Importes</h3>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    Lectura rapida de base, IVA y pendiente de pago.
+                    Lectura rapida de base, IVA y total de facturas recibidas.
                   </p>
                   <dl className="mt-6 grid gap-3">
                     {[
                       ['Base imponible', formatMoney(summary.baseAmount)],
                       ['IVA registrado', formatMoney(summary.ivaAmount)],
-                      ['Pendiente pago', formatMoney(summary.pendingPaymentAmount)],
+                      ['Total factura', formatMoney(summary.totalAmount)],
                       ['Lineas de detalle', formatNumber(summary.lineCount)],
                     ].map(([label, value]) => (
                       <div
@@ -593,15 +591,15 @@ const DashboardResumenModule = () => {
                   Ultimos movimientos detectados en facturas de compra.
                 </p>
               </div>
-              {summary.gsbaseErrorCount > 0 ? (
+              {summary.erpErrorCount > 0 ? (
                 <span className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-200">
                   <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                  {formatNumber(summary.gsbaseErrorCount)} con error Netagro
+                  {formatNumber(summary.erpErrorCount)} con error ERP
                 </span>
-              ) : summary.sentToGsbaseCount > 0 ? (
+              ) : summary.sentToERPCount > 0 ? (
                 <span className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200">
                   <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  {formatNumber(summary.sentToGsbaseCount)} enviadas a Netagro
+                  {formatNumber(summary.sentToERPCount)} enviadas a ERP
                 </span>
               ) : null}
             </div>
@@ -611,7 +609,7 @@ const DashboardResumenModule = () => {
                 <div className="divide-y divide-border/60 rounded-lg border border-border/60 bg-background">
                   {summary.latestFacturas.map((factura) => {
                     const activityDate = getFacturaActivityDate(factura);
-                    const gsbaseStatus: FacturaGsbaseStatus = isFacturaInGys(factura) ? 'en_gys' : 'fuera_gys';
+                    const erpStatus: FacturaERPStatus = isFacturaInERP(factura) ? 'en_erp' : 'fuera_erp';
 
                     return (
                       <Link
@@ -627,9 +625,9 @@ const DashboardResumenModule = () => {
                             {formatActivityDate(activityDate)}
                           </p>
                         </div>
-                        <span className={`inline-flex items-center gap-2 text-xs font-semibold ${gsbaseStatusTone[gsbaseStatus].text}`}>
-                          <span className={`h-2 w-2 rounded-full ${gsbaseStatusTone[gsbaseStatus].dot}`} />
-                          {facturaGsbaseStatusLabels[gsbaseStatus]}
+                        <span className={`inline-flex items-center gap-2 text-xs font-semibold ${erpStatusTone[erpStatus].text}`}>
+                          <span className={`h-2 w-2 rounded-full ${erpStatusTone[erpStatus].dot}`} />
+                          {facturaERPStatusLabels[erpStatus]}
                         </span>
                         <span className="text-left font-semibold text-foreground md:text-right">
                           {formatMoney(Number(factura.total ?? 0))}

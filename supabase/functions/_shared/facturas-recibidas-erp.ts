@@ -320,7 +320,7 @@ export const normalizeFrrPayload = (input: JsonObject) => {
   out.FRR_ret = numberValue(pick(input, ["FRR_ret", "retencion_porcentaje"]), (out.FRR_ret as number | null) ?? 0);
   out.FRR_cuotaret = numberValue(pick(input, ["FRR_cuotaret", "retencion_importe"]), (out.FRR_cuotaret as number | null) ?? 0);
   out.FRR_Concepto = text(pick(input, ["FRR_Concepto", "concepto", "descripcion"]), out.FRR_Concepto as string | null);
-  out.FRR_tipofactura = text(pick(input, ["FRR_tipofactura", "tipo_factura"]), (out.FRR_tipofactura as string | null) ?? "1");
+  out.FRR_tipofactura = text(pick(input, ["FRR_tipofactura", "tipo_factura"]), out.FRR_tipofactura as string | null);
   out.FRR_Modificable = text(input.FRR_Modificable, "S");
   out.FRR_GeneraCartera = text(input.FRR_GeneraCartera, "N");
   out.FRR_Contabilizar = text(input.FRR_Contabilizar, "S");
@@ -346,6 +346,18 @@ export const normalizeFrcPayload = (input: JsonObject, position: number) => {
   return Object.fromEntries(Object.entries(out).filter(([, value]) => value !== undefined));
 };
 
+export const toERPFacturaPayload = (factura: JsonObject) =>
+  Object.fromEntries(
+    Object.entries(normalizeFrrPayload(factura)).filter(
+      ([key]) => key.startsWith("FRR_") || key === "FechaVto" || key === "ImporteVto",
+    ),
+  );
+
+export const toERPCtbPayload = (linea: JsonObject, position: number) =>
+  Object.fromEntries(
+    Object.entries(normalizeFrcPayload(linea, position)).filter(([key]) => key.startsWith("FRC_")),
+  );
+
 export const getValidationErrors = (factura: JsonObject) => {
   const errors: Array<{ field: string; message: string; severity: "error" | "warning" }> = [];
   const required = [
@@ -353,7 +365,7 @@ export const getValidationErrors = (factura: JsonObject) => {
     ["FRR_numerofactura", "Falta numero de factura del proveedor."],
     ["FRR_fechafactura", "Falta fecha de factura."],
     ["FRR_totalfac", "Falta total de factura."],
-    ["FRR_Idempresa", "Falta empresa Netagro."],
+    ["FRR_Idempresa", "Falta empresa ERP."],
   ] as const;
 
   for (const [field, message] of required) {
@@ -406,7 +418,7 @@ export const getValidationErrorsForFactura = async (
   if (!acreedor) {
     errors.push({
       field: "FRR_idproveedor",
-      message: "El proveedor no existe en acreedores_cache/Netagro.",
+      message: "El proveedor no existe en acreedores_cache/ERP.",
       severity: "error",
     });
     return errors;

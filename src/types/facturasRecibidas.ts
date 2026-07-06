@@ -2,9 +2,9 @@ export type FacturaRecibidaEstado =
   | 'pendiente_revision'
   | 'error_ocr'
   | 'validada'
-  | 'preparada_netagro'
-  | 'enviada_netagro'
-  | 'error_netagro'
+  | 'preparada_erp'
+  | 'enviada_erp'
+  | 'error_erp'
   | 'duplicada'
   | 'descartada';
 
@@ -44,9 +44,9 @@ export type FacturaRecibida = {
   extraction: unknown;
   validation_errors: FacturaValidationIssue[];
   duplicada_de: string | null;
-  netagro_sent_at: string | null;
-  netagro_response: unknown;
-  netagro_error: string | null;
+  erp_sent_at: string | null;
+  erp_response: unknown;
+  erp_error: string | null;
   created_at: string;
   updated_at: string;
   FRR_id: number | null;
@@ -109,9 +109,9 @@ export const FACTURA_RECIBIDA_ESTADOS: FacturaRecibidaEstado[] = [
   'pendiente_revision',
   'error_ocr',
   'validada',
-  'preparada_netagro',
-  'enviada_netagro',
-  'error_netagro',
+  'preparada_erp',
+  'enviada_erp',
+  'error_erp',
   'duplicada',
   'descartada',
 ];
@@ -129,16 +129,16 @@ export const FACTURA_ESTADO_META: Record<FacturaRecibidaEstado, { label: string;
     label: 'Validada',
     className: 'border-emerald-200 bg-emerald-50 text-emerald-800',
   },
-  preparada_netagro: {
+  preparada_erp: {
     label: 'Preparada',
     className: 'border-sky-200 bg-sky-50 text-sky-800',
   },
-  enviada_netagro: {
+  enviada_erp: {
     label: 'Enviada',
     className: 'border-slate-200 bg-slate-100 text-slate-800',
   },
-  error_netagro: {
-    label: 'Error Netagro',
+  error_erp: {
+    label: 'Error ERP',
     className: 'border-rose-200 bg-rose-50 text-rose-800',
   },
   duplicada: {

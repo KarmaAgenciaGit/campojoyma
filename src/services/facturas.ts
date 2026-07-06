@@ -6,25 +6,38 @@ import type {
   FacturaRecibidaLinea,
 } from '@/services/apiContracts';
 import type {
-  FacturaRecibida as NetagroFacturaRecibida,
-  FacturaRecibidaEstado as NetagroFacturaEstado,
+  FacturaRecibida as ERPFacturaRecibida,
+  FacturaRecibidaEstado as ERPFacturaEstado,
 } from '@/types/facturasRecibidas';
 import { nullableNumber } from '@/types/facturasRecibidas';
 
 const PDF_PATH_PREFIX = 'archivo_pdf_id:';
-const NETAGRO_READ_FUNCTION = 'facturas-recibidas-netagro-read';
-const NETAGRO_READ_SOURCE = 'netagro-read';
-const NETAGRO_REMOTE_ID_PREFIX = 'netagro:';
+const ERP_READ_FUNCTION = 'facturas-recibidas-erp-read';
+const ERP_READ_SOURCE = 'erp-read';
+const ERP_REMOTE_ID_PREFIX = 'erp:';
 
-type NetagroReadListResponse<T> = {
+type ERPReadListResponse<T> = {
   items?: T[];
   limit?: number;
   offset?: number;
   total?: number;
 };
 
-type NetagroReadFacturaRow = Record<string, unknown>;
-type NetagroReadCtbRow = Record<string, unknown>;
+type ERPReadFacturaRow = Record<string, unknown>;
+type ERPReadCtbRow = Record<string, unknown>;
+type ERPReadGenericRow = Record<string, unknown>;
+
+export type FacturaEmpresaOption = {
+  id: string;
+  nombre: string | null;
+  cif: string | null;
+  label: string;
+};
+
+export type FacturaTipoOption = {
+  value: string;
+  label: string;
+};
 
 const cleanText = (value: unknown) => {
   const cleaned = String(value ?? '').trim();
@@ -51,6 +64,16 @@ const readNumber = (source: Record<string, unknown>, keys: string[], fallback: n
 const readText = (source: Record<string, unknown>, keys: string[], fallback: string | null = null) =>
   cleanText(firstValue(source, keys)) ?? fallback;
 
+const responseItems = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.items)) return record.items;
+  if (Array.isArray(record.data)) return record.data;
+  if (Array.isArray(record.datos)) return record.datos;
+  return [];
+};
+
 const isFunctionUnavailable = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
   const status = (error as { status?: unknown; context?: { status?: unknown } }).status ?? (error as { context?: { status?: unknown } }).context?.status;
@@ -58,19 +81,19 @@ const isFunctionUnavailable = (error: unknown): boolean => {
   return status === 404 || message.includes('function not found') || message.includes('not found');
 };
 
-const netagroRemoteId = (id: unknown) => `${NETAGRO_REMOTE_ID_PREFIX}${String(id ?? '').trim()}`;
+const erpRemoteId = (id: unknown) => `${ERP_REMOTE_ID_PREFIX}${String(id ?? '').trim()}`;
 
-const netagroIdFromUiId = (id?: string | null) => {
-  if (!id?.startsWith(NETAGRO_REMOTE_ID_PREFIX)) return null;
-  const parsed = Number(id.slice(NETAGRO_REMOTE_ID_PREFIX.length));
+const erpIdFromUiId = (id?: string | null) => {
+  if (!id?.startsWith(ERP_REMOTE_ID_PREFIX)) return null;
+  const parsed = Number(id.slice(ERP_REMOTE_ID_PREFIX.length));
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
 };
 
-export const isNetagroReadOnlyFactura = (factura: Partial<UiFacturaRecibida> | null | undefined) =>
-  factura?.gsbase_payload?.source === NETAGRO_READ_SOURCE || Boolean(netagroIdFromUiId(factura?.id ?? null));
+export const isERPReadOnlyFactura = (factura: Partial<UiFacturaRecibida> | null | undefined) =>
+  factura?.erp_payload?.source === ERP_READ_SOURCE || Boolean(erpIdFromUiId(factura?.id ?? null));
 
-const netagroRead = async <T>(consulta: string): Promise<T> => {
-  const { data, error } = await supabase.functions.invoke(NETAGRO_READ_FUNCTION, {
+const erpRead = async <T>(consulta: string): Promise<T> => {
+  const { data, error } = await supabase.functions.invoke(ERP_READ_FUNCTION, {
     body: { consulta },
   });
   if (error) throw error;
@@ -79,18 +102,18 @@ const netagroRead = async <T>(consulta: string): Promise<T> => {
   return data as T;
 };
 
-const mapEstadoToUi = (estado: NetagroFacturaEstado): UiFacturaEstado => {
-  if (estado === 'enviada_netagro') return 'enviada_gsbase';
-  if (estado === 'error_netagro') return 'error_gsbase';
+const mapEstadoToUi = (estado: ERPFacturaEstado): UiFacturaEstado => {
+  if (estado === 'enviada_erp') return 'enviada_erp';
+  if (estado === 'error_erp') return 'error_erp';
   if (estado === 'descartada') return 'descartada';
-  if (estado === 'validada' || estado === 'preparada_netagro') return 'validada';
+  if (estado === 'validada' || estado === 'preparada_erp') return 'validada';
   return 'pendiente_revision';
 };
 
-const mapEstadoToNetagro = (estado?: UiFacturaEstado): NetagroFacturaEstado | undefined => {
+const mapEstadoToERP = (estado?: UiFacturaEstado): ERPFacturaEstado | undefined => {
   if (!estado) return undefined;
-  if (estado === 'enviada_gsbase') return 'enviada_netagro';
-  if (estado === 'error_gsbase') return 'error_netagro';
+  if (estado === 'enviada_erp') return 'enviada_erp';
+  if (estado === 'error_erp') return 'error_erp';
   if (estado === 'descartada') return 'descartada';
   if (estado === 'validada') return 'validada';
   return 'pendiente_revision';
@@ -105,24 +128,85 @@ const pdfIdFromPath = (pdfPath?: string | null) => {
   return Number.isFinite(id) ? id : null;
 };
 
-const validationMessages = (factura: NetagroFacturaRecibida) =>
+const validationMessages = (factura: ERPFacturaRecibida) =>
   [
     ...(factura.validation_errors ?? []).map((item) => item.message),
-    factura.netagro_error,
+    factura.erp_error,
   ].filter((value): value is string => Boolean(cleanText(value)));
 
-const mapLineToUi = (linea: NetagroFacturaRecibida['ctb'][number], index: number): FacturaRecibidaLinea => ({
+const erpFacturaPayloadKeys = [
+  'FRR_id',
+  'FRR_numero',
+  'FRR_ejercicio',
+  'FRR_idcentro',
+  'FRR_idproveedor',
+  'FRR_idcuenta',
+  'FRR_numerofactura',
+  'FRR_fechafactura',
+  'FRR_fechactb',
+  'FRR_Idempresa',
+  'FRR_base1',
+  'FRR_iva1',
+  'FRR_cuota1',
+  'FRR_base2',
+  'FRR_iva2',
+  'FRR_cuota2',
+  'FRR_base3',
+  'FRR_iva3',
+  'FRR_cuota3',
+  'FRR_base4',
+  'FRR_iva4',
+  'FRR_cuota4',
+  'FRR_base5',
+  'FRR_iva5',
+  'FRR_cuota5',
+  'FRR_baseret',
+  'FRR_ret',
+  'FRR_cuotaret',
+  'FRR_totalfac',
+  'FRR_tipofactura',
+  'FRR_Concepto',
+  'FRR_Observaciones',
+  'FRR_ObservacionesAEAT',
+  'FRR_ImpSuplido',
+  'FRR_CuotaNoDeducible',
+] as const;
+
+const erpCtbPayloadKeys = [
+  'FRC_id',
+  'FRC_idfacturarecibida',
+  'FRC_Cuenta',
+  'FRC_Importe',
+  'FRC_IdActividad',
+  'FRC_Idseccion',
+  'FRC_Iddepartamento',
+  'FRC_Idsubdepartamento',
+  'FRC_IdUsuarioLog',
+  'FRC_FechaLog',
+  'FRC_HoraLog',
+] as const;
+
+const pickPayloadKeys = <TSource extends Record<string, unknown>>(source: TSource, keys: readonly string[]) =>
+  Object.fromEntries(keys.map((key) => [key, source[key] ?? null]));
+
+const buildERPWebhookPayloadPreview = (factura: ERPFacturaRecibida) => ({
+  operation: 'factura_recibida.create',
+  request_id: factura.id,
+  factura: pickPayloadKeys(factura as unknown as Record<string, unknown>, erpFacturaPayloadKeys),
+  ctb: factura.ctb.map((linea) => pickPayloadKeys(linea as unknown as Record<string, unknown>, erpCtbPayloadKeys)),
+});
+
+const mapLineToUi = (linea: ERPFacturaRecibida['ctb'][number], index: number): FacturaRecibidaLinea => ({
   id: linea.id,
   factura_recibida_id: linea.factura_id,
   posicion: linea.posicion ?? index + 1,
   descripcion: linea.FRC_Cuenta ?? '',
-  iva: 0,
   importe: linea.FRC_Importe ?? 0,
   created_at: linea.created_at,
   updated_at: linea.updated_at,
 });
 
-const mapFacturaToUi = (factura: NetagroFacturaRecibida): UiFacturaRecibida => ({
+const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida => ({
   id: factura.id,
   documento_codigo:
     cleanText(factura.FRR_id) ??
@@ -133,12 +217,14 @@ const mapFacturaToUi = (factura: NetagroFacturaRecibida): UiFacturaRecibida => (
   proveedor_nombre: factura.proveedor_nombre,
   proveedor_nif: factura.proveedor_nif,
   proveedor_codigo: cleanText(factura.FRR_idproveedor),
+  proveedor_cuenta: cleanText(factura.FRR_idcuenta),
   numero_factura: factura.FRR_numerofactura,
   referencia: cleanText(factura.FRR_numero),
   fr_alm: cleanText(factura.FRR_Idempresa),
   fr_sufa: factura.FRR_tipofactura,
   fecha_factura: factura.FRR_fechafactura,
   base_imponible: factura.FRR_base1,
+  iva_porcentaje: factura.FRR_iva1,
   iva_importe:
     (factura.FRR_cuota1 ?? 0) +
     (factura.FRR_cuota2 ?? 0) +
@@ -147,31 +233,26 @@ const mapFacturaToUi = (factura: NetagroFacturaRecibida): UiFacturaRecibida => (
     (factura.FRR_cuota5 ?? 0),
   retencion_porcentaje: factura.FRR_ret,
   retencion_importe: factura.FRR_cuotaret,
-  descuento_general: 0,
-  descuento_pronto_pago: 0,
   total: factura.FRR_totalfac,
-  pendiente_pago: factura.FRR_totalfac,
-  albaranes: null,
-  email_remitente: null,
   asunto_email: factura.FRR_Concepto ?? factura.FRR_Observaciones,
   pdf_path: pdfPathFromId(factura.archivo_pdf_id),
   pdf_nombre: factura.source_pdf_name,
   pdf_mime_type: 'application/pdf',
   pdf_size: null,
   validation_errors: validationMessages(factura),
-  gsbase_last_attempt_at: null,
-  gsbase_sent_at: factura.netagro_sent_at,
-  gsbase_response: factura.netagro_response as Record<string, unknown> | null,
-  gsbase_error: factura.netagro_error,
-  gsbase_payload: null,
-  gsbase_factura_id: factura.FRR_id ? String(factura.FRR_id) : null,
+  erp_last_attempt_at: null,
+  erp_sent_at: factura.erp_sent_at,
+  erp_response: factura.erp_response as Record<string, unknown> | null,
+  erp_error: factura.erp_error,
+  erp_payload: null,
+  erp_factura_id: factura.FRR_id ? String(factura.FRR_id) : null,
   created_at: factura.created_at,
   updated_at: factura.updated_at,
   facturas_recibidas_lineas: factura.ctb.map(mapLineToUi),
 });
 
 const mapRemoteCtbToUi = (
-  linea: NetagroReadCtbRow,
+  linea: ERPReadCtbRow,
   index: number,
   facturaId: number | string,
 ): FacturaRecibidaLinea => {
@@ -181,11 +262,10 @@ const mapRemoteCtbToUi = (
   const timestamp = fechaLog ? `${fechaLog}${horaLog ? `T${horaLog}` : ''}` : new Date().toISOString();
 
   return {
-    id: `${NETAGRO_REMOTE_ID_PREFIX}ctb:${id}`,
-    factura_recibida_id: netagroRemoteId(facturaId),
+    id: `${ERP_REMOTE_ID_PREFIX}ctb:${id}`,
+    factura_recibida_id: erpRemoteId(facturaId),
     posicion: index + 1,
     descripcion: readText(linea, ['cuenta', 'FRC_Cuenta'], '') ?? '',
-    iva: 0,
     importe: readNumber(linea, ['importe', 'FRC_Importe'], 0) ?? 0,
     created_at: timestamp,
     updated_at: timestamp,
@@ -193,8 +273,8 @@ const mapRemoteCtbToUi = (
 };
 
 const mapRemoteFacturaToUi = (
-  factura: NetagroReadFacturaRow,
-  lineas: NetagroReadCtbRow[] = [],
+  factura: ERPReadFacturaRow,
+  lineas: ERPReadCtbRow[] = [],
 ): UiFacturaRecibida => {
   const frrId = readNumber(factura, ['FRR_id', 'frr_id', 'id'], 0) ?? 0;
   const fechaFactura = readText(factura, ['FRR_fechafactura', 'fecha_factura'], null);
@@ -209,39 +289,36 @@ const mapRemoteFacturaToUi = (
     (readNumber(factura, ['FRR_cuota5', 'cuota5'], 0) ?? 0);
 
   return {
-    id: netagroRemoteId(frrId),
+    id: erpRemoteId(frrId),
     documento_codigo: cleanText(frrId),
-    estado: 'enviada_gsbase',
+    estado: 'enviada_erp',
     proveedor_nombre: readText(factura, ['acreedor_nombre', 'proveedor_nombre', 'ACR_Nombre'], null),
     proveedor_nif: readText(factura, ['acreedor_nif', 'proveedor_nif', 'ACR_Nif'], null),
     proveedor_codigo: cleanText(readNumber(factura, ['FRR_idproveedor', 'proveedor_id', 'acreedor_codigo'], null)),
+    proveedor_cuenta: readText(factura, ['FRR_idcuenta', 'cuenta_proveedor', 'ACR_Cuenta'], null),
     numero_factura: readText(factura, ['FRR_numerofactura', 'numero_factura'], null),
     referencia: cleanText(readNumber(factura, ['FRR_numero', 'numero'], null)),
     fr_alm: cleanText(readNumber(factura, ['FRR_Idempresa', 'empresa_id'], null)),
     fr_sufa: readText(factura, ['FRR_tipofactura', 'tipo_factura'], null),
     fecha_factura: fechaFactura,
     base_imponible: readNumber(factura, ['FRR_base1', 'base1'], null),
+    iva_porcentaje: readNumber(factura, ['FRR_iva1', 'iva1', 'iva_porcentaje', 'tipo_iva'], null),
     iva_importe: cuotaIva,
     retencion_porcentaje: readNumber(factura, ['FRR_ret', 'retencion_porcentaje'], null),
     retencion_importe: readNumber(factura, ['FRR_cuotaret', 'retencion_importe'], null),
-    descuento_general: 0,
-    descuento_pronto_pago: 0,
     total: readNumber(factura, ['FRR_totalfac', 'total_factura'], null),
-    pendiente_pago: 0,
-    albaranes: null,
-    email_remitente: readText(factura, ['acreedor_email', 'email'], null),
     asunto_email: readText(factura, ['FRR_Concepto', 'concepto', 'FRR_Observaciones'], null),
     pdf_path: null,
     pdf_nombre: null,
     pdf_mime_type: null,
     pdf_size: null,
     validation_errors: null,
-    gsbase_last_attempt_at: null,
-    gsbase_sent_at: fechaContable,
-    gsbase_response: factura,
-    gsbase_error: null,
-    gsbase_payload: { source: NETAGRO_READ_SOURCE },
-    gsbase_factura_id: frrId ? String(frrId) : null,
+    erp_last_attempt_at: null,
+    erp_sent_at: fechaContable,
+    erp_response: factura,
+    erp_error: null,
+    erp_payload: { source: ERP_READ_SOURCE },
+    erp_factura_id: frrId ? String(frrId) : null,
     created_at: timestamp,
     updated_at: timestamp,
     facturas_recibidas_lineas: lineas.map((linea, index) => mapRemoteCtbToUi(linea, index, frrId)),
@@ -250,17 +327,17 @@ const mapRemoteFacturaToUi = (
 
 const buildFacturaPayload = (
   factura: Partial<UiFacturaRecibida>,
-  current?: NetagroFacturaRecibida | null,
+  current?: ERPFacturaRecibida | null,
 ) => ({
   FRR_idproveedor: numberValue(factura.proveedor_codigo, current?.FRR_idproveedor ?? null),
-  FRR_idcuenta: current?.FRR_idcuenta ?? null,
+  FRR_idcuenta: cleanText(factura.proveedor_cuenta) ?? current?.FRR_idcuenta ?? null,
   FRR_numerofactura: cleanText(factura.numero_factura) ?? current?.FRR_numerofactura ?? null,
   FRR_fechafactura: cleanText(factura.fecha_factura) ?? current?.FRR_fechafactura ?? null,
   FRR_fechactb: cleanText(factura.fecha_factura) ?? current?.FRR_fechactb ?? current?.FRR_fechafactura ?? null,
   FRR_Idempresa: numberValue(factura.fr_alm, current?.FRR_Idempresa ?? 1) ?? 1,
-  FRR_tipofactura: cleanText(factura.fr_sufa) ?? current?.FRR_tipofactura ?? '1',
+  FRR_tipofactura: cleanText(factura.fr_sufa) ?? current?.FRR_tipofactura ?? null,
   FRR_base1: numberValue(factura.base_imponible, current?.FRR_base1 ?? 0) ?? 0,
-  FRR_iva1: current?.FRR_iva1 ?? 0,
+  FRR_iva1: numberValue(factura.iva_porcentaje, current?.FRR_iva1 ?? 0) ?? 0,
   FRR_cuota1: numberValue(factura.iva_importe, current?.FRR_cuota1 ?? 0) ?? 0,
   FRR_base2: current?.FRR_base2 ?? 0,
   FRR_iva2: current?.FRR_iva2 ?? 0,
@@ -313,11 +390,11 @@ export const fetchFacturasRecibidas = async (): Promise<UiFacturaRecibida[]> => 
 };
 
 export const fetchFacturaRecibidaById = async (id: string): Promise<UiFacturaRecibida | null> => {
-  const remoteId = netagroIdFromUiId(id);
+  const remoteId = erpIdFromUiId(id);
   if (remoteId) {
     const [factura, ctb] = await Promise.all([
-      netagroRead<NetagroReadFacturaRow>(`facturasrecibidas/${remoteId}`),
-      netagroRead<{ items?: NetagroReadCtbRow[] }>(`facturasrecibidas/${remoteId}/ctb`),
+      erpRead<ERPReadFacturaRow>(`facturasrecibidas/${remoteId}`),
+      erpRead<{ items?: ERPReadCtbRow[] }>(`facturasrecibidas/${remoteId}/ctb`),
     ]);
     return mapRemoteFacturaToUi(factura, ctb.items ?? []);
   }
@@ -330,15 +407,15 @@ export const saveFacturaRecibida = async (
   factura: Partial<UiFacturaRecibida>,
   lineas: FacturaRecibidaLinea[],
 ): Promise<UiFacturaRecibida> => {
-  if (isNetagroReadOnlyFactura(factura)) {
-    throw new Error('Las facturas reales de Netagro son de solo lectura desde esta pantalla.');
+  if (isERPReadOnlyFactura(factura)) {
+    throw new Error('Las facturas reales de ERP son de solo lectura desde esta pantalla.');
   }
 
   if (factura.id) {
     const current = await facturasRecibidas.getById(factura.id);
     const updated = await facturasRecibidas.update({
       factura_id: factura.id,
-      estado: mapEstadoToNetagro(factura.estado),
+      estado: mapEstadoToERP(factura.estado),
       proveedor_nombre: cleanText(factura.proveedor_nombre),
       proveedor_nif: cleanText(factura.proveedor_nif),
       factura: buildFacturaPayload(factura, current),
@@ -350,7 +427,7 @@ export const saveFacturaRecibida = async (
   const archivoPdfId = pdfIdFromPath(factura.pdf_path);
   const insertPayload = {
     archivo_pdf_id: archivoPdfId,
-    estado: mapEstadoToNetagro(factura.estado) ?? 'pendiente_revision',
+    estado: mapEstadoToERP(factura.estado) ?? 'pendiente_revision',
     proveedor_nombre: cleanText(factura.proveedor_nombre),
     proveedor_nif: cleanText(factura.proveedor_nif),
     source_pdf_name: cleanText(factura.pdf_nombre),
@@ -379,16 +456,16 @@ export const saveFacturaRecibida = async (
   return mapFacturaToUi(created);
 };
 
-export const sendFacturaRecibidaToGsBase = async (id: string): Promise<UiFacturaRecibida> => {
-  if (netagroIdFromUiId(id)) {
-    throw new Error('Esta factura ya existe en Netagro y se muestra en modo solo lectura.');
+export const sendFacturaRecibidaToERP = async (id: string): Promise<UiFacturaRecibida> => {
+  if (erpIdFromUiId(id)) {
+    throw new Error('Esta factura ya existe en ERP y se muestra en modo solo lectura.');
   }
 
-  const sent = await facturasRecibidas.sendToNetagro(id);
+  const sent = await facturasRecibidas.sendToERP(id);
   return mapFacturaToUi(sent);
 };
 
-export type FacturaGsBasePayloadPreview = {
+export type FacturaERPPayloadPreview = {
   ok: boolean;
   factura_id: string;
   validation_errors: string[];
@@ -396,18 +473,18 @@ export type FacturaGsBasePayloadPreview = {
   body_json: string;
 };
 
-export const fetchFacturaRecibidaGsBasePayloadPreview = async (
+export const fetchFacturaRecibidaERPPayloadPreview = async (
   id: string,
-): Promise<FacturaGsBasePayloadPreview> => {
-  const remoteId = netagroIdFromUiId(id);
+): Promise<FacturaERPPayloadPreview> => {
+  const remoteId = erpIdFromUiId(id);
   if (remoteId) {
     const factura = await fetchFacturaRecibidaById(id);
     return {
       ok: Boolean(factura),
       factura_id: id,
       validation_errors: [],
-      payload: factura?.gsbase_response ?? {},
-      body_json: JSON.stringify(factura?.gsbase_response ?? {}, null, 2),
+      payload: factura?.erp_response ?? {},
+      body_json: JSON.stringify(factura?.erp_response ?? {}, null, 2),
     };
   }
 
@@ -416,8 +493,8 @@ export const fetchFacturaRecibidaGsBasePayloadPreview = async (
     ok: Boolean(factura),
     factura_id: id,
     validation_errors: factura ? validationMessages(factura) : ['Factura no encontrada.'],
-    payload: factura ? (factura.netagro_response as Record<string, unknown>) ?? {} : {},
-    body_json: JSON.stringify(factura ?? {}, null, 2),
+    payload: factura ? buildERPWebhookPayloadPreview(factura) : {},
+    body_json: JSON.stringify(factura ? buildERPWebhookPayloadPreview(factura) : {}, null, 2),
   };
 };
 
@@ -436,14 +513,14 @@ export const cleanupFacturaRecibidaUpload = async (payload: {
 
 export type LocalizarProveedorResponse = {
   ok: boolean;
-  gsbase_response?: {
+  erp_response?: {
     resultado?: string;
     datos?: Record<string, unknown> | string;
     [key: string]: unknown;
   };
 };
 
-export const localizarProveedorGsBase = async (payload: {
+export const localizarProveedorERP = async (payload: {
   nif?: string | null;
   nombre?: string | null;
 }): Promise<LocalizarProveedorResponse> => {
@@ -455,25 +532,26 @@ export const localizarProveedorGsBase = async (payload: {
         : null;
 
     if (consulta) {
-      const page = await netagroRead<NetagroReadListResponse<Record<string, unknown>>>(consulta);
+      const page = await erpRead<ERPReadListResponse<Record<string, unknown>>>(consulta);
       const data = page.items?.[0];
-      if (!data) return { ok: true, gsbase_response: { datos: 'Proveedor no localizado.' } };
+      if (!data) return { ok: true, erp_response: { datos: 'Proveedor no localizado.' } };
 
       return {
         ok: true,
-        gsbase_response: {
+        erp_response: {
           resultado: 'ok',
           datos: {
             codigo: readNumber(data, ['codigo', 'id', 'ACR_Codigo'], null),
             nombre: readText(data, ['nombre', 'ACR_Nombre'], null),
             cif: readText(data, ['nif', 'ACR_Nif'], null),
+            cuenta: readText(data, ['cuenta', 'ACR_Cuenta'], null),
           },
         },
       };
     }
   } catch (error) {
     if (!isFunctionUnavailable(error)) {
-      return { ok: false, gsbase_response: { datos: error instanceof Error ? error.message : 'No se pudo buscar proveedor.' } };
+      return { ok: false, erp_response: { datos: error instanceof Error ? error.message : 'No se pudo buscar proveedor.' } };
     }
   }
 
@@ -483,24 +561,61 @@ export const localizarProveedorGsBase = async (payload: {
   } else if (payload.nombre?.trim()) {
     query = query.ilike('ACR_Nombre', `%${payload.nombre.trim()}%`);
   } else {
-    return { ok: false, gsbase_response: { datos: 'Indica NIF o nombre para buscar proveedor.' } };
+    return { ok: false, erp_response: { datos: 'Indica NIF o nombre para buscar proveedor.' } };
   }
 
   const { data, error } = await query.maybeSingle();
-  if (error) return { ok: false, gsbase_response: { datos: error.message } };
-  if (!data) return { ok: true, gsbase_response: { datos: 'Proveedor no localizado.' } };
+  if (error) return { ok: false, erp_response: { datos: error.message } };
+  if (!data) return { ok: true, erp_response: { datos: 'Proveedor no localizado.' } };
 
   return {
     ok: true,
-    gsbase_response: {
+    erp_response: {
       resultado: 'ok',
       datos: {
         codigo: data.ACR_Codigo,
         nombre: data.ACR_Nombre,
         cif: data.ACR_Nif,
+        cuenta: data.ACR_Cuenta,
       },
     },
   };
+};
+
+export const fetchFacturaEmpresas = async (): Promise<FacturaEmpresaOption[]> => {
+  const response = await erpRead<ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[]>('empresas');
+  return responseItems(response)
+    .map((item) => (item && typeof item === 'object' ? (item as ERPReadGenericRow) : null))
+    .filter((item): item is ERPReadGenericRow => Boolean(item))
+    .map((item) => {
+      const id = cleanText(firstValue(item, ['EMP_idempresa', 'id', 'empresa_id', 'codigo']));
+      const nombre = readText(item, ['EMP_nombre', 'EMP_Nombre', 'nombre', 'razon_social'], null);
+      const cif = readText(item, ['EMP_cif', 'EMP_Cif', 'cif', 'nif'], null);
+      if (!id) return null;
+
+      return {
+        id,
+        nombre,
+        cif,
+        label: [id, nombre].filter(Boolean).join(' - '),
+      } satisfies FacturaEmpresaOption;
+    })
+    .filter((item): item is FacturaEmpresaOption => Boolean(item));
+};
+
+export const fetchFacturaTipos = async (): Promise<FacturaTipoOption[]> => {
+  const response = await erpRead<ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[] | string[]>(
+    'facturasrecibidas/tipos',
+  );
+  const values = responseItems(response)
+    .map((item) => {
+      if (typeof item === 'string') return cleanText(item);
+      if (!item || typeof item !== 'object') return null;
+      return cleanText(firstValue(item as ERPReadGenericRow, ['tipo_factura', 'FRR_tipofactura', 'tipo', 'value', 'codigo']));
+    })
+    .filter((value): value is string => Boolean(value));
+
+  return Array.from(new Set(values)).map((value) => ({ value, label: value }));
 };
 
 export const uploadFacturaPdf = async (file: File) => {
@@ -522,6 +637,7 @@ export const uploadFacturaPdf = async (file: File) => {
       pdf_nombre: file.name,
       pdf_mime_type: file.type || 'application/pdf',
       pdf_size: file.size,
+      pdf_reutilizado: true,
     };
   }
 
@@ -544,6 +660,7 @@ export const uploadFacturaPdf = async (file: File) => {
     pdf_nombre: file.name,
     pdf_mime_type: file.type || 'application/pdf',
     pdf_size: file.size,
+    pdf_reutilizado: false,
   };
 };
 
@@ -554,47 +671,47 @@ export const getFacturaPdfSignedUrl = async (pdfPath?: string | null) => {
   return pdf.base64 ? `data:application/pdf;base64,${pdf.base64}` : null;
 };
 
-export type FacturaIaLineaExtraida = {
-  descripcion?: string | null;
-  iva?: number | string | null;
-  importe?: number | string | null;
-};
-
-export type FacturaIaExtraccion = {
-  proveedor_nombre?: string | null;
-  proveedor_nif?: string | null;
-  proveedor_codigo?: string | null;
-  numero_factura?: string | null;
-  referencia?: string | null;
-  fecha_factura?: string | null;
-  base_imponible?: number | string | null;
-  iva_importe?: number | string | null;
-  retencion_porcentaje?: number | string | null;
-  retencion_importe?: number | string | null;
-  descuento_general?: number | string | null;
-  descuento_pronto_pago?: number | string | null;
-  total?: number | string | null;
-  pendiente_pago?: number | string | null;
-  albaranes?: string | null;
-  email_remitente?: string | null;
-  asunto_email?: string | null;
-  fr_alm?: string | null;
-  fr_sufa?: string | null;
-  lineas?: FacturaIaLineaExtraida[];
-  confidence?: number | string | null;
-  warnings?: string[];
-  raw_text_summary?: string | null;
-};
-
-export type FacturaIaExtraccionResponse = {
-  ok: boolean;
-  extraction?: FacturaIaExtraccion;
+export type FacturaRecibidaExtraerResponse = {
+  ok?: boolean;
+  factura_id?: string;
+  factura?: {
+    id?: string | null;
+  } | null;
+  estado?: UiFacturaEstado;
+  validation_errors?: unknown[];
   error?: string;
-  metadata?: Record<string, unknown>;
-  raw_response?: unknown;
 };
 
-export const extractFacturaWithN8n = async (): Promise<FacturaIaExtraccionResponse> => ({
-  ok: true,
-  extraction: {},
-});
+export const extractFacturaWithN8n = async (
+  factura: Partial<UiFacturaRecibida>,
+): Promise<UiFacturaRecibida> => {
+  const archivoPdfId = pdfIdFromPath(factura.pdf_path);
+  if (!archivoPdfId) {
+    throw new Error('No se encontro el PDF guardado para analizar.');
+  }
+
+  const { data, error } = await supabase.functions.invoke<FacturaRecibidaExtraerResponse>('factura-recibida-extraer', {
+    body: {
+      archivo_pdf_id: archivoPdfId,
+      source: 'xfuego-front',
+      pdf_nombre: factura.pdf_nombre,
+      pdf_mime_type: factura.pdf_mime_type,
+      pdf_size: factura.pdf_size,
+    },
+  });
+
+  if (error) throw error;
+  const message = getFunctionErrorMessage(data);
+  if (message) throw new Error(message);
+
+  const facturaId = data?.factura_id ?? data?.factura?.id ?? null;
+  if (!facturaId) {
+    throw new Error('La extraccion no devolvio la factura creada.');
+  }
+
+  const saved = await fetchFacturaRecibidaById(facturaId);
+  if (!saved) {
+    throw new Error('No se pudo recuperar la factura creada.');
+  }
+  return saved;
+};

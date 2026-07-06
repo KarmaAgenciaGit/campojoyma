@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, jsonResponse, requireRouteUser } from "../_shared/facturas-recibidas-netagro.ts";
+import { corsHeaders, jsonResponse, requireRouteUser } from "../_shared/facturas-recibidas-erp.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -19,8 +19,8 @@ Deno.serve(async (req) => {
       .eq("id", facturaId)
       .single();
     if (getError || !factura) throw getError ?? new Error("Factura no encontrada.");
-    if (factura.estado === "enviada_netagro") {
-      return jsonResponse({ error: "No se puede borrar una factura enviada a Netagro." }, 409);
+    if (factura.estado === "enviada_erp") {
+      return jsonResponse({ error: "No se puede borrar una factura enviada a ERP." }, 409);
     }
 
     const archivoPdfId = factura.archivo_pdf_id as number | null;

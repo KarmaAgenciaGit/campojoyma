@@ -4,16 +4,16 @@ export const facturaEstadoLabels: Record<FacturaRecibidaEstado, string> = {
   borrador: 'Borrador',
   pendiente_revision: 'Pendiente revision',
   validada: 'Validada',
-  enviada_gsbase: 'Enviada',
-  error_gsbase: 'Error de envio',
+  enviada_erp: 'Enviada',
+  error_erp: 'Error de envio',
   descartada: 'Descartada',
 };
 
 export const facturaEstadoOrder: FacturaRecibidaEstado[] = [
   'pendiente_revision',
   'validada',
-  'enviada_gsbase',
-  'error_gsbase',
+  'enviada_erp',
+  'error_erp',
   'borrador',
   'descartada',
 ];
@@ -26,15 +26,15 @@ export type FacturaEstadoSummary = {
   percentage: number;
 };
 
-export type FacturaGsbaseStatus = 'en_gys' | 'fuera_gys';
+export type FacturaERPStatus = 'en_erp' | 'fuera_erp';
 
-export const facturaGsbaseStatusLabels: Record<FacturaGsbaseStatus, string> = {
-  en_gys: 'Enviado a Netagro',
-  fuera_gys: 'No enviado a Netagro',
+export const facturaERPStatusLabels: Record<FacturaERPStatus, string> = {
+  en_erp: 'Enviado a ERP',
+  fuera_erp: 'No enviado a ERP',
 };
 
-export type FacturaGsbaseSummary = {
-  status: FacturaGsbaseStatus;
+export type FacturaERPSummary = {
+  status: FacturaERPStatus;
   label: string;
   count: number;
   amount: number;
@@ -47,23 +47,20 @@ export type FacturasSummary = {
   totalAmount: number;
   baseAmount: number;
   ivaAmount: number;
-  pendingPaymentAmount: number;
   lineCount: number;
-  albaranCount: number;
-  invoicesWithAlbaranes: number;
   invoicesWithPdf: number;
   invoicesWithProviderCode: number;
   missingProviderCount: number;
   reviewQueueCount: number;
   pendingReviewCount: number;
   draftCount: number;
-  readyForGsbaseCount: number;
-  sentToGsbaseCount: number;
-  gsbaseErrorCount: number;
+  readyForERPCount: number;
+  sentToERPCount: number;
+  erpErrorCount: number;
   discardedCount: number;
   validationIssueCount: number;
   statusBreakdown: FacturaEstadoSummary[];
-  gsbaseBreakdown: FacturaGsbaseSummary[];
+  erpBreakdown: FacturaERPSummary[];
   latestFactura: FacturaRecibida | null;
   latestFacturas: FacturaRecibida[];
 };
@@ -84,15 +81,9 @@ const getTimestamp = (value?: string | null) => {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 };
 
-export const parseFacturaAlbaranes = (value?: string | null) =>
-  cleanText(value)
-    .split(/[;,\n\r|]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
 export const getFacturaActivityDate = (factura: FacturaRecibida) =>
-  factura.gsbase_sent_at ||
-  factura.gsbase_last_attempt_at ||
+  factura.erp_sent_at ||
+  factura.erp_last_attempt_at ||
   factura.updated_at ||
   factura.created_at ||
   factura.fecha_factura ||
@@ -116,8 +107,8 @@ export const isFacturaUnprocessedUploadDraft = (factura: FacturaRecibida) => {
   );
 };
 
-export const isFacturaInGys = (factura: FacturaRecibida) =>
-  factura.estado === 'enviada_gsbase' || Boolean(factura.gsbase_sent_at);
+export const isFacturaInERP = (factura: FacturaRecibida) =>
+  factura.estado === 'enviada_erp' || Boolean(factura.erp_sent_at);
 
 export const buildFacturasSummary = (
   facturas: FacturaRecibida[],
@@ -141,22 +132,18 @@ export const buildFacturasSummary = (
     (acc, estado) => ({ ...acc, [estado]: 0 }),
     {} as Record<FacturaRecibidaEstado, number>,
   );
-  const byGsbaseStatus: Record<FacturaGsbaseStatus, number> = {
-    en_gys: 0,
-    fuera_gys: 0,
+  const byERPStatus: Record<FacturaERPStatus, number> = {
+    en_erp: 0,
+    fuera_erp: 0,
   };
-  const amountByGsbaseStatus: Record<FacturaGsbaseStatus, number> = {
-    en_gys: 0,
-    fuera_gys: 0,
+  const amountByERPStatus: Record<FacturaERPStatus, number> = {
+    en_erp: 0,
+    fuera_erp: 0,
   };
-  const albaranCodes = new Set<string>();
-
   let totalAmount = 0;
   let baseAmount = 0;
   let ivaAmount = 0;
-  let pendingPaymentAmount = 0;
   let lineCount = 0;
-  let invoicesWithAlbaranes = 0;
   let invoicesWithPdf = 0;
   let invoicesWithProviderCode = 0;
   let missingProviderCount = 0;
@@ -164,15 +151,14 @@ export const buildFacturasSummary = (
 
   visibleFacturas.forEach((factura) => {
     const total = toNumber(factura.total);
-    const gsbaseStatus: FacturaGsbaseStatus = isFacturaInGys(factura) ? 'en_gys' : 'fuera_gys';
+    const erpStatus: FacturaERPStatus = isFacturaInERP(factura) ? 'en_erp' : 'fuera_erp';
     byEstado[factura.estado] += 1;
     amountByEstado[factura.estado] += total;
-    byGsbaseStatus[gsbaseStatus] += 1;
-    amountByGsbaseStatus[gsbaseStatus] += total;
+    byERPStatus[erpStatus] += 1;
+    amountByERPStatus[erpStatus] += total;
     totalAmount += total;
     baseAmount += toNumber(factura.base_imponible);
     ivaAmount += toNumber(factura.iva_importe);
-    pendingPaymentAmount += toNumber(factura.pendiente_pago);
     lineCount += factura.facturas_recibidas_lineas?.length ?? 0;
 
     if (factura.pdf_path) {
@@ -191,11 +177,6 @@ export const buildFacturasSummary = (
       validationIssueCount += 1;
     }
 
-    const albaranes = parseFacturaAlbaranes(factura.albaranes);
-    if (albaranes.length > 0) {
-      invoicesWithAlbaranes += 1;
-      albaranes.forEach((albaran) => albaranCodes.add(albaran));
-    }
   });
 
   const totalCount = visibleFacturas.length;
@@ -209,24 +190,21 @@ export const buildFacturasSummary = (
     totalAmount,
     baseAmount,
     ivaAmount,
-    pendingPaymentAmount,
     lineCount,
-    albaranCount: albaranCodes.size,
-    invoicesWithAlbaranes,
     invoicesWithPdf,
     invoicesWithProviderCode,
     missingProviderCount,
     reviewQueueCount: byEstado.borrador + byEstado.pendiente_revision,
     pendingReviewCount: byEstado.pendiente_revision,
     draftCount: byEstado.borrador,
-    readyForGsbaseCount: visibleFacturas.filter(
+    readyForERPCount: visibleFacturas.filter(
       (factura) =>
-        !isFacturaInGys(factura) &&
+        !isFacturaInERP(factura) &&
         factura.estado !== 'descartada' &&
-        (factura.estado === 'validada' || factura.estado === 'error_gsbase' || Boolean(factura.gsbase_payload)),
+        (factura.estado === 'validada' || factura.estado === 'error_erp' || Boolean(factura.erp_payload)),
     ).length,
-    sentToGsbaseCount: byGsbaseStatus.en_gys,
-    gsbaseErrorCount: byEstado.error_gsbase,
+    sentToERPCount: byERPStatus.en_erp,
+    erpErrorCount: byEstado.error_erp,
     discardedCount: facturas.filter((factura) => factura.estado === 'descartada').length,
     validationIssueCount,
     statusBreakdown: facturaEstadoOrder.map((estado) => ({
@@ -236,12 +214,12 @@ export const buildFacturasSummary = (
       amount: amountByEstado[estado],
       percentage: totalCount > 0 ? (byEstado[estado] / totalCount) * 100 : 0,
     })),
-    gsbaseBreakdown: (['en_gys', 'fuera_gys'] as FacturaGsbaseStatus[]).map((status) => ({
+    erpBreakdown: (['en_erp', 'fuera_erp'] as FacturaERPStatus[]).map((status) => ({
       status,
-      label: facturaGsbaseStatusLabels[status],
-      count: byGsbaseStatus[status],
-      amount: amountByGsbaseStatus[status],
-      percentage: totalCount > 0 ? (byGsbaseStatus[status] / totalCount) * 100 : 0,
+      label: facturaERPStatusLabels[status],
+      count: byERPStatus[status],
+      amount: amountByERPStatus[status],
+      percentage: totalCount > 0 ? (byERPStatus[status] / totalCount) * 100 : 0,
     })),
     latestFactura: latestFacturas[0] ?? null,
     latestFacturas,

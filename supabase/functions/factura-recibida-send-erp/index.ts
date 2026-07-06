@@ -5,9 +5,12 @@ import {
   jsonResponse,
   requireRouteUser,
   signJwtHs256,
-} from "../_shared/facturas-recibidas-netagro.ts";
+  toERPCtbPayload,
+  toERPFacturaPayload,
+  type JsonObject,
+} from "../_shared/facturas-recibidas-erp.ts";
 
-const DEFAULT_WRITE_WEBHOOK_URL = "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoymaWrite";
+const DEFAULT_WRITE_WEBHOOK_URL = "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma";
 const DEFAULT_EXP_SECONDS = 300;
 
 const parseExpSeconds = (value: string | undefined) => {
@@ -39,8 +42,8 @@ Deno.serve(async (req) => {
       .single();
     if (facturaError || !factura) throw facturaError ?? new Error("Factura no encontrada.");
 
-    if (factura.estado === "enviada_netagro") {
-      return jsonResponse({ error: "La factura ya fue enviada a Netagro." }, 409);
+    if (factura.estado === "enviada_erp") {
+      return jsonResponse({ error: "La factura ya fue enviada a ERP." }, 409);
     }
 
     const { data: ctb, error: ctbError } = await auth.serviceClient
@@ -71,14 +74,14 @@ Deno.serve(async (req) => {
 
     await auth.serviceClient
       .from("facturasrecibidas")
-      .update({ estado: "preparada_netagro", validation_errors: validationErrors, updated_by: auth.user.id })
+      .update({ estado: "preparada_erp", validation_errors: validationErrors, updated_by: auth.user.id })
       .eq("id", facturaId);
 
     const payload = {
       operation: "factura_recibida.create",
       request_id: facturaId,
-      factura,
-      ctb: ctb ?? [],
+      factura: toERPFacturaPayload(factura as JsonObject),
+      ctb: (ctb ?? []).map((linea, index) => toERPCtbPayload(linea as JsonObject, index + 1)),
     };
 
     const upstream = await fetch(webhookUrl, {
@@ -110,9 +113,9 @@ Deno.serve(async (req) => {
       await auth.serviceClient
         .from("facturasrecibidas")
         .update({
-          estado: "error_netagro",
-          netagro_error: message,
-          netagro_response: upstreamJson,
+          estado: "error_erp",
+          erp_error: message,
+          erp_response: upstreamJson,
           updated_by: auth.user.id,
         })
         .eq("id", facturaId);
@@ -146,13 +149,13 @@ Deno.serve(async (req) => {
     const { data: updated, error: updateError } = await auth.serviceClient
       .from("facturasrecibidas")
       .update({
-        estado: "enviada_netagro",
+        estado: "enviada_erp",
         "FRR_id": remoteFacturaId ?? factura.FRR_id,
         "FRR_numero": responseObject.FRR_numero ?? factura.FRR_numero,
-        netagro_sent_at: new Date().toISOString(),
-        netagro_sent_by: auth.user.id,
-        netagro_response: upstreamJson,
-        netagro_error: null,
+        erp_sent_at: new Date().toISOString(),
+        erp_sent_by: auth.user.id,
+        erp_response: upstreamJson,
+        erp_error: null,
         updated_by: auth.user.id,
       })
       .eq("id", facturaId)

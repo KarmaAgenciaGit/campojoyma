@@ -46,7 +46,7 @@ export const useFacturaRecibidaMutations = () => {
   });
 
   const send = useMutation({
-    mutationFn: (facturaId: string) => facturasRecibidas.sendToNetagro(facturaId),
+    mutationFn: (facturaId: string) => facturasRecibidas.sendToERP(facturaId),
     onSuccess: invalidate,
   });
 

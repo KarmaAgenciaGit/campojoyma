@@ -1,5 +1,5 @@
--- Facturas recibidas Netagro staging model.
--- The platform keeps its own UUID primary key while mirroring Netagro FRR/FRC fields.
+-- Facturas recibidas ERP staging model.
+-- The platform keeps its own UUID primary key while mirroring ERP FRR/FRC fields.
 
 create extension if not exists pgcrypto with schema extensions;
 
@@ -80,9 +80,9 @@ create table if not exists public.facturasrecibidas (
       'pendiente_revision',
       'error_ocr',
       'validada',
-      'preparada_netagro',
-      'enviada_netagro',
-      'error_netagro',
+      'preparada_erp',
+      'enviada_erp',
+      'error_erp',
       'duplicada',
       'descartada'
     )),
@@ -174,10 +174,10 @@ create table if not exists public.facturasrecibidas (
   "FRR_Contabilizar" varchar(1),
   "FRR_IdfacturaRec" integer,
 
-  netagro_sent_at timestamptz,
-  netagro_sent_by uuid,
-  netagro_response jsonb,
-  netagro_error text,
+  erp_sent_at timestamptz,
+  erp_sent_by uuid,
+  erp_response jsonb,
+  erp_error text,
   created_by uuid,
   updated_by uuid,
   created_at timestamptz not null default now(),
@@ -731,11 +731,11 @@ grant execute on function public.admin_delete_user(uuid) to authenticated;
 grant execute on function public.admin_create_user(text, text, text, text[]) to authenticated;
 
 comment on table public.facturasrecibidas is
-  'Campojoyma OCR staging for received invoices. This is not the real Netagro MariaDB netagrocomer.facturasrecibidas table.';
+  'Campojoyma OCR staging for received invoices. This is not the real ERP MariaDB erpcomer.facturasrecibidas table.';
 comment on table public.facturasrecibidas_ctb is
-  'Campojoyma OCR staging accounting lines for received invoices. The local relation is factura_id; Netagro IDs are filled after sync.';
+  'Campojoyma OCR staging accounting lines for received invoices. The local relation is factura_id; ERP IDs are filled after sync.';
 comment on table public.acreedores_cache is
-  'Local cache of Netagro acreedores for OCR/provider validation. acreedores.ACR_Codigo maps to facturasrecibidas.FRR_idproveedor.';
+  'Local cache of ERP acreedores for OCR/provider validation. acreedores.ACR_Codigo maps to facturasrecibidas.FRR_idproveedor.';
 comment on column public.archivos_pdf.b64_contenido is
   'Temporary fallback for tests. Prefer Supabase Storage and keep only storage_bucket/storage_path plus hash metadata here.';
 comment on column public.archivos_pdf.storage_bucket is
@@ -745,4 +745,4 @@ comment on column public.archivos_pdf.storage_path is
 comment on column public.facturasrecibidas_ctb.factura_id is
   'Local staging UUID relation to public.facturasrecibidas.id.';
 comment on column public.facturasrecibidas_ctb."FRC_idfacturarecibida" is
-  'Remote Netagro facturasrecibidas.FRR_id. Keep null before the invoice is sent/synced to Netagro.';
+  'Remote ERP facturasrecibidas.FRR_id. Keep null before the invoice is sent/synced to ERP.';

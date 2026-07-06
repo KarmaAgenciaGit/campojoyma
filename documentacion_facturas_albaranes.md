@@ -1,6 +1,6 @@
-# Documentacion tecnica: facturas y albaranes Netagro
+# Documentacion tecnica: facturas y albaranes ERP
 
-Generado a partir de la copia local `netagrocomer` el `2026-06-29T16:01:26Z`.
+Generado a partir de la copia local `erpcomer` el `2026-06-29T16:01:26Z`.
 Actualizado el `2026-06-30` con maestro de clientes, estructura real de facturas recibidas/proveedores, endpoints `/clientes` y flujo de contraste OCR para PDFs de facturas en correos.
 
 ## Alcance y cautelas
@@ -17,7 +17,7 @@ Actualizado el `2026-06-30` con maestro de clientes, estructura real de facturas
 Hay cinco bloques principales:
 
 1. **Clientes**: `clientes` es el maestro que resuelve `CLI_Idcliente`, nombre, NIF/VAT, direccion, email, idioma/divisa y estado. Es la primera tabla a consultar cuando llega un PDF por OCR.
-2. **Proveedores/acreedores y facturas recibidas**: `acreedores` identifica proveedor por `ACR_Codigo`; `facturasrecibidas` es la cabecera real Netagro de factura recibida, y `facturasrecibidas_ctb` es su desglose contable.
+2. **Proveedores/acreedores y facturas recibidas**: `acreedores` identifica proveedor por `ACR_Codigo`; `facturasrecibidas` es la cabecera real ERP de factura recibida, y `facturasrecibidas_ctb` es su desglose contable.
 3. **Facturas a clientes**: `facturas` como cabecera, `facturaslineasvar` como conceptos/lineas, `facturas_gastos` como gastos y `albsalida` como albaranes facturados.
 4. **Albaranes de salida**: `albsalida` como cabecera, `albsalida_lineas`, `albsalida_gastos`, `albsalida_palets` y `albsalida_lineas_desglose` como detalle.
 5. **Albaranes de entrada y facturas de agricultores**: `albentrada` y sus lineas/gastos/clasificaciones; `facturaagr` y `facturaagr_lineas` liquidan genero de agricultores.
@@ -65,7 +65,7 @@ facturaagr_lineas.FAL_idpartida
 |---|---:|---|
 | `clientes_to_facturas` | clientes=1190, facturas=179532, clientes_usados=772, facturas_cliente_huerfano=0 | Todas las facturas emitidas apuntan a un cliente existente. |
 | `clientes_to_albsalida` | clientes=1190, albaranes=110048, clientes_usados=365, albaranes_cliente_huerfano=0 | Los albaranes de salida con cliente distinto de 0 apuntan a cliente existente. |
-| `acreedores_to_facturasrecibidas` | acreedores=1831, facturas=48641, proveedores_usados=1738, proveedor_match=45672, proveedor_cero=4, proveedor_no_cero_huerfano=2965 | `FRR_idproveedor` apunta logicamente a `ACR_Codigo`, pero hay historico con proveedor inexistente en `acreedores` dentro de `netagrocomer`. |
+| `acreedores_to_facturasrecibidas` | acreedores=1831, facturas=48641, proveedores_usados=1738, proveedor_match=45672, proveedor_cero=4, proveedor_no_cero_huerfano=2965 | `FRR_idproveedor` apunta logicamente a `ACR_Codigo`, pero hay historico con proveedor inexistente en `acreedores` dentro de `erpcomer`. |
 | `facturasrecibidas_to_ctb` | apuntes=37027, facturas_con_ctb=29783, apuntes_match=36621, factura_cero=38, factura_no_cero_huerfana=368 | `FRC_idfacturarecibida` apunta logicamente a `FRR_id`; hay apuntes contables historicos sin cabecera local. |
 | `facturas_to_albsalida` | albaranes_con_factura=108912, facturas_con_albaranes=103560, albaranes_huerfanos=0 | Albaranes de salida facturados; `ASA_idfactura=0` indica pendiente/no facturado. |
 | `facturas_to_lineasvar` | lineas=149032, facturas_con_lineas=75335, lineas_huerfanas=0 | Lineas o conceptos variables de factura emitida. |
@@ -108,7 +108,7 @@ facturaagr_lineas.FAL_idpartida
 
 ## API actual de pruebas
 
-La FastAPI desplegada usa la copia local y el usuario MariaDB `netagro_api` con permisos `SELECT`. Desde n8n en este servidor se consume con:
+La FastAPI desplegada usa la copia local y el usuario MariaDB `erp_api` con permisos `SELECT`. Desde n8n en este servidor se consume con:
 
 ```text
 http://172.19.0.1:18000
@@ -296,7 +296,7 @@ Actualmente devuelve ids y valores de gasto. Para que OCR pueda mostrar nombres 
 
 ### Facturas recibidas de proveedores
 
-Si el PDF entrante es una factura recibida de proveedor/acreedor, no debe forzarse el flujo por `clientes`. La estructura real de Netagro en la copia local es:
+Si el PDF entrante es una factura recibida de proveedor/acreedor, no debe forzarse el flujo por `clientes`. La estructura real de ERP en la copia local es:
 
 ```text
 acreedores.ACR_Codigo
@@ -311,23 +311,23 @@ Lectura funcional:
 | Tabla | Papel |
 |---|---|
 | `acreedores` | Maestro de proveedores/acreedores. Resuelve nombre, NIF, cuenta contable, cuenta de gasto, forma de pago y estado. |
-| `facturasrecibidas` | Cabecera real de factura recibida en Netagro. Tiene 74 columnas `FRR_*`/vencimientos/contabilidad. |
+| `facturasrecibidas` | Cabecera real de factura recibida en ERP. Tiene 74 columnas `FRR_*`/vencimientos/contabilidad. |
 | `facturasrecibidas_ctb` | Lineas de desglose contable de la factura recibida. Tiene 11 columnas `FRC_*`. |
 
-La tabla staging/OCR creada fuera de Netagro con unas 97 columnas no debe confundirse con la tabla real. Esa tabla mezcla:
+La tabla staging/OCR creada fuera de ERP con unas 97 columnas no debe confundirse con la tabla real. Esa tabla mezcla:
 
 | Bloque de columnas staging | Naturaleza |
 |---|---|
-| `id`, `archivo_pdf_id`, `duplicada_de`, `estado`, `created_at`, `updated_at` | Control interno de la app OCR/Supabase. No existe asi en Netagro. |
-| `proveedor_nombre`, `proveedor_nif`, `source_pdf_name`, `email_*`, `confidence`, `extraction`, `validation_errors` | Metadatos de extraccion OCR y correo. No existe asi en Netagro. |
-| Columnas `FRR_*`, `FechaVto`, `ImporteVto` | Borrador/copia nullable de los campos reales de `netagrocomer.facturasrecibidas`. |
-| `netagro_sent_at`, `netagro_response`, `netagro_error` | Estado de sincronizacion hacia Netagro. No existe en Netagro. |
+| `id`, `archivo_pdf_id`, `duplicada_de`, `estado`, `created_at`, `updated_at` | Control interno de la app OCR/Supabase. No existe asi en ERP. |
+| `proveedor_nombre`, `proveedor_nif`, `source_pdf_name`, `email_*`, `confidence`, `extraction`, `validation_errors` | Metadatos de extraccion OCR y correo. No existe asi en ERP. |
+| Columnas `FRR_*`, `FechaVto`, `ImporteVto` | Borrador/copia nullable de los campos reales de `erpcomer.facturasrecibidas`. |
+| `erp_sent_at`, `erp_response`, `erp_error` | Estado de sincronizacion hacia ERP. No existe en ERP. |
 
 Conclusion: esa tabla staging puede ser correcta como bandeja de trabajo para OCR, pero la documentacion de integracion debe tratarla como capa intermedia. El modelo real de destino es `facturasrecibidas` + `facturasrecibidas_ctb` + `acreedores`.
 
 Para OCR de facturas recibidas, contrastar:
 
-| Dato OCR | Tabla/campo Netagro |
+| Dato OCR | Tabla/campo ERP |
 |---|---|
 | Nombre proveedor | `acreedores.ACR_Nombre` |
 | NIF/CIF/VAT proveedor | `acreedores.ACR_Nif` |
@@ -342,7 +342,7 @@ Para OCR de facturas recibidas, contrastar:
 | Vencimientos | `FechaVto`/`ImporteVto`, `FRR_FechaVto1..3`, `FRR_ImporteVto1..3` |
 | Tipo/serie interna | `FRR_tipofactura`, `FRR_numero`, `FRR_IdTipoDoc` |
 
-En la copia local no hay duplicados para la combinacion `FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura` excluyendo numero vacio. Por tanto, esa combinacion es buena para detectar duplicados en staging, aunque Netagro no declara esa restriccion unica en su DDL.
+En la copia local no hay duplicados para la combinacion `FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura` excluyendo numero vacio. Por tanto, esa combinacion es buena para detectar duplicados en staging, aunque ERP no declara esa restriccion unica en su DDL.
 
 ## Ejemplos reales
 
@@ -550,7 +550,7 @@ Buscar cliente por NIF/VAT:
 SELECT CLI_Idcliente, CLI_Nombre, CLI_Nif, CLI_Mail,
        CLI_Domicilio, CLI_Poblacion, CLI_IdPais,
        CLI_bloqueo, CLI_InactivoRGPD
-FROM netagrocomer.clientes
+FROM erpcomer.clientes
 WHERE CLI_Nif LIKE ?;
 ```
 
@@ -559,7 +559,7 @@ Buscar cliente por texto flexible:
 ```sql
 SELECT CLI_Idcliente, CLI_Nombre, CLI_Nif, CLI_Mail,
        CLI_Domicilio, CLI_Poblacion, CLI_IdPais
-FROM netagrocomer.clientes
+FROM erpcomer.clientes
 WHERE CLI_Nombre LIKE ?
    OR CLI_Nif LIKE ?
    OR CLI_CodigoEdi LIKE ?
@@ -575,8 +575,8 @@ Factura con cliente:
 SELECT f.FRA_idfactura, f.FRA_serie, f.FRA_factura, f.FRA_fecha,
        f.FRA_idcliente, c.CLI_Nombre, c.CLI_Nif,
        f.FRA_totalfactura, f.FRA_RefCliente, f.FRA_RefVentas
-FROM netagrocomer.facturas f
-JOIN netagrocomer.clientes c ON c.CLI_Idcliente = f.FRA_idcliente
+FROM erpcomer.facturas f
+JOIN erpcomer.clientes c ON c.CLI_Idcliente = f.FRA_idcliente
 WHERE f.FRA_idcliente = ?
   AND f.FRA_serie = ?
   AND f.FRA_factura = ?;
@@ -589,8 +589,8 @@ SELECT f.FRA_idfactura, f.FRA_serie, f.FRA_factura, f.FRA_fecha,
        f.FRA_idcliente, f.FRA_totalfactura,
        a.ASA_idalbaran, a.ASA_serie, a.ASA_albaran,
        a.ASA_fechasalida, a.ASA_idpedido, a.ASA_referencia
-FROM netagrocomer.facturas f
-JOIN netagrocomer.albsalida a ON a.ASA_idfactura = f.FRA_idfactura
+FROM erpcomer.facturas f
+JOIN erpcomer.albsalida a ON a.ASA_idfactura = f.FRA_idfactura
 WHERE f.FRA_idfactura = ?;
 ```
 
@@ -598,8 +598,8 @@ Albaran de salida completo:
 
 ```sql
 SELECT a.*, l.*
-FROM netagrocomer.albsalida a
-JOIN netagrocomer.albsalida_lineas l ON l.ASL_idalbaran = a.ASA_idalbaran
+FROM erpcomer.albsalida a
+JOIN erpcomer.albsalida_lineas l ON l.ASL_idalbaran = a.ASA_idalbaran
 WHERE a.ASA_idalbaran = ?;
 ```
 
@@ -607,8 +607,8 @@ Albaran de entrada completo:
 
 ```sql
 SELECT e.*, l.*
-FROM netagrocomer.albentrada e
-JOIN netagrocomer.albentrada_lineas l ON l.AEL_idalbaran = e.AEN_idalbaran
+FROM erpcomer.albentrada e
+JOIN erpcomer.albentrada_lineas l ON l.AEL_idalbaran = e.AEN_idalbaran
 WHERE e.AEN_idalbaran = ?;
 ```
 
@@ -616,8 +616,8 @@ Factura de agricultor con partidas:
 
 ```sql
 SELECT f.*, l.*
-FROM netagrocomer.facturaagr f
-JOIN netagrocomer.facturaagr_lineas l ON l.FAL_idfactura = f.FGR_idfactura
+FROM erpcomer.facturaagr f
+JOIN erpcomer.facturaagr_lineas l ON l.FAL_idfactura = f.FGR_idfactura
 WHERE f.FGR_idfactura = ?;
 ```
 
@@ -626,7 +626,7 @@ Buscar acreedor/proveedor por NIF:
 ```sql
 SELECT ACR_Codigo, ACR_Nombre, ACR_Nif, ACR_Mail,
        ACR_IdCuenta, ACR_Cuentagasto, ACR_Bloqueado, ACR_InactivoRGPD
-FROM netagrocomer.acreedores
+FROM erpcomer.acreedores
 WHERE ACR_Nif LIKE ?;
 ```
 
@@ -638,8 +638,8 @@ SELECT f.FRR_id, f.FRR_numero, f.FRR_fechafactura, f.FRR_numerofactura,
        a.ACR_Nombre, a.ACR_Nif,
        f.FRR_base1, f.FRR_iva1, f.FRR_cuota1, f.FRR_totalfac,
        f.FRR_tipofactura, f.FRR_idcuenta, f.FRR_Concepto
-FROM netagrocomer.facturasrecibidas f
-LEFT JOIN netagrocomer.acreedores a ON a.ACR_Codigo = f.FRR_idproveedor
+FROM erpcomer.facturasrecibidas f
+LEFT JOIN erpcomer.acreedores a ON a.ACR_Codigo = f.FRR_idproveedor
 WHERE f.FRR_idproveedor = ?
   AND f.FRR_numerofactura = ?;
 ```
@@ -650,7 +650,7 @@ Desglose contable de una factura recibida:
 SELECT c.FRC_id, c.FRC_idfacturarecibida, c.FRC_Importe, c.FRC_Cuenta,
        c.FRC_IdActividad, c.FRC_Idseccion,
        c.FRC_Iddepartamento, c.FRC_Idsubdepartamento
-FROM netagrocomer.facturasrecibidas_ctb c
+FROM erpcomer.facturasrecibidas_ctb c
 WHERE c.FRC_idfacturarecibida = ?
 ORDER BY c.FRC_id;
 ```
@@ -660,7 +660,7 @@ Deteccion de duplicados para staging OCR:
 ```sql
 SELECT FRR_Idempresa, FRR_ejercicio, FRR_idproveedor, FRR_numerofactura,
        COUNT(*) AS repeticiones
-FROM netagrocomer.facturasrecibidas
+FROM erpcomer.facturasrecibidas
 WHERE FRR_numerofactura <> ''
 GROUP BY FRR_Idempresa, FRR_ejercicio, FRR_idproveedor, FRR_numerofactura
 HAVING COUNT(*) > 1;
@@ -1143,7 +1143,7 @@ Cabecera de facturas recibidas de proveedores/acreedores.
 
 - Filas exactas en copia local: `48641`
 - Tamano aproximado: `30.59 MB`
-- Columnas reales en Netagro: `74`.
+- Columnas reales en ERP: `74`.
 - Clave tecnica: `FRR_id`.
 - Relacion con proveedor: `FRR_idproveedor = acreedores.ACR_Codigo`.
 - Identidad documental: `FRR_tipofactura` + `FRR_ejercicio` + `FRR_numero` es la numeracion interna; `FRR_numerofactura` es el numero de factura del proveedor.
@@ -1153,7 +1153,7 @@ Bloques funcionales:
 
 | Bloque | Campos principales | Uso |
 |---|---|---|
-| Identidad interna | `FRR_id`, `FRR_numero`, `FRR_tipofactura`, `FRR_ejercicio`, `FRR_IdTipoDoc` | Numeracion y clasificacion interna de Netagro. |
+| Identidad interna | `FRR_id`, `FRR_numero`, `FRR_tipofactura`, `FRR_ejercicio`, `FRR_IdTipoDoc` | Numeracion y clasificacion interna de ERP. |
 | Documento proveedor | `FRR_numerofactura`, `FRR_fechafactura`, `FRR_idproveedor`, `FRR_Concepto` | Lo que debe casar con OCR del PDF. |
 | Proveedor/cuenta | `FRR_idproveedor`, `FRR_idcuenta`, `FRR_IdBanco`, `FRR_IdFormaPago` | Relacion con `acreedores` y datos de pago/contabilidad. |
 | Impuestos | `FRR_base1..5`, `FRR_iva1..5`, `FRR_cuota1..5` | Bases y cuotas por tramos de IVA. |
@@ -1261,7 +1261,7 @@ Desglose contable de facturas recibidas.
 
 - Filas exactas en copia local: `37027`
 - Tamano aproximado: `3.88 MB`
-- Columnas reales en Netagro: `11`.
+- Columnas reales en ERP: `11`.
 - Clave tecnica: `FRC_id`.
 - Relacion logica: `FRC_idfacturarecibida = facturasrecibidas.FRR_id`.
 - Esta tabla no representa lineas OCR de producto/servicio. Representa imputaciones contables: importe, cuenta y dimensiones de actividad/seccion/departamento.
@@ -2048,8 +2048,8 @@ Campos:
 - No escribir nunca en produccion usando el usuario `sa`; crear usuario de aplicacion con permisos minimos y whitelisting de IP/tunel.
 - Para OCR de facturas de cliente, resolver primero `clientes` por `CLI_Nif`/`CLI_Nombre` y despues buscar `facturas` por `cliente_id`, `serie`, `numero`, `fecha` y `total`.
 - Para OCR de facturas recibidas, resolver primero `acreedores` por `ACR_Nif`/`ACR_Nombre`, despues validar `facturasrecibidas` por `FRR_idproveedor`, `FRR_numerofactura`, `FRR_fechafactura`, `FRR_totalfac` y tramos de IVA.
-- Mantener la tabla staging/OCR de 97 columnas como bandeja de trabajo, no como definicion del modelo Netagro. Sus metadatos (`estado`, `extraction`, `validation_errors`, `netagro_response`, etc.) son propios de la app y no deben enviarse ni asumirse como columnas ERP.
-- No hacer que staging tenga mas autoridad que Netagro: las columnas `FRR_*` deben mapearse 1:1 contra `facturasrecibidas` antes de cualquier envio, y `facturasrecibidas_ctb` debe generarse como tabla hija, no embutirse en JSON si se va a sincronizar con el ERP.
+- Mantener la tabla staging/OCR de 97 columnas como bandeja de trabajo, no como definicion del modelo ERP. Sus metadatos (`estado`, `extraction`, `validation_errors`, `erp_response`, etc.) son propios de la app y no deben enviarse ni asumirse como columnas ERP.
+- No hacer que staging tenga mas autoridad que ERP: las columnas `FRR_*` deben mapearse 1:1 contra `facturasrecibidas` antes de cualquier envio, y `facturasrecibidas_ctb` debe generarse como tabla hija, no embutirse en JSON si se va a sincronizar con el ERP.
 - Exponer como siguientes maestros de solo lectura: `gastos` para traducir `FGC_idgasto`/`ASG_idgasto`, maestro de generos/productos para `ASL_idgenero`, paises/divisas para etiquetas legibles y `clientesdescargas` si se necesita validar direcciones de entrega.
 - Si los PDFs son facturas recibidas de proveedores, documentar y exponer el flujo separado `acreedores` + `facturasrecibidas` + `facturasrecibidas_ctb`; no mezclarlo con el flujo de facturas emitidas a clientes.
 - Para facturar albaranes, validar primero el flujo real del ERP: campos `ASA_idfactura`, `ASA_idfacturaestimativa`, `ASA_idfacturanegativa`, `ASA_fechavaloracion`, `FRA_DefinitivaEstimativa` y asientos contables.

@@ -4,7 +4,7 @@ import {
   jsonResponse,
   requireRouteUser,
   signJwtHs256,
-} from "../_shared/facturas-recibidas-netagro.ts";
+} from "../_shared/facturas-recibidas-erp.ts";
 
 const DEFAULT_READ_WEBHOOK_URL = "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma";
 const DEFAULT_EXP_SECONDS = 300;
@@ -22,7 +22,9 @@ const isAllowedConsulta = (consulta: string) => {
   const [path] = consulta.split("?", 1);
   return (
     /^acreedores(?:\/\d+)?$/.test(path) ||
+    path === "empresas" ||
     /^facturasrecibidas(?:\/\d+(?:\/ctb)?)?$/.test(path) ||
+    path === "facturasrecibidas/tipos" ||
     path === "facturasrecibidas_ctb"
   );
 };

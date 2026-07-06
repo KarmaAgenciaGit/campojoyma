@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ChevronsUpDown,
   Filter,
   FileText,
   Loader2,
@@ -21,41 +22,41 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { FilterSelect } from '../components/FilterSelect';
-import { Button } from '../components/ui/button';
+import { FilterSelect, type FilterSelectOption } from '../components/FilterSelect';
+import { AcreedorCombobox } from '../components/AcreedorCombobox';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import CustomSelect from '../components/ui/custom-select';
 import { PdfViewer } from '../components/PdfViewer';
 import {
   facturaEstadoLabels,
-  facturaGsbaseStatusLabels,
-  isFacturaInGys,
+  facturaERPStatusLabels,
+  isFacturaInERP,
   isFacturaUnprocessedUploadDraft,
-  type FacturaGsbaseStatus,
+  type FacturaERPStatus,
 } from '../lib/facturasSummary';
 import {
   cleanupFacturaRecibidaUpload,
-  type FacturaIaExtraccion,
   type LocalizarProveedorResponse,
+  type FacturaEmpresaOption,
+  type FacturaTipoOption,
   fetchFacturaRecibidaById,
-  fetchFacturaRecibidaGsBasePayloadPreview,
+  fetchFacturaRecibidaERPPayloadPreview,
   fetchFacturasRecibidas,
   getFacturaPdfSignedUrl,
   extractFacturaWithN8n,
-  isNetagroReadOnlyFactura,
-  localizarProveedorGsBase,
+  isERPReadOnlyFactura,
+  localizarProveedorERP,
   saveFacturaRecibida,
-  sendFacturaRecibidaToGsBase,
+  sendFacturaRecibidaToERP,
   uploadFacturaPdf,
 } from '../services/facturas';
 import type { FacturaRecibida, FacturaRecibidaEstado, FacturaRecibidaLinea } from '../services/apiContracts';
+import type { AgroIrisAcreedor } from '../services/agroirisAcreedores';
 
 type FacturaDraft = Partial<FacturaRecibida>;
 
@@ -77,9 +78,16 @@ type ModalMessage = {
 };
 
 type FacturaSortOrder = 'created_desc' | 'created_asc' | 'fecha_desc' | 'fecha_asc' | 'total_desc' | 'total_asc';
-type FacturaGsbaseListState = 'registered' | 'unregistered' | 'checking' | 'unknown';
+type FacturaERPListState = 'registered' | 'unregistered' | 'checking' | 'unknown';
 type FacturaUploadStep = 'idle' | 'uploading' | 'analyzing' | 'done';
-type ProviderLookupState = 'idle' | 'available' | 'searching';
+
+declare global {
+  interface Window {
+    bodyenviar?: () => Promise<Record<string, unknown>>;
+    bodyEnviar?: () => Promise<Record<string, unknown>>;
+    bodyenviarjson?: () => Promise<string>;
+  }
+}
 
 const PAGE_SIZE_OPTIONS = ['25', '50', '100'];
 const DEFAULT_PAGE_SIZE = 25;
@@ -100,18 +108,34 @@ const estadoOptions: { value: 'todos' | FacturaRecibidaEstado; label: string }[]
   { value: 'borrador', label: 'Borrador' },
   { value: 'pendiente_revision', label: 'Pendiente revision' },
   { value: 'validada', label: 'Validada' },
-  { value: 'enviada_gsbase', label: 'Enviada' },
-  { value: 'error_gsbase', label: 'Error de envio' },
+  { value: 'enviada_erp', label: 'Enviada' },
+  { value: 'error_erp', label: 'Error de envio' },
   { value: 'descartada', label: 'Descartada' },
 ];
 
-const ivaOptions = [
-  { value: '21', label: '21%' },
-  { value: '10', label: '10%' },
-  { value: '4', label: '4%' },
+const estadoLabels = facturaEstadoLabels;
+
+const fallbackEmpresaOptions: FacturaEmpresaOption[] = [
+  {
+    id: '1',
+    nombre: 'CAMPOJOYMA, S.L.',
+    cif: 'B04493482',
+    label: '1 - CAMPOJOYMA, S.L.',
+  },
 ];
 
-const estadoLabels = facturaEstadoLabels;
+const fallbackTipoFacturaOptions: FacturaTipoOption[] = [
+  'OT',
+  'GE',
+  'MA',
+  'GV',
+  'FI',
+  'GC',
+  'CE',
+  'FZ',
+  'CX',
+  'GM',
+].map((value) => ({ value, label: value }));
 
 const emptyFilters: FacturaFilters = {
   proveedor: '',
@@ -130,21 +154,18 @@ const createEmptyDraft = (): FacturaDraft => ({
   proveedor_nombre: '',
   proveedor_nif: '',
   proveedor_codigo: '',
+  proveedor_cuenta: '',
   numero_factura: '',
   referencia: '',
-  fr_alm: '00',
-  fr_sufa: 'A',
+  fr_alm: '1',
+  fr_sufa: '',
   fecha_factura: '',
   base_imponible: null,
+  iva_porcentaje: null,
   iva_importe: null,
   retencion_porcentaje: 0,
   retencion_importe: 0,
-  descuento_general: 0,
-  descuento_pronto_pago: 0,
   total: null,
-  pendiente_pago: 0,
-  albaranes: '',
-  email_remitente: '',
   asunto_email: '',
   pdf_path: null,
   pdf_nombre: null,
@@ -156,9 +177,10 @@ const createEmptyDraft = (): FacturaDraft => ({
 const createEmptyLinea = (posicion = 1): FacturaRecibidaLinea => ({
   posicion,
   descripcion: '',
-  iva: 21,
   importe: 0,
 });
+
+const ACCOUNTING_AMOUNT_TOLERANCE = 0.01;
 
 const inputClass =
   'h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition-colors placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-border dark:bg-background dark:text-foreground dark:placeholder:text-muted-foreground dark:focus:border-primary dark:focus:ring-primary/20 dark:disabled:bg-slate-900/60';
@@ -225,40 +247,23 @@ const parseNumber = (value: string) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const parseMaybeNumber = (value: number | string | null | undefined) => {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-
-  if (typeof value === 'string') {
-    return parseNumber(value);
-  }
-
-  return null;
-};
-
 const cleanOptionalString = (value: string | null | undefined) => {
   const cleaned = (value ?? '').trim();
   return cleaned || null;
 };
 
-const normalizeExtractedDate = (value: string | null | undefined) => {
-  const cleaned = cleanOptionalString(value);
-  if (!cleaned) {
-    return null;
-  }
+const hasAccountingLineData = (linea: FacturaRecibidaLinea) =>
+  Boolean(cleanOptionalString(linea.descripcion)) || Math.abs(Number(linea.importe) || 0) > ACCOUNTING_AMOUNT_TOLERANCE;
 
-  const isoMatch = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (isoMatch) {
-    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
-  }
+const shouldOpenAccountingBreakdownFor = (
+  factura: FacturaDraft | null | undefined,
+  lineas: FacturaRecibidaLinea[],
+) => {
+  const lineCount = lineas.filter(hasAccountingLineData).length;
+  const lineTotal = lineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
+  const base = Number(factura?.base_imponible ?? 0);
 
-  const spanishMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (spanishMatch) {
-    return `${spanishMatch[3]}-${spanishMatch[2].padStart(2, '0')}-${spanishMatch[1].padStart(2, '0')}`;
-  }
-
-  return cleaned;
+  return lineCount === 0 || lineCount > 1 || Math.abs(lineTotal - base) > ACCOUNTING_AMOUNT_TOLERANCE;
 };
 
 const invoiceNumber = (factura: Partial<FacturaRecibida>) =>
@@ -274,6 +279,7 @@ type ProveedorLookupMatch = {
   codigo: string;
   nombre: string | null;
   nif: string | null;
+  cuenta: string | null;
 };
 
 const readLookupString = (record: Record<string, unknown>, keys: string[]) => {
@@ -291,7 +297,7 @@ const readLookupString = (record: Record<string, unknown>, keys: string[]) => {
 };
 
 const extractProveedorLookupMatch = (response: LocalizarProveedorResponse): ProveedorLookupMatch | null => {
-  const datos = response.gsbase_response?.datos;
+  const datos = response.erp_response?.datos;
   if (typeof datos !== 'object' || datos === null || Array.isArray(datos)) {
     return null;
   }
@@ -306,6 +312,7 @@ const extractProveedorLookupMatch = (response: LocalizarProveedorResponse): Prov
     codigo,
     nombre: readLookupString(record, ['nombre', 'NOMBRE', 'razon_social', 'RAZON_SOCIAL']),
     nif: readLookupString(record, ['cif', 'CIF', 'nif', 'NIF']),
+    cuenta: readLookupString(record, ['cuenta', 'CUENTA', 'ACR_Cuenta', 'FRR_idcuenta']),
   };
 };
 
@@ -314,6 +321,7 @@ const applyProveedorLookupMatch = (factura: FacturaDraft, match: ProveedorLookup
   proveedor_codigo: match.codigo,
   proveedor_nombre: match.nombre ?? factura.proveedor_nombre ?? null,
   proveedor_nif: match.nif ?? factura.proveedor_nif ?? null,
+  proveedor_cuenta: match.cuenta ?? factura.proveedor_cuenta ?? null,
 });
 
 const locateProveedorForFactura = async (factura: FacturaDraft) => {
@@ -329,9 +337,9 @@ const locateProveedorForFactura = async (factura: FacturaDraft) => {
     };
   }
 
-  const response = await localizarProveedorGsBase({ nif, nombre });
+  const response = await localizarProveedorERP({ nif, nombre });
   const match = extractProveedorLookupMatch(response);
-  const datos = response.gsbase_response?.datos;
+  const datos = response.erp_response?.datos;
 
   return {
     factura: match ? applyProveedorLookupMatch(factura, match) : factura,
@@ -341,98 +349,101 @@ const locateProveedorForFactura = async (factura: FacturaDraft) => {
   };
 };
 
-const gsbaseStateForInvoice = (
+const acreedorIdFromDraft = (factura: FacturaDraft | null | undefined) => {
+  const parsed = Number(factura?.proveedor_codigo ?? '');
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+};
+
+const proveedorDraftFromAcreedor = (acreedor: AgroIrisAcreedor | null): Pick<
+  FacturaDraft,
+  'proveedor_codigo' | 'proveedor_nombre' | 'proveedor_nif' | 'proveedor_cuenta'
+> => {
+  if (!acreedor) {
+    return {
+      proveedor_codigo: '',
+      proveedor_nombre: '',
+      proveedor_nif: '',
+      proveedor_cuenta: '',
+    };
+  }
+
+  return {
+    proveedor_codigo: String(acreedor.acreedorid),
+    proveedor_nombre: cleanOptionalString(acreedor.nombre_comercial) ?? cleanOptionalString(acreedor.nombre_sujeto) ?? null,
+    proveedor_nif: cleanOptionalString(acreedor.identificador_fiscal),
+    proveedor_cuenta: cleanOptionalString(acreedor.cuenta_contable ?? acreedor.referencia),
+  };
+};
+
+const erpStateForInvoice = (
   factura: FacturaRecibida,
-  externalState?: FacturaGsbaseListState,
-): FacturaGsbaseListState => {
+  externalState?: FacturaERPListState,
+): FacturaERPListState => {
   if (externalState) return externalState;
-  if (factura.estado === 'enviada_gsbase' || factura.gsbase_sent_at) return 'registered';
-  if (factura.estado === 'error_gsbase') return 'unregistered';
-  if (factura.estado === 'validada' || factura.gsbase_payload) return 'unregistered';
+  if (factura.estado === 'enviada_erp' || factura.erp_sent_at) return 'registered';
+  if (factura.estado === 'error_erp') return 'unregistered';
+  if (factura.estado === 'validada' || factura.erp_payload) return 'unregistered';
   return 'unknown';
 };
 
-const gsbaseStatusMeta = (state: FacturaGsbaseListState) => {
+const erpStatusMeta = (state: FacturaERPListState) => {
   if (state === 'registered') {
     return {
-      text: 'Enviado a Netagro',
+      text: 'Enviado a ERP',
       className: 'text-emerald-700 dark:text-emerald-300',
     };
   }
 
   if (state === 'unregistered') {
     return {
-      text: 'No enviado a Netagro',
+      text: 'No enviado a ERP',
       className: 'text-amber-700 dark:text-amber-300',
     };
   }
 
   if (state === 'checking') {
     return {
-      text: 'Comprobando Netagro',
+      text: 'Comprobando ERP',
       className: 'text-slate-500 dark:text-slate-300',
     };
   }
 
   return {
-    text: 'No enviado a Netagro',
+    text: 'No enviado a ERP',
     className: 'text-amber-700 dark:text-amber-300',
   };
 };
 
-const buildFacturaFromExtraction = (base: FacturaDraft, extraction: FacturaIaExtraccion) => {
-  const next: FacturaDraft = { ...base };
-  const assignString = <TKey extends keyof FacturaDraft>(key: TKey, value: string | null | undefined) => {
-    const cleaned = cleanOptionalString(value);
-    if (cleaned) {
-      next[key] = cleaned as FacturaDraft[TKey];
-    }
-  };
-  const assignNumber = <TKey extends keyof FacturaDraft>(key: TKey, value: number | string | null | undefined) => {
-    const parsed = parseMaybeNumber(value);
-    if (parsed !== null) {
-      next[key] = parsed as FacturaDraft[TKey];
-    }
-  };
-
-  assignString('proveedor_nombre', extraction.proveedor_nombre);
-  assignString('proveedor_nif', extraction.proveedor_nif);
-  assignString('proveedor_codigo', extraction.proveedor_codigo);
-  assignString('numero_factura', extraction.numero_factura);
-  assignString('referencia', extraction.referencia);
-  assignString('fr_alm', extraction.fr_alm);
-  assignString('fr_sufa', extraction.fr_sufa);
-  assignString('albaranes', extraction.albaranes);
-  assignString('email_remitente', extraction.email_remitente);
-  assignString('asunto_email', extraction.asunto_email);
-  assignNumber('base_imponible', extraction.base_imponible);
-  assignNumber('iva_importe', extraction.iva_importe);
-  assignNumber('retencion_porcentaje', extraction.retencion_porcentaje);
-  assignNumber('retencion_importe', extraction.retencion_importe);
-  assignNumber('descuento_general', extraction.descuento_general);
-  assignNumber('descuento_pronto_pago', extraction.descuento_pronto_pago);
-  assignNumber('total', extraction.total);
-  assignNumber('pendiente_pago', extraction.pendiente_pago);
-
-  if (!next.estado || next.estado === 'borrador') {
-    next.estado = 'pendiente_revision';
+const buildEmpresaOptions = (
+  empresas: FacturaEmpresaOption[],
+  currentValue?: string | null,
+): FilterSelectOption[] => {
+  const source = empresas.length ? empresas : fallbackEmpresaOptions;
+  const options = source.map((empresa) => ({
+    value: empresa.id,
+    label: empresa.label,
+  }));
+  const current = cleanOptionalString(currentValue);
+  if (current && !options.some((option) => option.value === current)) {
+    options.unshift({ value: current, label: current });
   }
+  return options;
+};
 
-  const normalizedDate = normalizeExtractedDate(extraction.fecha_factura);
-  if (normalizedDate) {
-    next.fecha_factura = normalizedDate;
+const buildTipoFacturaOptions = (
+  tipos: FacturaTipoOption[],
+  currentValue?: string | null,
+): FilterSelectOption[] => {
+  const source = tipos.length ? tipos : fallbackTipoFacturaOptions;
+  const options: FilterSelectOption[] = [...source];
+  const current = cleanOptionalString(currentValue);
+  if (current && !options.some((option) => option.value === current)) {
+    options.unshift({ value: current, label: current });
   }
-
-  const extractedLineas = extraction.lineas?.length
-    ? extraction.lineas.map((linea, index) => ({
-        posicion: index + 1,
-        descripcion: cleanOptionalString(linea.descripcion) ?? '',
-        iva: parseMaybeNumber(linea.iva) ?? 21,
-        importe: parseMaybeNumber(linea.importe) ?? 0,
-      }))
-    : null;
-
-  return { factura: next, lineas: extractedLineas };
+  if (!current) {
+    options.unshift({ value: '', label: 'Sin tipo' });
+  }
+  return options;
 };
 
 const getLineas = (factura?: FacturaRecibida | null) =>
@@ -446,29 +457,25 @@ const createEditorSnapshot = (factura: FacturaDraft | null, lineas: FacturaRecib
       proveedor_nombre: factura?.proveedor_nombre ?? null,
       proveedor_nif: factura?.proveedor_nif ?? null,
       proveedor_codigo: factura?.proveedor_codigo ?? null,
-      email_remitente: factura?.email_remitente ?? null,
+      proveedor_cuenta: factura?.proveedor_cuenta ?? null,
       numero_factura: factura?.numero_factura ?? null,
       referencia: factura?.referencia ?? null,
       fecha_factura: factura?.fecha_factura ?? null,
       documento_codigo: factura?.documento_codigo ?? null,
       fr_alm: factura?.fr_alm ?? null,
       fr_sufa: factura?.fr_sufa ?? null,
-      albaranes: factura?.albaranes ?? null,
       asunto_email: factura?.asunto_email ?? null,
       base_imponible: factura?.base_imponible ?? null,
+      iva_porcentaje: factura?.iva_porcentaje ?? null,
       iva_importe: factura?.iva_importe ?? null,
       retencion_porcentaje: factura?.retencion_porcentaje ?? null,
       retencion_importe: factura?.retencion_importe ?? null,
-      descuento_general: factura?.descuento_general ?? null,
-      descuento_pronto_pago: factura?.descuento_pronto_pago ?? null,
       total: factura?.total ?? null,
-      pendiente_pago: factura?.pendiente_pago ?? null,
     },
     lineas: lineas.map((linea, index) => ({
       id: linea.id ?? null,
       posicion: linea.posicion ?? index + 1,
       descripcion: linea.descripcion ?? '',
-      iva: linea.iva ?? null,
       importe: linea.importe ?? null,
     })),
   });
@@ -500,7 +507,7 @@ type FacturaListItemProps = {
   factura: FacturaRecibida;
   isSelected: boolean;
   isReadOnly?: boolean;
-  gsbaseRegistrationState?: FacturaGsbaseListState;
+  erpRegistrationState?: FacturaERPListState;
   loadingFacturaId?: string | null;
   onOpen: (factura: FacturaRecibida) => Promise<void> | void;
   onDelete: (factura: FacturaRecibida) => Promise<void> | void;
@@ -510,16 +517,16 @@ function FacturaListItem({
   factura,
   isSelected,
   isReadOnly = false,
-  gsbaseRegistrationState,
+  erpRegistrationState,
   loadingFacturaId = null,
   onOpen,
   onDelete,
 }: FacturaListItemProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const lineCount = factura.facturas_recibidas_lineas?.length ?? 0;
-  const invoiceStatus = gsbaseStatusMeta(gsbaseStateForInvoice(factura, gsbaseRegistrationState));
-  const gsbaseStatus: FacturaGsbaseStatus = isFacturaInGys(factura) ? 'en_gys' : 'fuera_gys';
-  const hasErrors = Boolean(factura.validation_errors?.length || factura.gsbase_error);
+  const invoiceStatus = erpStatusMeta(erpStateForInvoice(factura, erpRegistrationState));
+  const erpStatus: FacturaERPStatus = isFacturaInERP(factura) ? 'en_erp' : 'fuera_erp';
+  const hasErrors = Boolean(factura.validation_errors?.length || factura.erp_error);
   const isBusy = loadingFacturaId === factura.id;
 
   const handleDeleteClick = async (event: MouseEvent<HTMLButtonElement>) => {
@@ -555,7 +562,7 @@ function FacturaListItem({
               Factura {invoiceNumber(factura)}
             </h3>
             <span className={`text-xs font-semibold ${invoiceStatus.className}`}>
-              {facturaGsbaseStatusLabels[gsbaseStatus]}
+              {facturaERPStatusLabels[erpStatus]}
             </span>
             {hasErrors ? (
               <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 dark:text-red-300">
@@ -715,11 +722,9 @@ const Facturas = () => {
   const [draft, setDraft] = useState<FacturaDraft | null>(null);
   const [lineas, setLineas] = useState<FacturaRecibidaLinea[]>([createEmptyLinea()]);
   const [lastSavedEditorSnapshot, setLastSavedEditorSnapshot] = useState<string | null>(null);
-  const providerLookupRunRef = useRef(0);
-  const gsbasePayloadPreviewRunRef = useRef(0);
+  const erpPayloadPreviewRunRef = useRef(0);
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
-  const [providerLookupState, setProviderLookupState] = useState<ProviderLookupState>('idle');
   const [extractingIa, setExtractingIa] = useState(false);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -728,8 +733,9 @@ const Facturas = () => {
   const [modalMessage, setModalMessage] = useState<ModalMessage | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [showAccountingBreakdown, setShowAccountingBreakdown] = useState(false);
   const [busyFacturaId, setBusyFacturaId] = useState<string | null>(null);
-  const [gsbaseRegistrationByFacturaId, setGsbaseRegistrationByFacturaId] = useState<Record<string, FacturaGsbaseListState>>({});
+  const [erpRegistrationByFacturaId, setERPRegistrationByFacturaId] = useState<Record<string, FacturaERPListState>>({});
 
   const isNewFacturaDraft = Boolean(draft && !draft.id);
   const isDetailMode = Boolean(draft?.id && !modalOpen);
@@ -740,8 +746,15 @@ const Facturas = () => {
     isDetailMode && lastSavedEditorSnapshot && currentEditorSnapshot !== lastSavedEditorSnapshot,
   );
   const visibleErrors = draft?.validation_errors ?? [];
-  const ivaSummary = Array.from(new Set(lineas.map((linea) => Number(linea.iva || 0)).filter(Boolean))).join(', ');
   const pageSizeOptions = PAGE_SIZE_OPTIONS.map((option) => ({ value: option, label: `${option} por pagina` }));
+  const empresaOptions = useMemo(
+    () => buildEmpresaOptions(fallbackEmpresaOptions, draft?.fr_alm),
+    [draft?.fr_alm],
+  );
+  const tipoFacturaOptions = useMemo(
+    () => buildTipoFacturaOptions(fallbackTipoFacturaOptions, draft?.fr_sufa),
+    [draft?.fr_sufa],
+  );
 
   useEffect(() => {
     if (!saveFeedback) {
@@ -767,6 +780,12 @@ const Facturas = () => {
     setSaveFeedback(null);
   }, [activeDraftId]);
 
+  useEffect(() => {
+    if (draft && shouldOpenAccountingBreakdownFor(draft, lineas)) {
+      setShowAccountingBreakdown(true);
+    }
+  }, [draft?.base_imponible, draft?.id, lineas]);
+
   const loadFacturas = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -774,11 +793,11 @@ const Facturas = () => {
     try {
       const loaded = await fetchFacturasRecibidas();
       setFacturas(loaded);
-      setGsbaseRegistrationByFacturaId(
-        loaded.reduce<Record<string, FacturaGsbaseListState>>((acc, factura) => {
-          if (factura.estado === 'enviada_gsbase' || factura.gsbase_sent_at) {
+      setERPRegistrationByFacturaId(
+        loaded.reduce<Record<string, FacturaERPListState>>((acc, factura) => {
+          if (factura.estado === 'enviada_erp' || factura.erp_sent_at) {
             acc[factura.id] = 'registered';
-          } else if (factura.estado === 'validada' || factura.estado === 'error_gsbase' || factura.gsbase_payload) {
+          } else if (factura.estado === 'validada' || factura.estado === 'error_erp' || factura.erp_payload) {
             acc[factura.id] = 'unregistered';
           }
           return acc;
@@ -804,8 +823,8 @@ const Facturas = () => {
       if (draft?.id) {
         setDraft(null);
         setLineas([createEmptyLinea()]);
+        setShowAccountingBreakdown(false);
         setLastSavedEditorSnapshot(null);
-        setProviderLookupState('idle');
         setPdfFile(null);
         setPdfUrl(null);
         setFacturaUploadStep('idle');
@@ -822,8 +841,8 @@ const Facturas = () => {
     if (!factura) {
       setDraft(null);
       setLineas([createEmptyLinea()]);
+      setShowAccountingBreakdown(false);
       setLastSavedEditorSnapshot(null);
-      setProviderLookupState('idle');
       setPdfFile(null);
       setPdfUrl(null);
       setFacturaUploadStep('idle');
@@ -834,7 +853,7 @@ const Facturas = () => {
 
     if (
       draft?.id === factura.id &&
-      (!isNetagroReadOnlyFactura(factura) || (draft.facturas_recibidas_lineas?.length ?? 0) > 0)
+      (!isERPReadOnlyFactura(factura) || (draft.facturas_recibidas_lineas?.length ?? 0) > 0)
     ) {
       return;
     }
@@ -844,8 +863,8 @@ const Facturas = () => {
       const facturaLineas = getLineas(facturaToOpen);
       setDraft({ ...facturaToOpen });
       setLineas(facturaLineas);
+      setShowAccountingBreakdown(shouldOpenAccountingBreakdownFor(facturaToOpen, facturaLineas));
       setLastSavedEditorSnapshot(createEditorSnapshot(facturaToOpen, facturaLineas));
-      setProviderLookupState('idle');
       setPdfFile(null);
       setPdfUrl(null);
       setFacturaUploadStep('idle');
@@ -856,7 +875,7 @@ const Facturas = () => {
 
     setLoadError(null);
 
-    if (isNetagroReadOnlyFactura(factura)) {
+    if (isERPReadOnlyFactura(factura)) {
       setBusyFacturaId(factura.id);
       void fetchFacturaRecibidaById(factura.id)
         .then((detailedFactura) => {
@@ -893,38 +912,82 @@ const Facturas = () => {
   }, []);
 
   useEffect(() => {
+    const readPayload = async () => {
+      if (!activeDraftId || !isDetailMode) {
+        throw new Error('Abre el detalle de una factura para calcular el body de envio.');
+      }
+
+      const preview = await fetchFacturaRecibidaERPPayloadPreview(activeDraftId);
+      if (preview.validation_errors.length > 0) {
+        console.warn(
+          `[ERP] El envio real quedaria bloqueado por validacion para factura ${activeDraftId}:`,
+          preview.validation_errors,
+        );
+      }
+      console.log(`[ERP] Body de envio para factura ${activeDraftId}:`, preview.payload);
+      return preview.payload;
+    };
+
+    const readPayloadJson = async () => {
+      if (!activeDraftId || !isDetailMode) {
+        throw new Error('Abre el detalle de una factura para calcular el body de envio.');
+      }
+
+      const preview = await fetchFacturaRecibidaERPPayloadPreview(activeDraftId);
+      if (preview.validation_errors.length > 0) {
+        console.warn(
+          `[ERP] El envio real quedaria bloqueado por validacion para factura ${activeDraftId}:`,
+          preview.validation_errors,
+        );
+      }
+      console.log(preview.body_json);
+      return preview.body_json;
+    };
+
+    window.bodyenviar = readPayload;
+    window.bodyEnviar = readPayload;
+    window.bodyenviarjson = readPayloadJson;
+
+    return () => {
+      if (window.bodyenviar === readPayload) delete window.bodyenviar;
+      if (window.bodyEnviar === readPayload) delete window.bodyEnviar;
+      if (window.bodyenviarjson === readPayloadJson) delete window.bodyenviarjson;
+    };
+  }, [activeDraftId, isDetailMode]);
+
+  useEffect(() => {
     if (!activeDraftId || !isDetailMode) {
       return;
     }
 
     let active = true;
-    const runId = gsbasePayloadPreviewRunRef.current + 1;
-    gsbasePayloadPreviewRunRef.current = runId;
+    const runId = erpPayloadPreviewRunRef.current + 1;
+    erpPayloadPreviewRunRef.current = runId;
 
-    void fetchFacturaRecibidaGsBasePayloadPreview(activeDraftId)
+    void fetchFacturaRecibidaERPPayloadPreview(activeDraftId)
       .then((preview) => {
-        if (!active || gsbasePayloadPreviewRunRef.current !== runId) {
+        if (!active || erpPayloadPreviewRunRef.current !== runId) {
           return;
         }
 
         if (preview.validation_errors.length > 0) {
           console.warn(
-            `[ERP] Body calculado para factura ${activeDraftId}. El envio real quedaria bloqueado por validacion:`,
+            `[ERP] Payload calculado para factura ${activeDraftId}. El envio real quedaria bloqueado por validacion:`,
             preview.body_json,
             preview.validation_errors,
           );
           return;
         }
 
-        console.warn(`[ERP] Body exacto que se enviara al ERP para factura ${activeDraftId}:`, preview.body_json);
+        return;
       })
       .catch((error) => {
-        if (!active || gsbasePayloadPreviewRunRef.current !== runId) {
+        if (!active || erpPayloadPreviewRunRef.current !== runId) {
           return;
         }
 
         console.warn(
-          `[ERP] No se pudo calcular el body que se enviaria al ERP para factura ${activeDraftId}:`,
+          `[ERP] No se pudo calcular el payload que se enviaria al ERP para factura ${activeDraftId}:`,
           error instanceof Error ? error.message : error,
         );
       });
@@ -1104,8 +1167,8 @@ const Facturas = () => {
   const openNewFactura = () => {
     setDraft(createEmptyDraft());
     setLineas([createEmptyLinea()]);
+    setShowAccountingBreakdown(true);
     setLastSavedEditorSnapshot(null);
-    setProviderLookupState('idle');
     setPdfFile(null);
     setPdfUrl(null);
     setFacturaUploadStep('idle');
@@ -1121,8 +1184,8 @@ const Facturas = () => {
     setModalOpen(false);
     setDraft(null);
     setLineas([createEmptyLinea()]);
+    setShowAccountingBreakdown(false);
     setLastSavedEditorSnapshot(null);
-    setProviderLookupState('idle');
     setPdfFile(null);
     setPdfUrl(null);
     setFacturaUploadStep('idle');
@@ -1140,7 +1203,6 @@ const Facturas = () => {
       setDraft({ ...facturaToOpen });
       setLineas(facturaLineas);
       setLastSavedEditorSnapshot(createEditorSnapshot(facturaToOpen, facturaLineas));
-      setProviderLookupState('idle');
       setPdfFile(null);
       setPdfUrl(null);
       setModalMessage(null);
@@ -1157,8 +1219,8 @@ const Facturas = () => {
   const closeDetail = () => {
     setDraft(null);
     setLineas([createEmptyLinea()]);
+    setShowAccountingBreakdown(false);
     setLastSavedEditorSnapshot(null);
-    setProviderLookupState('idle');
     setPdfFile(null);
     setPdfUrl(null);
     setFacturaUploadStep('idle');
@@ -1171,70 +1233,8 @@ const Facturas = () => {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
-  const updateProviderIdentity = (key: 'proveedor_nombre' | 'proveedor_nif', value: string) => {
-    const nextNombre = key === 'proveedor_nombre' ? value : draft?.proveedor_nombre ?? '';
-    const nextNif = key === 'proveedor_nif' ? value : draft?.proveedor_nif ?? '';
-
-    providerLookupRunRef.current += 1;
-    setDraft((current) => (current ? { ...current, [key]: value, proveedor_codigo: '' } : current));
-    setProviderLookupState(cleanOptionalString(nextNombre) || cleanOptionalString(nextNif) ? 'available' : 'idle');
-  };
-
-  const runProviderLookup = async () => {
-    if (!draft || modalOpen) {
-      return;
-    }
-
-    const draftId = draft.id ?? null;
-    const nombre = cleanOptionalString(draft.proveedor_nombre);
-    const nif = cleanOptionalString(draft.proveedor_nif);
-
-    if (!nombre && !nif) {
-      setProviderLookupState('idle');
-      return;
-    }
-
-    const runId = providerLookupRunRef.current + 1;
-    providerLookupRunRef.current = runId;
-    setProviderLookupState('searching');
-    let nextLookupState: ProviderLookupState = 'idle';
-
-    try {
-      const lookup = await locateProveedorForFactura({ proveedor_nombre: nombre, proveedor_nif: nif });
-      if (!lookup.match) {
-        nextLookupState = 'available';
-        return;
-      }
-
-      const match = lookup.match;
-      setDraft((current) => {
-        if (!current || (current.id ?? null) !== draftId) {
-          return current;
-        }
-
-        if (cleanOptionalString(current.proveedor_nombre) !== nombre || cleanOptionalString(current.proveedor_nif) !== nif) {
-          return current;
-        }
-
-        return applyProveedorLookupMatch(current, match);
-      });
-    } catch {
-      // La busqueda de proveedor no debe bloquear la edicion manual de la factura.
-      nextLookupState = 'available';
-    } finally {
-      if (providerLookupRunRef.current === runId) {
-        setProviderLookupState(nextLookupState);
-      }
-    }
-  };
-
-  const handleProviderLookupKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
-      return;
-    }
-
-    event.preventDefault();
-    void runProviderLookup();
+  const selectProveedorAcreedor = (acreedor: AgroIrisAcreedor | null) => {
+    setDraft((current) => (current ? { ...current, ...proveedorDraftFromAcreedor(acreedor) } : current));
   };
 
   const updateLinea = <TKey extends keyof FacturaRecibidaLinea>(
@@ -1249,6 +1249,7 @@ const Facturas = () => {
 
   const addLinea = () => {
     setLineas((current) => [...current, createEmptyLinea(current.length + 1)]);
+    setShowAccountingBreakdown(true);
   };
 
   const removeLinea = (index: number) => {
@@ -1290,15 +1291,14 @@ const Facturas = () => {
       );
 
       setFacturas((current) => replaceFactura(current, saved));
-      setGsbaseRegistrationByFacturaId((current) => ({
+      setERPRegistrationByFacturaId((current) => ({
         ...current,
-        [saved.id]: saved.estado === 'enviada_gsbase' || saved.gsbase_sent_at ? 'registered' : 'unregistered',
+        [saved.id]: saved.estado === 'enviada_erp' || saved.erp_sent_at ? 'registered' : 'unregistered',
       }));
       const savedLineas = getLineas(saved);
       setDraft(saved);
       setLineas(savedLineas);
       setLastSavedEditorSnapshot(createEditorSnapshot(saved, savedLineas));
-      setProviderLookupState('idle');
       setPdfFile(null);
       const successMessage: ModalMessage = {
         type: saved.validation_errors?.length ? 'info' : 'success',
@@ -1325,7 +1325,7 @@ const Facturas = () => {
     }
   };
 
-  const handleSendGsBase = async () => {
+  const handleSendERP = async () => {
     setSending(true);
     setModalMessage(null);
     setSaveFeedback(null);
@@ -1358,14 +1358,13 @@ const Facturas = () => {
         return;
       }
 
-      const sent = await sendFacturaRecibidaToGsBase(saved.id);
+      const sent = await sendFacturaRecibidaToERP(saved.id);
       setFacturas((current) => replaceFactura(current, sent));
-      setGsbaseRegistrationByFacturaId((current) => ({ ...current, [sent.id]: 'registered' }));
+      setERPRegistrationByFacturaId((current) => ({ ...current, [sent.id]: 'registered' }));
       const sentLineas = getLineas(sent);
       setDraft(sent);
       setLineas(sentLineas);
       setLastSavedEditorSnapshot(createEditorSnapshot(sent, sentLineas));
-      setProviderLookupState('idle');
       setModalMessage({ type: 'success', text: 'Factura enviada correctamente.' });
     } catch (error) {
       setModalMessage({ type: 'error', text: error instanceof Error ? error.message : 'No se pudo enviar la factura.' });
@@ -1381,8 +1380,8 @@ const Facturas = () => {
     }
 
     const selectedPdf = pdfFile;
-    let createdFactura: FacturaRecibida | null = null;
     let uploadedPdfPath: string | null = null;
+    let shouldCleanupUploadedPdf = false;
 
     setSaving(true);
     setExtractingIa(true);
@@ -1393,24 +1392,16 @@ const Facturas = () => {
     try {
       const pdfMetadata = await uploadFacturaPdf(selectedPdf);
       uploadedPdfPath = pdfMetadata.pdf_path;
-      const initial = await saveFacturaRecibida({ ...createEmptyDraft(), ...pdfMetadata }, [], false);
-      createdFactura = initial;
-
-      const response = await extractFacturaWithN8n(initial);
-      if (!response.extraction) {
-        throw new Error('El analisis termino sin devolver datos de factura.');
-      }
-
-      const extracted = buildFacturaFromExtraction(initial, response.extraction);
-      const saved = await saveFacturaRecibida(extracted.factura, extracted.lineas ?? [], false);
+      shouldCleanupUploadedPdf = !pdfMetadata.pdf_reutilizado;
+      const saved = await extractFacturaWithN8n({ ...createEmptyDraft(), ...pdfMetadata });
       const savedLineas = getLineas(saved);
 
       setFacturas((current) => replaceFactura(current, saved));
-      setGsbaseRegistrationByFacturaId((current) => ({ ...current, [saved.id]: 'unregistered' }));
+      setERPRegistrationByFacturaId((current) => ({ ...current, [saved.id]: 'unregistered' }));
       setDraft(saved);
       setLineas(savedLineas);
+      setShowAccountingBreakdown(shouldOpenAccountingBreakdownFor(saved, savedLineas));
       setLastSavedEditorSnapshot(createEditorSnapshot(saved, savedLineas));
-      setProviderLookupState('idle');
       setPdfFile(null);
       setFacturaUploadStep('done');
       setModalOpen(false);
@@ -1419,32 +1410,28 @@ const Facturas = () => {
         type: 'success',
         text: 'Factura registrada. Revisa los datos antes de validar.',
       });
-    } catch {
+    } catch (error) {
       window.clearTimeout(analyzingTimer);
-      const cleanupFailed =
-        uploadedPdfPath || createdFactura?.id
-          ? await cleanupFacturaRecibidaUpload({
-              id: createdFactura?.id ?? null,
-              pdf_path: uploadedPdfPath,
-            })
-              .then(() => false)
-              .catch(() => true)
-          : false;
-
-      if (cleanupFailed && createdFactura?.id) {
-        await saveFacturaRecibida({ ...createdFactura, estado: 'descartada' }, [], false).catch(() => undefined);
-      }
+      const extractionCreatedFactura =
+        error instanceof Error && error.message.includes('No se pudo recuperar la factura creada');
+      const cleanupFailed = uploadedPdfPath && shouldCleanupUploadedPdf && !extractionCreatedFactura
+        ? await cleanupFacturaRecibidaUpload({ pdf_path: uploadedPdfPath })
+            .then(() => false)
+            .catch(() => true)
+        : false;
 
       setDraft(createEmptyDraft());
       setLineas([createEmptyLinea()]);
+      setShowAccountingBreakdown(true);
       setLastSavedEditorSnapshot(null);
-      setProviderLookupState('idle');
       setPdfFile(selectedPdf);
       setPdfUrl(null);
       setFacturaUploadStep('idle');
       setModalMessage({
         type: 'error',
-        text: 'Ha fallado al anadir la factura. Intentalo de nuevo.',
+        text: `${error instanceof Error ? error.message : 'Ha fallado al anadir la factura.'}${
+          cleanupFailed ? ' El PDF subido no se pudo limpiar automaticamente.' : ''
+        }`,
       });
     } finally {
       window.clearTimeout(analyzingTimer);
@@ -1454,8 +1441,8 @@ const Facturas = () => {
   };
 
   const handleDiscard = async () => {
-    if (isNetagroReadOnlyFactura(draft)) {
-      setModalMessage({ type: 'info', text: 'Esta factura viene de Netagro y se muestra en modo solo lectura.' });
+    if (isERPReadOnlyFactura(draft)) {
+      setModalMessage({ type: 'info', text: 'Esta factura viene de ERP y se muestra en modo solo lectura.' });
       return;
     }
 
@@ -1479,7 +1466,7 @@ const Facturas = () => {
   };
 
   const handleDiscardFromList = async (factura: FacturaRecibida) => {
-    if (isNetagroReadOnlyFactura(factura)) {
+    if (isERPReadOnlyFactura(factura)) {
       return;
     }
 
@@ -1531,12 +1518,22 @@ const Facturas = () => {
     setPdfFile(file);
   };
 
-  const detailGsbaseStatus = draft?.id
-    ? gsbaseStatusMeta(gsbaseStateForInvoice(draft as FacturaRecibida, gsbaseRegistrationByFacturaId[draft.id]))
-    : gsbaseStatusMeta('unknown');
-  const isReadOnlyDetail = isNetagroReadOnlyFactura(draft);
+  const detailERPStatus = draft?.id
+    ? erpStatusMeta(erpStateForInvoice(draft as FacturaRecibida, erpRegistrationByFacturaId[draft.id]))
+    : erpStatusMeta('unknown');
+  const isReadOnlyDetail = isERPReadOnlyFactura(draft);
   const lineasBaseTotal = lineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
-  const lineasIvaTotal = lineas.reduce((sum, linea) => sum + ((Number(linea.importe) || 0) * (Number(linea.iva) || 0)) / 100, 0);
+  const accountingLinesWithData = lineas.filter(hasAccountingLineData);
+  const accountingLineCount = accountingLinesWithData.length;
+  const accountingBase = Number(draft?.base_imponible ?? 0);
+  const accountingDifference = lineasBaseTotal - accountingBase;
+  const hasAccountingDifference = Math.abs(accountingDifference) > ACCOUNTING_AMOUNT_TOLERANCE;
+  const accountingSummary =
+    accountingLineCount === 0
+      ? 'Sin apuntes contables'
+      : accountingLineCount === 1
+        ? `${cleanOptionalString(accountingLinesWithData[0]?.descripcion) ?? 'Cuenta sin indicar'} - ${formatMoney(lineasBaseTotal)}`
+        : `${accountingLineCount} apuntes - ${formatMoney(lineasBaseTotal)}`;
 
   const listView = (
     <div className="purchase-invoices-page flex min-h-[calc(100vh-9rem)] flex-col gap-5">
@@ -1774,8 +1771,8 @@ const Facturas = () => {
                 key={factura.id}
                 factura={factura}
                 isSelected={draft?.id === factura.id}
-                isReadOnly={isNetagroReadOnlyFactura(factura)}
-                gsbaseRegistrationState={gsbaseRegistrationByFacturaId[factura.id]}
+                isReadOnly={isERPReadOnlyFactura(factura)}
+                erpRegistrationState={erpRegistrationByFacturaId[factura.id]}
                 loadingFacturaId={busyFacturaId}
                 onOpen={openFactura}
                 onDelete={handleDiscardFromList}
@@ -1863,11 +1860,11 @@ const Facturas = () => {
             <button
               type="button"
               className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
-              disabled={isReadOnlyDetail || saving || sending || extractingIa || draft.estado === 'enviada_gsbase' || draft.estado === 'descartada'}
-              onClick={() => void handleSendGsBase()}
+              disabled={isReadOnlyDetail || saving || sending || extractingIa || draft.estado === 'enviada_erp' || draft.estado === 'descartada'}
+              onClick={() => void handleSendERP()}
             >
               {sending ? <Loader2 className="animate-spin" size={15} /> : <CheckCircle2 size={15} />}
-              {draft.estado === 'enviada_gsbase' ? 'Enviado a Netagro' : 'Enviar a Netagro'}
+              {draft.estado === 'enviada_erp' ? 'Enviado a ERP' : 'Enviar a ERP'}
             </button>
           </div>
         </div>
@@ -1887,25 +1884,25 @@ const Facturas = () => {
             <div className="flex gap-1">
               <dt>Estado:</dt>
               <dd className="font-bold text-slate-950 dark:text-slate-100">
-                {draft.estado ? estadoLabels[draft.estado] : detailGsbaseStatus.text}
+                {draft.estado ? estadoLabels[draft.estado] : detailERPStatus.text}
               </dd>
             </div>
             <div className="flex gap-1">
-              <dt>Netagro:</dt>
+              <dt>ERP:</dt>
               <dd className="font-bold text-slate-950 dark:text-slate-100">
-                {detailGsbaseStatus.text}
+                {detailERPStatus.text}
               </dd>
             </div>
           </dl>
         </div>
       </header>
 
-      {draft.gsbase_error || visibleErrors.length > 0 ? (
+      {draft.erp_error || visibleErrors.length > 0 ? (
         <div className="mx-2 mt-4 space-y-3">
-          {draft.gsbase_error ? (
+          {draft.erp_error ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
-              <p className="font-bold">Error Netagro</p>
-              <p className="mt-1">{draft.gsbase_error}</p>
+              <p className="font-bold">Error ERP</p>
+              <p className="mt-1">{draft.erp_error}</p>
             </div>
           ) : null}
           {visibleErrors.length > 0 ? (
@@ -1956,45 +1953,36 @@ const Facturas = () => {
             <div className="space-y-5">
               <FieldGroup title="Proveedor">
                 <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
-                  <Field label="Nombre" className="sm:col-span-2 2xl:col-span-3">
-                    <Input
+                  <Field label="Proveedor" className="sm:col-span-2 2xl:col-span-4">
+                    <AcreedorCombobox
+                      value={acreedorIdFromDraft(draft)}
+                      onChange={() => undefined}
+                      onSelect={selectProveedorAcreedor}
+                      disabled={isReadOnlyDetail}
+                      placeholder="Buscar proveedor por nombre o NIF"
                       className={detailInputClass}
-                      value={draft.proveedor_nombre ?? ''}
-                      onChange={(event) => updateProviderIdentity('proveedor_nombre', event.target.value)}
-                      onKeyDown={handleProviderLookupKeyDown}
+                      source="erp"
+                      minSearchLength={0}
+                      searchLimit={2000}
                     />
+                  </Field>
+                  <Field label="Nombre" className="sm:col-span-2">
+                    <Input className={detailInputClass} value={draft.proveedor_nombre ?? ''} disabled />
                   </Field>
                   <Field label="NIF">
                     <Input
                       className={detailInputClass}
                       value={draft.proveedor_nif ?? ''}
-                      onChange={(event) => updateProviderIdentity('proveedor_nif', event.target.value.toUpperCase())}
-                      onKeyDown={handleProviderLookupKeyDown}
+                      disabled
                     />
                   </Field>
                   <Field label="Codigo proveedor">
-                    <Input className={detailInputClass} value={draft.proveedor_codigo ?? ''} onChange={(event) => updateDraft('proveedor_codigo', event.target.value)} />
+                    <Input className={detailInputClass} value={draft.proveedor_codigo ?? ''} disabled />
                   </Field>
-                  <Field label="Forma de pago / email remitente" className="sm:col-span-2 2xl:col-span-3">
-                    <Input className={detailInputClass} type="email" value={draft.email_remitente ?? ''} onChange={(event) => updateDraft('email_remitente', event.target.value)} />
+                  <Field label="Cuenta contable">
+                    <Input className={detailInputClass} value={draft.proveedor_cuenta ?? ''} disabled />
                   </Field>
                 </div>
-                {providerLookupState !== 'idle' ? (
-                  <p className="provider-lookup-status mt-3 text-xs font-semibold text-slate-500 dark:text-slate-400" aria-live="polite">
-                    {providerLookupState === 'searching' ? (
-                      <>
-                        Buscando proveedor
-                        <span className="provider-lookup-status__dots" aria-hidden="true">
-                          <span>.</span>
-                          <span>.</span>
-                          <span>.</span>
-                        </span>
-                      </>
-                    ) : (
-                      'Pulsa Enter para buscar proveedor'
-                    )}
-                  </p>
-                ) : null}
               </FieldGroup>
 
               <FieldGroup title="Factura">
@@ -2002,20 +1990,32 @@ const Facturas = () => {
                   <Field label="Numero proveedor">
                     <Input className={detailInputClass} value={draft.numero_factura ?? ''} onChange={(event) => updateDraft('numero_factura', event.target.value)} />
                   </Field>
-                  <Field label="Referencia">
-                    <Input className={detailInputClass} value={draft.referencia ?? ''} onChange={(event) => updateDraft('referencia', event.target.value)} />
-                  </Field>
                   <Field label="Fecha factura">
                     <Input className={detailInputClass} type="date" value={draft.fecha_factura ?? ''} onChange={(event) => updateDraft('fecha_factura', event.target.value)} />
                   </Field>
-                  <Field label="Almacen">
-                    <Input className={detailInputClass} value={draft.fr_alm ?? '00'} onChange={(event) => updateDraft('fr_alm', event.target.value)} />
+                  <Field label="Empresa">
+                    {empresaOptions.length > 1 ? (
+                      <FilterSelect
+                        value={draft.fr_alm ?? '1'}
+                        options={empresaOptions}
+                        onChange={(value) => updateDraft('fr_alm', value)}
+                        ariaLabel="Seleccionar empresa"
+                        disabled={isReadOnlyDetail}
+                        triggerClassName={detailInputClass}
+                      />
+                    ) : (
+                      <Input className={detailInputClass} value={empresaOptions[0]?.label ?? draft.fr_alm ?? '1'} disabled />
+                    )}
                   </Field>
-                  <Field label="Serie">
-                    <Input className={detailInputClass} value={draft.fr_sufa ?? 'A'} onChange={(event) => updateDraft('fr_sufa', event.target.value)} />
-                  </Field>
-                  <Field label="Albaranes" className="sm:col-span-2">
-                    <Input className={detailInputClass} value={draft.albaranes ?? ''} onChange={(event) => updateDraft('albaranes', event.target.value)} placeholder="0001;0002" />
+                  <Field label="Tipo factura">
+                    <FilterSelect
+                      value={draft.fr_sufa ?? ''}
+                      options={tipoFacturaOptions}
+                      onChange={(value) => updateDraft('fr_sufa', value)}
+                      ariaLabel="Seleccionar tipo de factura"
+                      disabled={isReadOnlyDetail}
+                      triggerClassName={detailInputClass}
+                    />
                   </Field>
                   <Field label="Concepto" className="sm:col-span-2 2xl:col-span-4">
                     <textarea
@@ -2037,7 +2037,7 @@ const Facturas = () => {
                     <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.total)} onChange={(event) => updateDraft('total', parseNumber(event.target.value))} />
                   </Field>
                   <Field label="% IVA">
-                    <Input className={detailInputClass} value={ivaSummary || '-'} readOnly />
+                    <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.iva_porcentaje)} onChange={(event) => updateDraft('iva_porcentaje', parseNumber(event.target.value) ?? 0)} />
                   </Field>
                   <Field label="Importe IVA">
                     <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.iva_importe)} onChange={(event) => updateDraft('iva_importe', parseNumber(event.target.value))} />
@@ -2048,79 +2048,88 @@ const Facturas = () => {
                   <Field label="Importe retencion">
                     <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.retencion_importe)} onChange={(event) => updateDraft('retencion_importe', parseNumber(event.target.value) ?? 0)} />
                   </Field>
-                  <Field label="Dto. general">
-                    <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.descuento_general)} onChange={(event) => updateDraft('descuento_general', parseNumber(event.target.value) ?? 0)} />
-                  </Field>
-                  <Field label="Dto. pronto pago">
-                    <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.descuento_pronto_pago)} onChange={(event) => updateDraft('descuento_pronto_pago', parseNumber(event.target.value) ?? 0)} />
-                  </Field>
-                  <Field label="Pendiente pago">
-                    <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.pendiente_pago)} onChange={(event) => updateDraft('pendiente_pago', parseNumber(event.target.value) ?? 0)} />
-                  </Field>
                 </div>
               </FieldGroup>
 
-              <FieldGroup title="Detalle de factura">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-sm font-bold text-slate-500 dark:text-slate-400">
-                    Suma lineas: {formatMoney(lineasBaseTotal)} / Base: {formatMoney(draft.base_imponible)}
-                  </p>
-                  <Button className="gap-2 border border-slate-200 bg-white text-slate-950 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:hover:bg-slate-800" onClick={addLinea}>
-                    <Plus size={15} />
-                    Linea
-                  </Button>
+              <FieldGroup title="Apuntes contables">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-950 dark:text-slate-50">{accountingSummary}</p>
+                    <p className={`text-xs font-semibold ${hasAccountingDifference ? 'text-amber-700 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'}`}>
+                      {hasAccountingDifference
+                        ? `La suma difiere de la base en ${formatMoney(Math.abs(accountingDifference))}.`
+                        : `Base: ${formatMoney(draft.base_imponible)}`}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:hover:bg-slate-800"
+                    onClick={() => setShowAccountingBreakdown((visible) => !visible)}
+                  >
+                    <ChevronsUpDown className="h-4 w-4" />
+                    {showAccountingBreakdown ? 'Ocultar apuntes' : 'Editar apuntes'}
+                  </button>
                 </div>
-                <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
-                  <table className="purchase-invoice-lines-table w-full min-w-[760px] text-left text-sm">
-                    <thead>
-                      <tr className="bg-slate-50 text-xs font-bold uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
-                        <th className="w-12 px-3 py-3">#</th>
-                        <th className="px-3 py-3">Descripcion</th>
-                        <th className="w-24 px-3 py-3">IVA</th>
-                        <th className="w-32 px-3 py-3">Importe</th>
-                        <th className="w-32 px-3 py-3">IVA imp.</th>
-                        <th className="w-16 px-3 py-3" />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                      {lineas.map((linea, index) => (
-                        <tr key={`${linea.id ?? 'linea'}-${index}`} className="bg-white align-middle dark:bg-slate-950">
-                          <td className="px-3 py-3 font-bold text-slate-500 dark:text-slate-400">{index + 1}</td>
-                          <td className="px-3 py-3">
-                            <Input className={detailTableInputClass} value={linea.descripcion} onChange={(event) => updateLinea(index, 'descripcion', event.target.value)} />
-                          </td>
-                          <td className="px-3 py-3">
-                            <CustomSelect value={String(linea.iva)} options={ivaOptions} onChange={(value) => updateLinea(index, 'iva', Number(value))} />
-                          </td>
-                          <td className="px-3 py-3">
-                            <Input className={detailTableInputClass} inputMode="decimal" value={numberInputValue(linea.importe)} onChange={(event) => updateLinea(index, 'importe', parseNumber(event.target.value) ?? 0)} />
-                          </td>
-                          <td className="px-3 py-3 align-middle font-semibold text-slate-700 dark:text-slate-200">
-                            {formatMoney(((Number(linea.importe) || 0) * (Number(linea.iva) || 0)) / 100)}
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            <button
-                              type="button"
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-700 transition-colors hover:bg-rose-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
-                              onClick={() => removeLinea(index)}
-                              aria-label="Eliminar linea"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
-                        <td className="px-3 py-3" colSpan={3}>Totales</td>
-                        <td className="px-3 py-3">{formatMoney(lineasBaseTotal)}</td>
-                        <td className="px-3 py-3">{formatMoney(lineasIvaTotal)}</td>
-                        <td />
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
+
+                {showAccountingBreakdown ? (
+                  <div className="mt-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-sm font-bold text-slate-500 dark:text-slate-400">
+                        Suma apuntes: {formatMoney(lineasBaseTotal)} / Base: {formatMoney(draft.base_imponible)}
+                      </p>
+                      <button
+                        type="button"
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:hover:bg-slate-800"
+                        onClick={addLinea}
+                      >
+                        <Plus size={15} />
+                        Apunte
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
+                      <table className="purchase-invoice-lines-table w-full min-w-[760px] text-left text-sm">
+                        <thead>
+                          <tr className="bg-slate-50 text-xs font-bold uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                            <th className="w-12 px-3 py-3">#</th>
+                            <th className="px-3 py-3">Cuenta</th>
+                            <th className="w-32 px-3 py-3">Importe</th>
+                            <th className="w-16 px-3 py-3" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                          {lineas.map((linea, index) => (
+                            <tr key={`${linea.id ?? 'linea'}-${index}`} className="bg-white align-middle dark:bg-slate-950">
+                              <td className="px-3 py-3 font-bold text-slate-500 dark:text-slate-400">{index + 1}</td>
+                              <td className="px-3 py-3">
+                                <Input className={detailTableInputClass} value={linea.descripcion} onChange={(event) => updateLinea(index, 'descripcion', event.target.value)} />
+                              </td>
+                              <td className="px-3 py-3">
+                                <Input className={detailTableInputClass} inputMode="decimal" value={numberInputValue(linea.importe)} onChange={(event) => updateLinea(index, 'importe', parseNumber(event.target.value) ?? 0)} />
+                              </td>
+                              <td className="px-3 py-3 text-right">
+                                <button
+                                  type="button"
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-700 transition-colors hover:bg-rose-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
+                                  onClick={() => removeLinea(index)}
+                                  aria-label="Eliminar linea"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
+                            <td className="px-3 py-3" colSpan={2}>Totales</td>
+                            <td className="px-3 py-3">{formatMoney(lineasBaseTotal)}</td>
+                            <td />
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
               </FieldGroup>
 
             </div>

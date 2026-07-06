@@ -62,7 +62,7 @@ const getValidationErrors = (factura: Record<string, unknown>): FacturaValidatio
     ['FRR_numerofactura', 'Falta numero de factura del proveedor.'],
     ['FRR_fechafactura', 'Falta fecha de factura.'],
     ['FRR_totalfac', 'Falta total de factura.'],
-    ['FRR_Idempresa', 'Falta empresa Netagro.'],
+    ['FRR_Idempresa', 'Falta empresa ERP.'],
   ];
 
   required.forEach(([field, message]) => {
@@ -111,7 +111,7 @@ const getValidationErrorsWithAcreedor = async (factura: Record<string, unknown>)
   if (!data) {
     errors.push({
       field: 'FRR_idproveedor',
-      message: 'El proveedor no existe en acreedores_cache/Netagro.',
+      message: 'El proveedor no existe en acreedores_cache/ERP.',
       severity: 'error',
     });
     return errors;
@@ -172,9 +172,9 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   extraction: row.extraction ?? null,
   validation_errors: asValidationErrors(row.validation_errors),
   duplicada_de: row.duplicada_de ?? null,
-  netagro_sent_at: row.netagro_sent_at ?? null,
-  netagro_response: row.netagro_response ?? null,
-  netagro_error: row.netagro_error ?? null,
+  erp_sent_at: row.erp_sent_at ?? null,
+  erp_response: row.erp_response ?? null,
+  erp_error: row.erp_error ?? null,
   created_at: row.created_at,
   updated_at: row.updated_at,
   FRR_id: row.FRR_id ?? null,
@@ -323,8 +323,8 @@ class FacturasRecibidasService {
     return updated;
   }
 
-  async sendToNetagro(facturaId: string): Promise<FacturaRecibida> {
-    const { data, error } = await supabase.functions.invoke('factura-recibida-send-netagro', {
+  async sendToERP(facturaId: string): Promise<FacturaRecibida> {
+    const { data, error } = await supabase.functions.invoke('factura-recibida-send-erp', {
       body: { factura_id: facturaId },
     });
     if (error) throw error;
@@ -360,7 +360,7 @@ class FacturasRecibidasService {
         proveedor_nif: payload.proveedor_nif ?? null,
         estado: nextEstado,
         validation_errors: validationErrors,
-        netagro_error: null,
+        erp_error: null,
       })
       .eq('id', payload.factura_id);
 
@@ -394,8 +394,8 @@ class FacturasRecibidasService {
   private async deleteDirect(facturaId: string): Promise<void> {
     const factura = await this.getById(facturaId);
     if (!factura) throw new Error('Factura no encontrada.');
-    if (factura.estado === 'enviada_netagro') {
-      throw new Error('No se puede borrar una factura enviada a Netagro.');
+    if (factura.estado === 'enviada_erp') {
+      throw new Error('No se puede borrar una factura enviada a ERP.');
     }
 
     const archivoPdfId = factura.archivo_pdf_id;

@@ -16,7 +16,7 @@ import {
   text,
   timestampValue,
   type JsonObject,
-} from "../_shared/facturas-recibidas-netagro.ts";
+} from "../_shared/facturas-recibidas-erp.ts";
 
 const asObject = (value: unknown): JsonObject =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
@@ -26,9 +26,23 @@ const asArray = (value: unknown): JsonObject[] =>
 
 const normalizeOnePayload = (raw: JsonObject) => {
   const extraction = asObject(raw.extraction ?? raw.factura ?? raw.invoice ?? raw);
-  const fileName = text(pick(raw, ["file_name", "filename", "source_pdf_name", "nombre_archivo"]), "factura-recibida.pdf");
-  const pdfBase64 = cleanBase64(pick(raw, ["file_base64", "pdf_base64", "b64_pdf", "B64_PDF", "pdf"]));
+  const fileName = text(pick(raw, ["file_name", "filename", "source_pdf_name", "nombre_archivo", "pdf_nombre"]), "factura-recibida.pdf");
+  const pdfBase64 = cleanBase64(pick(raw, ["file_base64", "pdf_base64", "b64_pdf", "B64_PDF", "pdf", "data"]));
   const email = asObject(raw.email);
+  const rawMetadata = asObject(raw.metadata);
+  const source = text(
+    pick(raw, ["source", "workflow", "origin"]),
+    text(pick(rawMetadata, ["source", "workflow", "origin"]), null),
+  );
+  const strictExplicitCtb =
+    raw.skip_default_ctb === true ||
+    raw.strict_ctb === true ||
+    rawMetadata.skip_default_ctb === true ||
+    rawMetadata.strict_ctb === true ||
+    source === "campojoyma-factura-extraer" ||
+    source === "campojoyma-front" ||
+    source === "campojoyma-email" ||
+    source === "xfuego-front";
   const frr = normalizeFrrPayload(extraction);
 
   const proveedorNombre = text(pick(extraction, ["proveedor_nombre", "nombre_proveedor", "acreedor_nombre", "FRR_proveedor_nombre"]), null);
@@ -44,7 +58,9 @@ const normalizeOnePayload = (raw: JsonObject) => {
 
   const ctb = lineasRaw.length > 0
     ? lineasRaw.map((linea, index) => normalizeFrcPayload(linea, index + 1))
-    : [
+    : strictExplicitCtb
+      ? []
+      : [
         normalizeFrcPayload(
           {
             FRC_Importe: numberValue(frr.FRR_base1, 0),

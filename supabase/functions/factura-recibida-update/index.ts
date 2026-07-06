@@ -7,7 +7,7 @@ import {
   normalizeFrrPayload,
   requireRouteUser,
   type JsonObject,
-} from "../_shared/facturas-recibidas-netagro.ts";
+} from "../_shared/facturas-recibidas-erp.ts";
 
 const asObject = (value: unknown): JsonObject =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
         estado: nextEstado,
         validation_errors: validationErrors,
         updated_by: auth.user.id,
-        netagro_error: null,
+        erp_error: null,
       })
       .eq("id", facturaId)
       .select("*")

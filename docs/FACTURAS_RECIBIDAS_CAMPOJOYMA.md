@@ -6,16 +6,16 @@ Este documento resume decisiones y contexto operativo para futuras conversacione
 
 ## Idea principal
 
-La pantalla de `Facturas de compra` no debe mostrar el historico completo de facturas reales de Netagro.
+La pantalla de `Facturas de compra` no debe mostrar el historico completo de facturas reales de ERP.
 
 El flujo esperado es:
 
 1. Campojoyma registra nuevas facturas en la aplicacion.
 2. Esas facturas se guardan en Supabase como staging/bandeja de revision.
 3. El cliente revisa y valida los datos.
-4. Cuando el cliente lo habilite, se usaran endpoints `POST` para enviar esas facturas a la base real de Netagro.
+4. Cuando el cliente lo habilite, se usaran endpoints `POST` para enviar esas facturas a la base real de ERP.
 
-Por tanto, Supabase es la bandeja de trabajo. Netagro/MariaDB es el destino real final y tambien una fuente de consulta para validar datos.
+Por tanto, Supabase es la bandeja de trabajo. ERP/MariaDB es el destino real final y tambien una fuente de consulta para validar datos.
 
 ## Supabase
 
@@ -34,21 +34,21 @@ public.facturasrecibidas_ctb
 public.acreedores_cache
 ```
 
-Estas tablas tienen nombres y columnas similares al modelo real de Netagro:
+Estas tablas tienen nombres y columnas similares al modelo real de ERP:
 
 ```text
 acreedores.ACR_Codigo -> facturasrecibidas.FRR_idproveedor
 facturasrecibidas.FRR_id -> facturasrecibidas_ctb.FRC_idfacturarecibida
 ```
 
-Pero en Supabase no son la base real de Netagro. Son una copia/staging para revision, OCR, validacion y envio posterior.
+Pero en Supabase no son la base real de ERP. Son una copia/staging para revision, OCR, validacion y envio posterior.
 
 Regla importante:
 
-- En facturas nuevas o ejemplos de staging, `FRR_id` debe quedar `null` hasta que la factura exista realmente en Netagro.
-- Si se usa una factura real de Netagro como ejemplo, el ID real puede guardarse en `extraction.remote_id` o `netagro_response.remote_id`, pero no debe confundirse con un registro ya sincronizado.
+- En facturas nuevas o ejemplos de staging, `FRR_id` debe quedar `null` hasta que la factura exista realmente en ERP.
+- Si se usa una factura real de ERP como ejemplo, el ID real puede guardarse en `extraction.remote_id` o `erp_response.remote_id`, pero no debe confundirse con un registro ya sincronizado.
 
-## API de Netagro via VPS/n8n
+## API de ERP via VPS/n8n
 
 La API del VPS intermedio consulta una copia local de MariaDB. Produccion no se toca.
 
@@ -123,13 +123,13 @@ Uso previsto de estos GET:
 
 - Resolver acreedores/proveedores por NIF, nombre o codigo.
 - Consultar una factura concreta como referencia.
-- Comprobar duplicados o validar campos contra Netagro.
+- Comprobar duplicados o validar campos contra ERP.
 - Traer algunos ejemplos controlados para pruebas.
 
 Uso no previsto:
 
 - No cargar `GET /facturasrecibidas?limit=500` como listado principal de la pantalla.
-- No convertir la pantalla en explorador del historico real de Netagro.
+- No convertir la pantalla en explorador del historico real de ERP.
 
 ## Frontend
 
@@ -147,7 +147,7 @@ Facturas de compra
 
 No usar "facturas recibidas" como etiqueta principal de negocio si el usuario pidio "facturas de compra".
 
-La UI debe listar las facturas de Supabase staging. Las facturas reales de Netagro solo deben entrar por acciones concretas: validacion, busqueda, duplicados, detalle puntual o ejemplos seleccionados.
+La UI debe listar las facturas de Supabase staging. Las facturas reales de ERP solo deben entrar por acciones concretas: validacion, busqueda, duplicados, detalle puntual o ejemplos seleccionados.
 
 ## Edge Function / proxy de lectura
 
@@ -156,7 +156,7 @@ Si el frontend necesita llamar al webhook de lectura, debe hacerlo a traves de u
 Funcion local preparada:
 
 ```text
-supabase/functions/facturas-recibidas-netagro-read
+supabase/functions/facturas-recibidas-erp-read
 ```
 
 Estado observado el 2026-07-03:
@@ -186,7 +186,7 @@ estado = pendiente_revision
 FRR_id = null
 source_pdf_name = ejemplo-api-campojoyma-<remote_id>.pdf
 extraction.source = apiCampojoyma-read-sample
-extraction.remote_id = <id real Netagro>
+extraction.remote_id = <id real ERP>
 ```
 
 Ejemplos insertados:
@@ -210,9 +210,9 @@ where source_pdf_name like 'ejemplo-api-campojoyma-%';
 
 El borrado en cascada elimina sus lineas `facturasrecibidas_ctb`.
 
-## Futuro POST a Netagro
+## Futuro POST a ERP
 
-El envio real a Netagro todavia depende de endpoints `POST` que el cliente habilitara despues.
+El envio real a ERP todavia depende de endpoints `POST` que el cliente habilitara despues.
 
 Cuando existan, el flujo deberia ser:
 
@@ -220,21 +220,30 @@ Cuando existan, el flujo deberia ser:
 2. Resolver acreedor contra `acreedores` real o cache.
 3. Enviar cabecera a endpoint `POST` de facturas recibidas.
 4. Enviar lineas contables a endpoint `POST` de `facturasrecibidas_ctb`.
-5. Guardar respuesta real de Netagro:
+5. Guardar respuesta real de ERP:
    - `FRR_id`
    - `FRR_numero`
    - `FRC_id`
    - `FRC_idfacturarecibida`
-   - `netagro_sent_at`
-   - `netagro_response`
+   - `erp_sent_at`
+   - `erp_response`
 
 Hasta entonces, no marcar una factura como realmente enviada solo por existir en staging.
 
+El payload de salida debe limitarse a columnas reales de ERP:
+
+- Cabecera: campos `FRR_*`, `FechaVto` e `ImporteVto`.
+- Desglose: campos `FRC_*`.
+- `acreedores` se usa para resolver/validar proveedor, no como bloque de factura.
+- Metadatos de Supabase (`id`, `estado`, PDF, `extraction`, `validation_errors`, `erp_response`, etc.) no deben enviarse como datos de ERP.
+- No usar campos heredados de UI como albaranes, descuentos, pendiente de pago, email remitente o IVA por linea; no pertenecen al flujo real de facturas recibidas.
+
 ## Errores a evitar
 
-- No tratar `public.facturasrecibidas` de Supabase como si fuera la tabla real de Netagro.
+- No tratar `public.facturasrecibidas` de Supabase como si fuera la tabla real de ERP.
 - No listar el historico completo de `GET /facturasrecibidas` en la pantalla principal.
 - No exponer el JWT del webhook en variables `VITE_*`.
 - No usar `$json.consulta` en n8n; usar `$json.query.consulta`.
 - No rellenar `FRR_id` en ejemplos/staging si la factura no fue creada por el POST real.
 - No confundir "facturas de compra" con "facturas emitidas".
+- No tratar `facturasrecibidas_ctb` como lineas de producto; son apuntes/desglose contable (`FRC_Cuenta`, `FRC_Importe`, dimensiones).
