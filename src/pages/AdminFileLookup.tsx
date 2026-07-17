@@ -15,7 +15,7 @@ import {
 import { canAccessPath, getFirstAllowedPath } from '@/config/accessControl';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

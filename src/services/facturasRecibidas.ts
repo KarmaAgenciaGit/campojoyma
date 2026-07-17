@@ -1,26 +1,41 @@
 import { supabase } from '@/integrations/supabase/client';
+import type { Tables } from '@/integrations/supabase/types';
 import type {
   FacturaRecibida,
+  FacturaRecibidaAsiento,
+  FacturaRecibidaAsientoApunte,
   FacturaRecibidaCtb,
   FacturaRecibidaEstado,
   FacturaRecibidaListFilters,
   FacturaRecibidaPage,
+  FacturaRecibidaPunteo,
   FacturaValidationIssue,
 } from '@/types/facturasRecibidas';
 
-type RawFactura = Record<string, any>;
-type RawCtb = Record<string, any>;
+type RawCtb = Tables<'facturasrecibidas_ctb'>;
+type RawPunteo = Tables<'facturasrecibidas_punteos'>;
+type RawAsientoApunte = Tables<'facturasrecibidas_asiento_apuntes'>;
+type RawAsiento = Tables<'facturasrecibidas_asientos'> & {
+  facturasrecibidas_asiento_apuntes?: RawAsientoApunte[];
+};
+type RawFactura = Tables<'facturasrecibidas'> & {
+  facturasrecibidas_ctb?: RawCtb[];
+  facturasrecibidas_punteos?: RawPunteo[];
+  ctb?: RawCtb[];
+  punteos?: RawPunteo[];
+  facturasrecibidas_asientos?: RawAsiento[];
+};
 
 export type FacturaRecibidaUpdatePayload = {
   factura_id: string;
+  expected_version: number;
   estado?: FacturaRecibidaEstado;
   proveedor_nombre?: string | null;
   proveedor_nif?: string | null;
   factura: Record<string, unknown>;
   ctb: Array<Record<string, unknown>>;
+  punteos?: Array<Record<string, unknown>>;
 };
-
-const db = supabase as any;
 
 const blobToBase64 = (blob: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -39,102 +54,11 @@ const getFunctionErrorMessage = (data: unknown): string | null => {
   return typeof error === 'string' ? error : null;
 };
 
-const isFunctionUnavailable = (error: unknown): boolean => {
-  if (!error || typeof error !== 'object') return false;
-  const status = (error as { status?: unknown; context?: { status?: unknown } }).status ?? (error as { context?: { status?: unknown } }).context?.status;
-  const message = String((error as { message?: unknown }).message ?? '').toLowerCase();
-  return status === 404 || message.includes('function not found') || message.includes('not found');
-};
-
-const numberValue = (value: unknown, fallback = 0): number => {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(/\./g, '').replace(',', '.'));
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return fallback;
-};
-
-const getValidationErrors = (factura: Record<string, unknown>): FacturaValidationIssue[] => {
-  const errors: FacturaValidationIssue[] = [];
-  const required: Array<[string, string]> = [
-    ['FRR_idproveedor', 'Falta proveedor/acreedor resuelto.'],
-    ['FRR_numerofactura', 'Falta numero de factura del proveedor.'],
-    ['FRR_fechafactura', 'Falta fecha de factura.'],
-    ['FRR_totalfac', 'Falta total de factura.'],
-    ['FRR_Idempresa', 'Falta empresa ERP.'],
-  ];
-
-  required.forEach(([field, message]) => {
-    const value = factura[field];
-    if (value === null || value === undefined || value === '') {
-      errors.push({ field, message, severity: 'error' });
-    }
-  });
-
-  if (!factura.FRR_idcuenta) {
-    errors.push({ field: 'FRR_idcuenta', message: 'Falta cuenta contable del proveedor.', severity: 'warning' });
-  }
-
-  const bases = [1, 2, 3, 4, 5].reduce((sum, index) => sum + numberValue(factura[`FRR_base${index}`]), 0);
-  const cuotas = [1, 2, 3, 4, 5].reduce((sum, index) => sum + numberValue(factura[`FRR_cuota${index}`]), 0);
-  const total = numberValue(factura.FRR_totalfac, Number.NaN);
-  const retencion = numberValue(factura.FRR_cuotaret);
-  const suplido = numberValue(factura.FRR_ImpSuplido);
-
-  if (Number.isFinite(total) && Math.abs(bases) + Math.abs(cuotas) > 0) {
-    const expected = Number((bases + cuotas - retencion + suplido).toFixed(2));
-    if (Math.abs(expected - total) > 0.01) {
-      errors.push({
-        field: 'FRR_totalfac',
-        message: `El total no cuadra con bases/cuotas. Esperado ${expected.toFixed(2)}, total ${total.toFixed(2)}.`,
-        severity: 'error',
-      });
-    }
-  }
-
-  return errors;
-};
-
-const getValidationErrorsWithAcreedor = async (factura: Record<string, unknown>): Promise<FacturaValidationIssue[]> => {
-  const errors = getValidationErrors(factura);
-  const proveedorId = numberValue(factura.FRR_idproveedor, Number.NaN);
-  if (!Number.isFinite(proveedorId)) return errors;
-
-  const { data, error } = await db
-    .from('acreedores_cache')
-    .select('ACR_Codigo, ACR_Cuenta')
-    .eq('ACR_Codigo', Math.trunc(proveedorId))
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) {
-    errors.push({
-      field: 'FRR_idproveedor',
-      message: 'El proveedor no existe en acreedores_cache/ERP.',
-      severity: 'error',
-    });
-    return errors;
-  }
-
-  const facturaCuenta = typeof factura.FRR_idcuenta === 'string' ? factura.FRR_idcuenta.trim() : '';
-  const cacheCuenta = typeof data.ACR_Cuenta === 'string' ? data.ACR_Cuenta.trim() : '';
-  if (facturaCuenta && cacheCuenta && facturaCuenta !== cacheCuenta) {
-    errors.push({
-      field: 'FRR_idcuenta',
-      message: `La cuenta contable no coincide con acreedores_cache (${cacheCuenta}).`,
-      severity: 'warning',
-    });
-  }
-
-  return errors;
-};
-
 const asValidationErrors = (value: unknown): FacturaValidationIssue[] => {
   if (!Array.isArray(value)) return [];
   return value
-    .filter((item): item is FacturaValidationIssue => Boolean(item) && typeof item === 'object')
-    .map((item: any) => ({
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item): FacturaValidationIssue => ({
       field: String(item.field ?? ''),
       message: String(item.message ?? ''),
       severity: item.severity === 'warning' ? 'warning' : 'error',
@@ -161,13 +85,81 @@ const mapCtb = (row: RawCtb): FacturaRecibidaCtb => ({
   updated_at: row.updated_at,
 });
 
+const mapPunteo = (row: RawPunteo): FacturaRecibidaPunteo => ({
+  id: String(row.id),
+  factura_id: String(row.factura_id),
+  posicion: Number(row.posicion ?? 0),
+  remote_id: row.remote_id ?? null,
+  source_table: row.source_table ?? null,
+  source_id: row.source_id ?? null,
+  importe_factura: row.importe_factura ?? null,
+  Origen: row.Origen ?? null,
+  Serie: row.Serie ?? null,
+  Albaran: row.Albaran ?? null,
+  Ref: row.Ref ?? null,
+  Fecha: row.Fecha ?? null,
+  'Importe P': row['Importe P'] ?? null,
+  Importe: row.Importe ?? null,
+  S: row.S ?? true,
+  Ver: row.Ver ?? false,
+  empresa_id: row.empresa_id ?? null,
+  proveedor_id: row.proveedor_id ?? null,
+  cuenta_gasto: row.cuenta_gasto ?? null,
+  line_count: row.line_count ?? 0,
+  source_lines: row.source_lines ?? [],
+  raw: row.raw ?? {},
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+});
+
+const mapAsientoApunte = (row: RawAsientoApunte): FacturaRecibidaAsientoApunte => ({
+  id: row.id,
+  asiento_id: row.asiento_id,
+  posicion: row.posicion,
+  cuenta: row.cuenta,
+  descripcion: row.descripcion,
+  debe: row.debe,
+  haber: row.haber,
+  analytic: row.analytic,
+  raw: row.raw,
+});
+
+const mapAsiento = (row: RawAsiento): FacturaRecibidaAsiento => ({
+  id: row.id,
+  factura_id: row.factura_id,
+  request_id: row.request_id,
+  technical_id: row.technical_id,
+  visible_number: row.visible_number,
+  accounting_date: row.accounting_date,
+  concept: row.concept,
+  status: row.status,
+  total_debit: row.total_debit,
+  total_credit: row.total_credit,
+  balanced: row.balanced,
+  raw: row.raw,
+  captured_at: row.captured_at,
+  apuntes: (row.facturasrecibidas_asiento_apuntes ?? [])
+    .map(mapAsientoApunte)
+    .sort((left, right) => left.posicion - right.posicion),
+});
+
 const mapFactura = (row: RawFactura): FacturaRecibida => ({
   id: String(row.id),
   archivo_pdf_id: row.archivo_pdf_id ?? null,
   estado: (row.estado ?? 'pendiente_revision') as FacturaRecibidaEstado,
+  source_kind: row.source_kind ?? null,
+  remote_frr_id: row.remote_frr_id ?? null,
+  is_readonly_reference: row.is_readonly_reference ?? false,
+  match_status: row.match_status ?? null,
+  match_evidence: row.match_evidence ?? null,
   proveedor_nombre: row.proveedor_nombre ?? null,
   proveedor_nif: row.proveedor_nif ?? null,
   source_pdf_name: row.source_pdf_name ?? null,
+  source_page_number: row.source_page_number ?? null,
+  source_page_count: row.source_page_count ?? null,
+  email_from: row.email_from ?? null,
+  email_subject: row.email_subject ?? null,
+  email_received_at: row.email_received_at ?? null,
   confidence: row.confidence ?? null,
   extraction: row.extraction ?? null,
   validation_errors: asValidationErrors(row.validation_errors),
@@ -175,6 +167,14 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   erp_sent_at: row.erp_sent_at ?? null,
   erp_response: row.erp_response ?? null,
   erp_error: row.erp_error ?? null,
+  row_version: row.row_version ?? 1,
+  sync_status: row.sync_status ?? null,
+  accounting_status: row.accounting_status ?? null,
+  accounting_visible_number: row.accounting_visible_number ?? null,
+  accounting_date: row.accounting_date ?? null,
+  erp_last_read_at: row.erp_last_read_at ?? null,
+  erp_last_read_payload: row.erp_last_read_payload ?? null,
+  last_request_id: row.last_request_id ?? null,
   created_at: row.created_at,
   updated_at: row.updated_at,
   FRR_id: row.FRR_id ?? null,
@@ -182,6 +182,7 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   FRR_ejercicio: row.FRR_ejercicio ?? null,
   FRR_idcentro: row.FRR_idcentro ?? null,
   FRR_idproveedor: row.FRR_idproveedor ?? null,
+  FRR_idregimen: row.FRR_idregimen ?? null,
   FRR_idcuenta: row.FRR_idcuenta ?? null,
   FRR_numerofactura: row.FRR_numerofactura ?? null,
   FRR_fechafactura: row.FRR_fechafactura ?? null,
@@ -205,16 +206,63 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   FRR_baseret: row.FRR_baseret ?? null,
   FRR_ret: row.FRR_ret ?? null,
   FRR_cuotaret: row.FRR_cuotaret ?? null,
+  FRR_igasto1: row.FRR_igasto1 ?? null,
+  FRR_ctagasto1: row.FRR_ctagasto1 ?? null,
+  FRR_igasto2: row.FRR_igasto2 ?? null,
+  FRR_ctagasto2: row.FRR_ctagasto2 ?? null,
+  FRR_igasto3: row.FRR_igasto3 ?? null,
+  FRR_ctagasto3: row.FRR_ctagasto3 ?? null,
+  FRR_igasto4: row.FRR_igasto4 ?? null,
+  FRR_ctagasto4: row.FRR_ctagasto4 ?? null,
   FRR_totalfac: row.FRR_totalfac ?? null,
   FRR_tipofactura: row.FRR_tipofactura ?? null,
+  FRR_idpuntoventa: row.FRR_idpuntoventa ?? null,
+  FRR_ClaveIRPF: row.FRR_ClaveIRPF ?? null,
+  FRR_IdAsientoNet: row.FRR_IdAsientoNet ?? null,
+  FRR_CtaCartera: row.FRR_CtaCartera ?? null,
+  FRR_IdBanco: row.FRR_IdBanco ?? null,
+  FRR_IdFormaPago: row.FRR_IdFormaPago ?? null,
+  FechaVto: row.FechaVto ?? null,
+  ImporteVto: row.ImporteVto ?? null,
+  FRR_Modificable: row.FRR_Modificable ?? null,
+  FRR_idpago: row.FRR_idpago ?? null,
+  FRR_IdUsuarioLog: row.FRR_IdUsuarioLog ?? null,
+  FRR_FechaLog: row.FRR_FechaLog ?? null,
+  FRR_HoraLog: row.FRR_HoraLog ?? null,
+  FRR_GeneraCartera: row.FRR_GeneraCartera ?? null,
+  FRR_FechaVto1: row.FRR_FechaVto1 ?? null,
+  FRR_ImporteVto1: row.FRR_ImporteVto1 ?? null,
+  FRR_FechaVto2: row.FRR_FechaVto2 ?? null,
+  FRR_ImporteVto2: row.FRR_ImporteVto2 ?? null,
+  FRR_FechaVto3: row.FRR_FechaVto3 ?? null,
+  FRR_ImporteVto3: row.FRR_ImporteVto3 ?? null,
+  FRR_IdTipoDoc: row.FRR_IdTipoDoc ?? null,
+  FRR_IdAgricultorDto: row.FRR_IdAgricultorDto ?? null,
+  FRR_CtaSuplido: row.FRR_CtaSuplido ?? null,
   FRR_Concepto: row.FRR_Concepto ?? null,
   FRR_Observaciones: row.FRR_Observaciones ?? null,
   FRR_ObservacionesAEAT: row.FRR_ObservacionesAEAT ?? null,
   FRR_ImpSuplido: row.FRR_ImpSuplido ?? null,
   FRR_CuotaNoDeducible: row.FRR_CuotaNoDeducible ?? null,
+  FRR_FechaPrevPago: row.FRR_FechaPrevPago ?? null,
+  FRR_BancoPrevPago: row.FRR_BancoPrevPago ?? null,
+  FRR_IdSeccion: row.FRR_IdSeccion ?? null,
+  FRR_IdActividad: row.FRR_IdActividad ?? null,
+  FRR_CancelarporCtb: row.FRR_CancelarporCtb ?? null,
+  FRR_Contabilizar: row.FRR_Contabilizar ?? null,
+  FRR_IdfacturaRec: row.FRR_IdfacturaRec ?? null,
+  erp_sent_by: row.erp_sent_by ?? null,
+  created_by: row.created_by ?? null,
+  updated_by: row.updated_by ?? null,
   ctb: ((row.facturasrecibidas_ctb ?? row.ctb ?? []) as RawCtb[])
     .map(mapCtb)
     .sort((left, right) => left.posicion - right.posicion),
+  punteos: ((row.facturasrecibidas_punteos ?? row.punteos ?? []) as RawPunteo[])
+    .map(mapPunteo)
+    .sort((left, right) => left.posicion - right.posicion),
+  asientos: (row.facturasrecibidas_asientos ?? [])
+    .map(mapAsiento)
+    .sort((left, right) => right.captured_at.localeCompare(left.captured_at)),
 });
 
 class FacturasRecibidasService {
@@ -224,9 +272,9 @@ class FacturasRecibidasService {
     const from = (page - 1) * pageSize;
     const to = from + pageSize - 1;
 
-    let query = db
+    let query = supabase
       .from('facturasrecibidas')
-      .select('*, facturasrecibidas_ctb(*)', { count: 'exact' });
+      .select('*, facturasrecibidas_ctb(*), facturasrecibidas_punteos(*)', { count: 'exact' });
 
     if (filters.estado && filters.estado !== 'all') {
       query = query.eq('estado', filters.estado);
@@ -244,7 +292,10 @@ class FacturasRecibidasService {
 
     if (filters.numero?.trim()) {
       const value = filters.numero.trim().replace(/[%,]/g, '');
-      query = query.ilike('FRR_numerofactura', `%${value}%`);
+      const numeric = Number(value);
+      query = Number.isFinite(numeric)
+        ? query.or(`FRR_numerofactura.ilike.%${value}%,FRR_numero.eq.${Math.trunc(numeric)}`)
+        : query.ilike('FRR_numerofactura', `%${value}%`);
     }
 
     if (filters.fechaFrom) query = query.gte('FRR_fechafactura', filters.fechaFrom);
@@ -252,9 +303,36 @@ class FacturasRecibidasService {
     if (typeof filters.totalFrom === 'number') query = query.gte('FRR_totalfac', filters.totalFrom);
     if (typeof filters.totalTo === 'number') query = query.lte('FRR_totalfac', filters.totalTo);
 
+    if (filters.erpStatus === 'sent') {
+      query = query.or(
+        'estado.eq.enviada_erp,erp_sent_at.not.is.null,is_readonly_reference.eq.true,remote_frr_id.not.is.null,FRR_id.not.is.null',
+      );
+    } else if (filters.erpStatus === 'not_sent') {
+      query = query
+        .neq('estado', 'enviada_erp')
+        .is('erp_sent_at', null)
+        .eq('is_readonly_reference', false)
+        .is('remote_frr_id', null)
+        .is('FRR_id', null);
+    }
+
+    if (!filters.includeDiscarded) {
+      query = query.neq('estado', 'descartada');
+    }
+
+    const sortConfig = {
+      created_desc: { column: 'created_at', ascending: false },
+      created_asc: { column: 'created_at', ascending: true },
+      fecha_desc: { column: 'FRR_fechafactura', ascending: false },
+      fecha_asc: { column: 'FRR_fechafactura', ascending: true },
+      total_desc: { column: 'FRR_totalfac', ascending: false },
+      total_asc: { column: 'FRR_totalfac', ascending: true },
+    }[filters.sortOrder ?? 'created_desc'];
+
     const { data, count, error } = await query
-      .order('created_at', { ascending: false })
+      .order(sortConfig.column, { ascending: sortConfig.ascending, nullsFirst: false })
       .order('posicion', { referencedTable: 'facturasrecibidas_ctb', ascending: true })
+      .order('posicion', { referencedTable: 'facturasrecibidas_punteos', ascending: true })
       .range(from, to);
 
     if (error) throw error;
@@ -265,11 +343,14 @@ class FacturasRecibidasService {
   }
 
   async getById(id: string): Promise<FacturaRecibida | null> {
-    const { data, error } = await db
+    const { data, error } = await supabase
       .from('facturasrecibidas')
-      .select('*, facturasrecibidas_ctb(*)')
+      .select(
+        '*, facturasrecibidas_ctb(*), facturasrecibidas_punteos(*), facturasrecibidas_asientos(*, facturasrecibidas_asiento_apuntes(*))',
+      )
       .eq('id', id)
       .order('posicion', { referencedTable: 'facturasrecibidas_ctb', ascending: true })
+      .order('posicion', { referencedTable: 'facturasrecibidas_punteos', ascending: true })
       .maybeSingle();
 
     if (error) throw error;
@@ -277,7 +358,7 @@ class FacturasRecibidasService {
   }
 
   async getPdfBase64(archivoPdfId: number): Promise<{ base64: string; fileName: string | null }> {
-    const { data, error } = await db
+    const { data, error } = await supabase
       .from('archivos_pdf')
       .select('b64_contenido, storage_bucket, storage_path, nombre_archivo')
       .eq('id', archivoPdfId)
@@ -311,11 +392,14 @@ class FacturasRecibidasService {
   }
 
   async update(payload: FacturaRecibidaUpdatePayload): Promise<FacturaRecibida> {
-    const { data, error } = await supabase.functions.invoke('factura-recibida-update', { body: payload });
-    if (error) {
-      if (isFunctionUnavailable(error)) return this.updateDirect(payload);
-      throw error;
-    }
+    const { data, error } = await supabase.functions.invoke('factura-recibida-update', {
+      body: {
+        contract_version: 2,
+        request_id: crypto.randomUUID(),
+        ...payload,
+      },
+    });
+    if (error) throw error;
     const message = getFunctionErrorMessage(data);
     if (message) throw new Error(message);
     const updated = await this.getById(payload.factura_id);
@@ -323,9 +407,16 @@ class FacturasRecibidasService {
     return updated;
   }
 
-  async sendToERP(facturaId: string): Promise<FacturaRecibida> {
+  async sendToERP(facturaId: string, version?: number | null): Promise<FacturaRecibida> {
+    const expectedVersion = version ?? (await this.getById(facturaId))?.row_version ?? null;
+    if (!expectedVersion) throw new Error('No se pudo determinar la versión de la factura antes del envío.');
     const { data, error } = await supabase.functions.invoke('factura-recibida-send-erp', {
-      body: { factura_id: facturaId },
+      body: {
+        contract_version: 2,
+        request_id: crypto.randomUUID(),
+        factura_id: facturaId,
+        expected_version: expectedVersion,
+      },
     });
     if (error) throw error;
     const message = getFunctionErrorMessage(data);
@@ -335,84 +426,20 @@ class FacturasRecibidasService {
     return updated;
   }
 
-  async delete(facturaId: string): Promise<void> {
+  async delete(facturaId: string, version?: number | null): Promise<void> {
+    const expectedVersion = version ?? (await this.getById(facturaId))?.row_version ?? null;
+    if (!expectedVersion) throw new Error('No se pudo determinar la versión de la factura antes de borrarla.');
     const { data, error } = await supabase.functions.invoke('factura-recibida-delete', {
-      body: { factura_id: facturaId },
+      body: {
+        contract_version: 2,
+        request_id: crypto.randomUUID(),
+        factura_id: facturaId,
+        expected_version: expectedVersion,
+      },
     });
-    if (error) {
-      if (isFunctionUnavailable(error)) return this.deleteDirect(facturaId);
-      throw error;
-    }
+    if (error) throw error;
     const message = getFunctionErrorMessage(data);
     if (message) throw new Error(message);
-  }
-
-  private async updateDirect(payload: FacturaRecibidaUpdatePayload): Promise<FacturaRecibida> {
-    const validationErrors = await getValidationErrorsWithAcreedor(payload.factura);
-    const nextEstado =
-      payload.estado ?? (validationErrors.some((error) => error.severity === 'error') ? 'pendiente_revision' : 'validada');
-
-    const { error: updateError } = await db
-      .from('facturasrecibidas')
-      .update({
-        ...payload.factura,
-        proveedor_nombre: payload.proveedor_nombre ?? null,
-        proveedor_nif: payload.proveedor_nif ?? null,
-        estado: nextEstado,
-        validation_errors: validationErrors,
-        erp_error: null,
-      })
-      .eq('id', payload.factura_id);
-
-    if (updateError) throw updateError;
-
-    const { error: deleteLinesError } = await db
-      .from('facturasrecibidas_ctb')
-      .delete()
-      .eq('factura_id', payload.factura_id);
-
-    if (deleteLinesError) throw deleteLinesError;
-
-    if (payload.ctb.length > 0) {
-      const { error: insertLinesError } = await db.from('facturasrecibidas_ctb').insert(
-        payload.ctb.map((linea, index) => ({
-          ...linea,
-          FRC_id: null,
-          FRC_idfacturarecibida: null,
-          posicion: Number(linea.posicion ?? index + 1),
-          factura_id: payload.factura_id,
-        })),
-      );
-      if (insertLinesError) throw insertLinesError;
-    }
-
-    const updated = await this.getById(payload.factura_id);
-    if (!updated) throw new Error('Factura no encontrada tras guardar.');
-    return updated;
-  }
-
-  private async deleteDirect(facturaId: string): Promise<void> {
-    const factura = await this.getById(facturaId);
-    if (!factura) throw new Error('Factura no encontrada.');
-    if (factura.estado === 'enviada_erp') {
-      throw new Error('No se puede borrar una factura enviada a ERP.');
-    }
-
-    const archivoPdfId = factura.archivo_pdf_id;
-    const { error: deleteError } = await db.from('facturasrecibidas').delete().eq('id', facturaId);
-    if (deleteError) throw deleteError;
-
-    if (archivoPdfId) {
-      const { count, error: countError } = await db
-        .from('facturasrecibidas')
-        .select('*', { count: 'exact', head: true })
-        .eq('archivo_pdf_id', archivoPdfId);
-      if (countError) throw countError;
-      if ((count ?? 0) === 0) {
-        const { error: pdfDeleteError } = await db.from('archivos_pdf').delete().eq('id', archivoPdfId);
-        if (pdfDeleteError) throw pdfDeleteError;
-      }
-    }
   }
 }
 

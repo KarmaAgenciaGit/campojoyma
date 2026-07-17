@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -1090,7 +1090,7 @@ const Cambios = () => {
             .maybeSingle();
           if (error) throw error;
           if (pedidoManual && pedidoManual.tipo_pedido === tipoPedido) {
-            return { pedido: pedidoManual, lineas: await fetchLineas(pedidoManual.id) };
+            return { pedido: pedidoManual as Database['public']['Tables']['pedidos']['Row'], lineas: await fetchLineas(pedidoManual.id) };
           }
         }
 
@@ -1102,7 +1102,7 @@ const Cambios = () => {
             .maybeSingle();
           if (error) throw error;
           if (!pedidoMatcheado) return { pedido: null, lineas: [] };
-          return { pedido: pedidoMatcheado, lineas: await fetchLineas(pedidoMatcheado.id) };
+          return { pedido: pedidoMatcheado as Database['public']['Tables']['pedidos']['Row'], lineas: await fetchLineas(pedidoMatcheado.id) };
         }
 
         if (tipoPedido === 'P220') {
@@ -1175,7 +1175,7 @@ const Cambios = () => {
           .maybeSingle();
         if (error) throw error;
         if (!pedidoMatcheado) return { pedido: null, lineas: [] };
-        return { pedido: pedidoMatcheado, lineas: await fetchLineas(pedidoMatcheado.id) };
+        return { pedido: pedidoMatcheado as Database['public']['Tables']['pedidos']['Row'], lineas: await fetchLineas(pedidoMatcheado.id) };
       } catch (error) {
         console.error('Error matching pedido/previsión', error);
         return { pedido: null, lineas: [] };
@@ -2228,7 +2228,7 @@ const Cambios = () => {
             .eq('id', pedidoId)
             .single();
           if (pedidoError) throw pedidoError;
-          pedido = pedidoData ?? null;
+          pedido = (pedidoData as Database['public']['Tables']['pedidos']['Row'] | null) ?? null;
         }
         if (!pedido) {
           const match = await findMatchedPedido(cambioData);
@@ -4181,7 +4181,7 @@ const Cambios = () => {
         [cambioLineaId]: {
           ...(prev[cambioLineaId] ?? {}),
           [field]: value,
-        },
+        } as LineaCambioDraft,
       }));
     },
     [],
@@ -4809,7 +4809,7 @@ const Cambios = () => {
 
       setCambioDialogPedido((prev) =>
         prev
-          ? { ...prev, idpedido_orizon: result.newOrizonId, needs_sync: false, enviado: true }
+          ? { ...prev, idpedido_orizon: result.newOrizonId as number | null, needs_sync: false, enviado: true }
           : prev,
       );
 

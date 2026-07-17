@@ -1,6 +1,18 @@
 # Documentacion consolidada: facturas Campojoyma
 
-Ultima actualizacion: 2026-07-06
+Última actualización: 2026-07-16
+
+> Estado v2: la implementación completa de staging está preparada, pero no está
+> promovida a producción. La referencia canónica del contrato es
+> [`FACTURAS_RECIBIDAS_API_CONTRACT.md`](FACTURAS_RECIBIDAS_API_CONTRACT.md), el
+> estado del despliegue de pruebas y sus bloqueos se documentan en
+> [`FACTURAS_RECIBIDAS_API_V2_STAGING.md`](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
+> y el OpenAPI verificable está en
+> [`openapi/netagro-test-api-v0.2.0.json`](openapi/netagro-test-api-v0.2.0.json).
+>
+> La copia Netagro no contiene el mecanismo oficial de contabilización ni el
+> diario de apuntes. Por ello, la v2 bloquea antes de escribir cualquier alta que
+> solicite `FRR_Contabilizar="S"`; no se fabrica ningún asiento mediante SQL.
 
 Este documento consolida la documentacion tecnica del repo, la documentacion descargada desde el VPS intermedio y las decisiones de implementacion del modulo de facturas de compra.
 
@@ -13,7 +25,7 @@ Fuentes usadas:
 
 ## Resumen ejecutivo
 
-La pantalla de facturas de compra trabaja contra Supabase como bandeja de revision. La base real del ERP no se escribe desde frontend ni desde n8n.
+La pantalla de facturas de compra trabaja contra Supabase como bandeja de revisión. La base real del ERP no se escribe desde frontend. El único escritor previsto es un webhook n8n v2 autenticado, separado del proxy de lectura, que ejecuta dry-run, escritura e inspección posterior mediante la API oficial de pruebas.
 
 Flujo actual:
 
@@ -351,7 +363,7 @@ Ruta:
 Copy visible:
 
 ```text
-Facturas de compra
+Facturas recibidas
 ```
 
 Comportamiento actual del popup:
@@ -403,7 +415,7 @@ Valor observado:
 
 `FRR_tipofactura` es un codigo corto de tipo/serie interna de factura recibida.
 
-Existe tabla candidata `facturasrecibidastipo`, pero esta vacia en la copia. Por tanto no hay descripciones oficiales cargadas.
+Existe tabla candidata `facturasrecibidastipo`, pero esta vacia en la copia. Por tanto las descripciones no vienen de maestro de BD. El correo de Campojoyma del 2026-07-07 aporta descripciones funcionales parciales.
 
 Endpoint:
 
@@ -415,19 +427,25 @@ Valores observados:
 
 | `FRR_tipofactura` | Facturas | Fecha min | Fecha max | Descripcion |
 |---|---:|---|---|---|
-| OT | 30570 | 2013-10-01 | 2026-08-01 | Sin descripcion oficial. |
-| GE | 8121 | 2020-01-02 | 2026-06-26 | Sin descripcion oficial. |
-| MA | 4919 | 2020-04-27 | 2026-04-07 | Sin descripcion oficial. |
-| GV | 2704 | 2020-06-30 | 2026-06-09 | Sin descripcion oficial. |
-| FI | 1279 | 2021-06-22 | 2026-04-20 | Sin descripcion oficial. |
-| GC | 361 | 2020-08-31 | 2026-06-22 | Sin descripcion oficial. |
-| CE | 356 | 2021-08-10 | 2025-10-31 | Sin descripcion oficial. |
-| FZ | 308 | 2020-02-08 | 2021-05-20 | Sin descripcion oficial. |
-| CX | 14 | 2020-07-30 | 2021-03-03 | Sin descripcion oficial. |
-| GM | 8 | 2022-10-31 | 2024-04-30 | Sin descripcion oficial. |
+| OT | 30570 | 2013-10-01 | 2026-08-01 | OTROS. |
+| GE | 8121 | 2020-01-02 | 2026-06-26 | COMPRAS GENERO. |
+| MA | 4919 | 2020-04-27 | 2026-04-07 | MATERIALES. |
+| GV | 2704 | 2020-06-30 | 2026-06-09 | GASTOS VENTAS. |
+| FI | 1279 | 2021-06-22 | 2026-04-20 | Sin descripcion en el correo. |
+| GC | 361 | 2020-08-31 | 2026-06-22 | GASTOS COMPRAS. |
+| CE | 356 | 2021-08-10 | 2025-10-31 | Sin descripcion en el correo. |
+| FZ | 308 | 2020-02-08 | 2021-05-20 | FIANZA. |
+| CX | 14 | 2020-07-30 | 2021-03-03 | COSTES EXTERNOS. |
+| GM | 8 | 2022-10-31 | 2024-04-30 | Sin descripcion en el correo. |
 | vacio/null | 1 | 1900-01-01 | 1900-01-01 | Registro historico sin tipo. |
 
 No se ha visto `FRR_tipofactura = "1"` en la copia MariaDB dumpeada. Si aparece `1` en staging/OCR, tratarlo como dato pendiente o confusion con `FRR_Idempresa = 1`.
+
+Uso recomendado:
+
+- Mantener `FRR_tipofactura` como combo/manual si la IA no tiene confianza.
+- La IA puede sugerir `GE`, `MA`, `GV`, `GC`, `FZ`, `CX` cuando el PDF y proveedor encajen claramente, pero no debe forzar tipo si no hay evidencia.
+- `FI`, `CE` y `GM` siguen pendientes de descripcion funcional.
 
 ## Campos principales de factura recibida
 
@@ -437,7 +455,7 @@ No se ha visto `FRR_tipofactura = "1"` en la copia MariaDB dumpeada. Si aparece 
 | Tipo factura | `FRR_tipofactura` | Combo `/facturasrecibidas/tipos`; vacio si no se sabe. |
 | Proveedor | `FRR_idproveedor` | API `acreedores`, por NIF o nombre. |
 | Cuenta proveedor | `FRR_idcuenta` | API `acreedores`, campo cuenta. |
-| Numero proveedor | `FRR_numerofactura` | PDF/IA. |
+| Nº Factura | `FRR_numerofactura` | PDF/IA. |
 | Fecha factura | `FRR_fechafactura` | PDF/IA. |
 | Fecha contable | `FRR_fechactb` | Normalmente fecha factura, salvo regla de negocio. |
 | Base | `FRR_base1` | PDF/IA. |
@@ -448,11 +466,12 @@ No se ha visto `FRR_tipofactura = "1"` en la copia MariaDB dumpeada. Si aparece 
 | Retencion importe | `FRR_cuotaret` | PDF/IA si aparece; si no, 0. |
 | Total | `FRR_totalfac` | PDF/IA. |
 | Concepto | `FRR_Concepto` | PDF/IA, maximo 50 caracteres en staging. |
-| Apuntes contables | `facturasrecibidas_ctb` | API/reglas, no IA inventada. |
+| Desglose de Gastos | `FRR_igasto*/FRR_ctagasto*` | API/reglas, no IA inventada. |
+| Apuntes CTB | `facturasrecibidas_ctb` | Solo `FRC_*` reales devueltos por API/ERP. |
 
 ## Contabilidad y apuntes `ctb`
 
-`facturasrecibidas_ctb` no son lineas de producto. Son apuntes/desglose contable.
+`facturasrecibidas_ctb` no son lineas de producto ni desglose de gastos. Son apuntes CTB reales `FRC_*`.
 
 Campos principales:
 
@@ -466,9 +485,15 @@ Campos principales:
 
 Regla actual:
 
-- Si n8n/API devuelve `ctb`, se guarda.
+- Si n8n/API devuelve `ctb` real, se guarda.
 - Si no devuelve `ctb`, se guarda `ctb: []` y warning.
 - No se fabrica una linea por defecto con cuenta proveedor + base para el extractor nuevo.
+
+Confirmacion por correo Campojoyma 2026-07-07:
+
+- La cuenta `4009...` es la cuenta del proveedor/agricultor donde se contabilizan los albaranes de entrada de genero.
+- La cuenta `6000000010` indicada por Campojoyma corresponde a la comision que se descuenta de la liquidacion.
+- Ojo: en la copia/API para `FV26-13` aparece `60000000010` con un cero mas. Antes de hardcodear o comparar esta cuenta hay que confirmar el numero exacto de digitos con la API/ERP.
 
 ## Caso trazado: `FV26-13`
 
@@ -512,6 +537,7 @@ Conclusion para implementacion:
 
 - La cuenta de arriba suele ser cuenta puente/proveedor calculada por regla.
 - La cuenta `60000000010` es una cuenta configurada en reglas de `tipoagricultor`, no una cuenta elegida por IA.
+- Negocio confirma funcionalmente que esta cuenta corresponde a la comision descontada de liquidacion.
 - No crear combobox manual de cuentas contables mientras no exista maestro descriptivo de plan contable.
 
 ## Ejemplos reales utiles
@@ -567,19 +593,19 @@ Si no hay apuntes contables:
 
 ## Decisiones vigentes
 
-- La UI usa `Facturas de compra` como etiqueta principal.
+- La UI usa `Facturas recibidas` como etiqueta principal.
 - La pantalla lista facturas de Supabase staging, no historico completo de ERP.
 - El historico real solo se consulta para validar, duplicar, buscar proveedor o revisar ejemplos concretos.
 - Empresa usa combo real desde `/empresas`.
 - Tipo factura usa combo observado desde `/facturasrecibidas/tipos`.
-- Tipo factura no tiene descripciones oficiales todavia.
+- Tipo factura tiene descripciones funcionales parciales confirmadas por correo Campojoyma 2026-07-07.
 - `FRR_tipofactura = "1"` se considera dato incorrecto/no confirmado.
 - n8n devuelve payload listo para `factura-recibida-extraer`, no escribe.
 - La Edge Function propia es la unica responsable de guardar en Supabase.
 
 ## Pendientes / preguntas a negocio o API
 
-1. Descripcion funcional de codigos `FRR_tipofactura`: `OT`, `GE`, `MA`, `GV`, `FI`, `GC`, `CE`, `FZ`, `CX`, `GM`.
+1. Confirmar descripcion funcional de `FI`, `CE` y `GM`; el resto de codigos tiene descripcion parcial por correo.
 2. Confirmar si `FRR_Idempresa` siempre sera `1` en Campojoyma o si puede haber mas empresas reales.
 3. Confirmar endpoint definitivo para reglas proveedor/tipo agricultor con campos:
    - `AGR_idtipo`
@@ -604,4 +630,3 @@ Si no hay apuntes contables:
 - No usar `FRR_tipofactura = "1"` por defecto.
 - No inventar cuentas contables desde IA.
 - No mantener service role en workflows n8n exportados.
-

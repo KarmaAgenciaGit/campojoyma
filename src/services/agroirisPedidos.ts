@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { agroirisAuth } from '@/services/agroirisAuth';
 import type { Pedido, PedidoLinea, PedidoLineaCentro, TipoPedido } from '@/types/pedidos';
 import { resolveOrizonId } from '@/utils/orizon';
@@ -332,6 +332,7 @@ export const buildPedidoOrizonPayload = ({
   pedido: Pedido;
   tipoPedido: TipoPedido;
   lineas: LineaWithCentros[];
+  clienteBehaviorRule?: unknown;
 }) => {
   const pedidoAny = pedido as Record<string, any>;
   const pedidoOrizonId = resolveOrizonId(pedidoAny.idpedido_orizon, pedidoAny.pedidoclienteid);
@@ -581,7 +582,7 @@ export const sendPedidoToOrizon = async ({
       detalleUpdateError = detalleResults.find((result) => result.error)?.error ?? null;
     }
 
-    const centroPromises: Promise<{ error: any } | null>[] = [];
+    const centroPromises: PromiseLike<{ error: any } | null>[] = [];
 
     detalleRetorno.forEach((retorno: any, index: number) => {
       const centrosRetorno = Array.isArray(retorno?.listPedidoCentroRetorno)

@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import type { Database } from '@/integrations/supabase/types';
 
 export type ClienteBehaviorRuleRow = Database['public']['Tables']['cliente_behavior_rules']['Row'];
@@ -125,7 +125,7 @@ const loadRuleByClienteId = async (
 ): Promise<ClienteBehaviorRule> => {
   const { data, error } = await supabase
     .from('cliente_behavior_rules')
-    .select(CLIENT_BEHAVIOR_SELECT)
+    .select(CLIENT_BEHAVIOR_SELECT as '*')
     .eq('clienteid', clienteid)
     .maybeSingle();
 
@@ -206,7 +206,7 @@ export const getClienteBehaviorRulesMap = async (
     try {
       const { data, error } = await supabase
         .from('cliente_behavior_rules')
-        .select(CLIENT_BEHAVIOR_SELECT)
+        .select(CLIENT_BEHAVIOR_SELECT as '*')
         .in('clienteid', missingIds);
 
       if (error) throw error;

@@ -108,7 +108,11 @@ export const isFacturaUnprocessedUploadDraft = (factura: FacturaRecibida) => {
 };
 
 export const isFacturaInERP = (factura: FacturaRecibida) =>
-  factura.estado === 'enviada_erp' || Boolean(factura.erp_sent_at);
+  factura.estado === 'enviada_erp' ||
+  Boolean(factura.erp_sent_at) ||
+  factura.is_readonly_reference === true ||
+  factura.source_kind === 'erp_reference' ||
+  Boolean(factura.remote_frr_id);
 
 export const buildFacturasSummary = (
   facturas: FacturaRecibida[],

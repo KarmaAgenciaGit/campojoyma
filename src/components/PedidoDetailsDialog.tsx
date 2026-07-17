@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -61,7 +61,7 @@ import { agroirisCatalogoConfec } from '@/services/agroirisCatalogoConfec';
 import { agroirisDomicilios } from '@/services/agroirisDomicilios';
 import { agroirisClientePlataformas, type ClientePlataforma } from '@/services/agroirisClientePlataformas';
 import { Skeleton } from '@/components/ui/skeleton';
-import { agroirisPicking } from '@/services/agroirisPicking';
+import { agroirisPicking, type PickingRequest } from '@/services/agroirisPicking';
 import { getPedidoClienteCeoxDetalle } from '@/services/agroirisPedidos';
 import type { Subcentro } from '@/services/agroirisSubcentro';
 import type { NewPedidoLineaDraft, PedidoLineaClipboard } from '@/types/pedidos';
@@ -1141,7 +1141,7 @@ export const PedidoDetailsDialog = ({
     lineaId: number | string,
     tempId: string,
     field: 'asignacion' | 'numero_palets' | 'subprov' | 'accepted',
-    value: string | number | null
+    value: string | number | boolean | null
   ) => {
     const key = getLineaKey(lineaId);
     setNewCentros((prev) => {
@@ -1496,7 +1496,7 @@ export const PedidoDetailsDialog = ({
         console.log('📦 Payload picking -> AgroIris', bodyToSend);
       }
 
-      const response = await agroirisPicking.generarPedidos(bodyToSend);
+      const response = await agroirisPicking.generarPedidos(bodyToSend as PickingRequest[]);
 
       try {
         console.log('📦 Respuesta picking <- AgroIris', JSON.stringify(response, null, 2));

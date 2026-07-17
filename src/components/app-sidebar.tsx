@@ -16,7 +16,7 @@ type NavRoute = {
 
 const facturasRoute: NavRoute = {
   path: "/facturas-recibidas",
-  label: "Facturas de compra",
+  label: "Facturas recibidas",
   Icon: FileText,
 };
 

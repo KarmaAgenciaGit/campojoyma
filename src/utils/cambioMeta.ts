@@ -186,7 +186,7 @@ export const updateCambioMetaMatch = (
   meta: unknown,
   pedidoId: number | null,
 ): Record<string, unknown> | null => {
-  const record =
+  const record: Record<string, unknown> =
     meta && typeof meta === 'object'
       ? { ...(meta as Record<string, unknown>) }
       : typeof meta === 'string' && meta.trim()
@@ -204,7 +204,7 @@ export const updateCambioMetaMatchList = (
   meta: unknown,
   pedidoIds: number[],
 ): Record<string, unknown> | null => {
-  const record =
+  const record: Record<string, unknown> =
     meta && typeof meta === 'object'
       ? { ...(meta as Record<string, unknown>) }
       : typeof meta === 'string' && meta.trim()
@@ -264,7 +264,7 @@ export const getAppliedFlags = (meta: unknown): AppliedFlags => {
 };
 
 export const updateAppliedFlags = (meta: unknown, updates: AppliedFlags): Record<string, unknown> => {
-  const record =
+  const record: Record<string, unknown> =
     meta && typeof meta === 'object'
       ? { ...(meta as Record<string, unknown>) }
       : typeof meta === 'string' && meta.trim()

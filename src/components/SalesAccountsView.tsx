@@ -77,7 +77,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { Textarea } from '@/components/ui/textarea';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Calendar as DateRangeCalendar } from '@/components/ui/calendar';
@@ -712,7 +712,7 @@ export const SalesAccountsView = () => {
         ]);
 
         const clientMap = new Map<number, string>(
-          clients.map((c) => [c.clienteid, c.nombre_sujeto || c.nombre_comercial]),
+          clients.map((c): [number, string] => [c.clienteid, c.nombre_sujeto || c.nombre_comercial]),
         );
 
         const pdfIds = Array.from(

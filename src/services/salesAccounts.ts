@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 
 export interface SalesAccountValue {
   id: number;
@@ -251,7 +251,6 @@ class SalesAccountsService {
 
   async getErrorsByPdfIds(pdfIds: number[]): Promise<SalesAccountError[]> {
     if (!pdfIds.length) return [];
-    // @ts-expect-error - Tabla añadida por migración y aún no tipada en supabase/types.ts
     const { data, error } = await supabase
       .from('cuentaventa_errores')
       .select('id, archivo_pdf_id, codigo, mensaje, numero_pagina, created_at')

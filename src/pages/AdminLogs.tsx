@@ -178,7 +178,7 @@ const AdminLogs = () => {
     const syncPresence = () => {
       const state = channel.presenceState() as Record<string, PresenceMeta[]>;
       const next = Object.entries(state)
-        .map(([key, metas]) => {
+        .map(([key, metas]): OnlineUser | null => {
           const meta = metas[0];
           const userId = meta?.user_id ?? key;
           if (!userId) return null;

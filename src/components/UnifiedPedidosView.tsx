@@ -46,7 +46,7 @@ import type {
 } from '@/types/pedidos';
 import type { CambioPedido } from '@/types/cambios';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { agroirisAuth } from '@/services/agroirisAuth';
 import { agroirisAcreedores } from '@/services/agroirisAcreedores';
 import { agroirisPicking, type PickingRequest } from '@/services/agroirisPicking';
@@ -70,6 +70,13 @@ interface UnifiedPedidosViewProps {
   title: string;
   emptyMessage: string;
 }
+
+type LineaSummary = {
+  pedidodetid: number;
+  idpedidodet_orizon: number | null;
+  descripcion_salida: string;
+  numero_palet: number;
+};
 
 export const UnifiedPedidosView = ({ tipoPedido, title, emptyMessage }: UnifiedPedidosViewProps) => {
   const { toast } = useToast();
@@ -1510,7 +1517,7 @@ export const UnifiedPedidosView = ({ tipoPedido, title, emptyMessage }: UnifiedP
 
         return {
           ...prev,
-          idpedido_orizon: result.newOrizonId ?? prev.idpedido_orizon,
+          idpedido_orizon: (result.newOrizonId ?? prev.idpedido_orizon) as number | null,
           needs_sync: false,
           enviado: true,
           lineas: updatedLineas,
@@ -1913,7 +1920,6 @@ export const UnifiedPedidosView = ({ tipoPedido, title, emptyMessage }: UnifiedP
     setLineaToRemove(lineaId);
     const lineaInfo = selectedPedido?.lineas?.find((l) => l.pedidodetid === lineaId);
     setLineaToRemoveDescripcion(lineaInfo?.descripcion_salida ?? null);
-    // @ts-expect-error - algunos tipos no incluyen idpedidodet_orizon
     setLineaToRemoveOrizonId((lineaInfo as any)?.idpedidodet_orizon ?? null);
     setShowDeleteLineaDialog(true);
   };

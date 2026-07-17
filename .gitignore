@@ -27,3 +27,8 @@ dist-ssr
 *.sw?
 update-agroiris-only.sh
 supabase/.temp/
+*.tsbuildinfo
+
+# Transcripciones de sesiones de Codex (contienen credenciales en texto plano)
+docs/codex-sessions/
+docs/codex-sessions-servidor/

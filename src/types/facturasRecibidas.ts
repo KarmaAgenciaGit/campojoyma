@@ -33,13 +33,79 @@ export type FacturaRecibidaCtb = {
   updated_at: string;
 };
 
+export type FacturaRecibidaPunteo = {
+  id: string;
+  factura_id: string;
+  posicion: number;
+  remote_id: string | null;
+  source_table: string | null;
+  source_id: number | null;
+  importe_factura: number | null;
+  Origen: string | null;
+  Serie: string | null;
+  Albaran: number | null;
+  Ref: string | null;
+  Fecha: string | null;
+  'Importe P': number | null;
+  Importe: number | null;
+  S: boolean;
+  Ver: boolean;
+  empresa_id: number | null;
+  proveedor_id: number | null;
+  cuenta_gasto: string | null;
+  line_count: number;
+  source_lines: unknown;
+  raw: unknown;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FacturaRecibidaAsientoApunte = {
+  id: string;
+  asiento_id: string;
+  posicion: number;
+  cuenta: string | null;
+  descripcion: string | null;
+  debe: number;
+  haber: number;
+  analytic: unknown;
+  raw: unknown;
+};
+
+export type FacturaRecibidaAsiento = {
+  id: string;
+  factura_id: string;
+  request_id: string;
+  technical_id: number | null;
+  visible_number: string | null;
+  accounting_date: string | null;
+  concept: string | null;
+  status: string;
+  total_debit: number;
+  total_credit: number;
+  balanced: boolean;
+  raw: unknown;
+  captured_at: string;
+  apuntes: FacturaRecibidaAsientoApunte[];
+};
+
 export type FacturaRecibida = {
   id: string;
   archivo_pdf_id: number | null;
   estado: FacturaRecibidaEstado;
+  source_kind: string | null;
+  remote_frr_id: number | null;
+  is_readonly_reference: boolean;
+  match_status: string | null;
+  match_evidence: unknown;
   proveedor_nombre: string | null;
   proveedor_nif: string | null;
   source_pdf_name: string | null;
+  source_page_number: number | null;
+  source_page_count: number | null;
+  email_from: string | null;
+  email_subject: string | null;
+  email_received_at: string | null;
   confidence: number | null;
   extraction: unknown;
   validation_errors: FacturaValidationIssue[];
@@ -47,6 +113,14 @@ export type FacturaRecibida = {
   erp_sent_at: string | null;
   erp_response: unknown;
   erp_error: string | null;
+  row_version: number;
+  sync_status: string | null;
+  accounting_status: string | null;
+  accounting_visible_number: string | null;
+  accounting_date: string | null;
+  erp_last_read_at: string | null;
+  erp_last_read_payload: unknown;
+  last_request_id: string | null;
   created_at: string;
   updated_at: string;
   FRR_id: number | null;
@@ -54,6 +128,7 @@ export type FacturaRecibida = {
   FRR_ejercicio: number | null;
   FRR_idcentro: number | null;
   FRR_idproveedor: number | null;
+  FRR_idregimen: number | null;
   FRR_idcuenta: string | null;
   FRR_numerofactura: string | null;
   FRR_fechafactura: string | null;
@@ -77,14 +152,57 @@ export type FacturaRecibida = {
   FRR_baseret: number | null;
   FRR_ret: number | null;
   FRR_cuotaret: number | null;
+  FRR_igasto1: number | null;
+  FRR_ctagasto1: string | null;
+  FRR_igasto2: number | null;
+  FRR_ctagasto2: string | null;
+  FRR_igasto3: number | null;
+  FRR_ctagasto3: string | null;
+  FRR_igasto4: number | null;
+  FRR_ctagasto4: string | null;
   FRR_totalfac: number | null;
   FRR_tipofactura: string | null;
+  FRR_idpuntoventa: number | null;
+  FRR_ClaveIRPF: string | null;
+  FRR_IdAsientoNet: number | null;
+  FRR_CtaCartera: string | null;
+  FRR_IdBanco: number | null;
+  FRR_IdFormaPago: number | null;
+  FechaVto: string | null;
+  ImporteVto: number | null;
+  FRR_Modificable: string | null;
+  FRR_idpago: number | null;
+  FRR_IdUsuarioLog: number | null;
+  FRR_FechaLog: string | null;
+  FRR_HoraLog: string | null;
+  FRR_GeneraCartera: string | null;
+  FRR_FechaVto1: string | null;
+  FRR_ImporteVto1: number | null;
+  FRR_FechaVto2: string | null;
+  FRR_ImporteVto2: number | null;
+  FRR_FechaVto3: string | null;
+  FRR_ImporteVto3: number | null;
+  FRR_IdTipoDoc: number | null;
+  FRR_IdAgricultorDto: number | null;
+  FRR_CtaSuplido: string | null;
   FRR_Concepto: string | null;
   FRR_Observaciones: string | null;
   FRR_ObservacionesAEAT: string | null;
   FRR_ImpSuplido: number | null;
   FRR_CuotaNoDeducible: number | null;
+  FRR_FechaPrevPago: string | null;
+  FRR_BancoPrevPago: number | null;
+  FRR_IdSeccion: number | null;
+  FRR_IdActividad: number | null;
+  FRR_CancelarporCtb: string | null;
+  FRR_Contabilizar: string | null;
+  FRR_IdfacturaRec: number | null;
+  erp_sent_by: string | null;
+  created_by: string | null;
+  updated_by: string | null;
   ctb: FacturaRecibidaCtb[];
+  punteos: FacturaRecibidaPunteo[];
+  asientos: FacturaRecibidaAsiento[];
 };
 
 export type FacturaRecibidaListFilters = {
@@ -98,6 +216,15 @@ export type FacturaRecibidaListFilters = {
   fechaTo?: string;
   totalFrom?: number | null;
   totalTo?: number | null;
+  erpStatus?: 'all' | 'sent' | 'not_sent';
+  sortOrder?:
+    | 'created_desc'
+    | 'created_asc'
+    | 'fecha_desc'
+    | 'fecha_asc'
+    | 'total_desc'
+    | 'total_asc';
+  includeDiscarded?: boolean;
 };
 
 export type FacturaRecibidaPage = {

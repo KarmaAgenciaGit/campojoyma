@@ -1,7 +1,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
+  FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   corsHeaders,
+  integerValue,
+  isAllowedERPConsulta,
   jsonResponse,
+  parseJsonResponse,
+  requestIdValue,
   requireRouteUser,
   signJwtHs256,
 } from "../_shared/facturas-recibidas-erp.ts";
@@ -14,21 +19,6 @@ const parseExpSeconds = (value: string | undefined) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_EXP_SECONDS;
 };
 
-const isAllowedConsulta = (consulta: string) => {
-  if (!consulta || consulta.startsWith("/") || /^https?:\/\//i.test(consulta) || consulta.includes("..")) {
-    return false;
-  }
-
-  const [path] = consulta.split("?", 1);
-  return (
-    /^acreedores(?:\/\d+)?$/.test(path) ||
-    path === "empresas" ||
-    /^facturasrecibidas(?:\/\d+(?:\/ctb)?)?$/.test(path) ||
-    path === "facturasrecibidas/tipos" ||
-    path === "facturasrecibidas_ctb"
-  );
-};
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -38,8 +28,15 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const contractVersion = integerValue(body.contract_version, null);
+    if (contractVersion !== null && contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
+      return jsonResponse({ error: "contract_version no soportada" }, 422);
+    }
+    const requestId = contractVersion === FACTURAS_RECIBIDAS_CONTRACT_VERSION
+      ? requestIdValue(body.request_id)
+      : null;
     const consulta = String(body.consulta ?? "").trim();
-    if (!isAllowedConsulta(consulta)) {
+    if (!isAllowedERPConsulta(consulta)) {
       return jsonResponse({ error: "Consulta no permitida." }, 422);
     }
 
@@ -50,28 +47,35 @@ Deno.serve(async (req) => {
       Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim() ||
       Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_URL")?.trim() ||
       DEFAULT_READ_WEBHOOK_URL;
-    const jwt = await signJwtHs256(jwtSecret, parseExpSeconds(Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS")));
+    const jwt = await signJwtHs256(
+      jwtSecret,
+      parseExpSeconds(Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS")),
+    );
 
     const url = new URL(webhookUrl);
     url.searchParams.set("consulta", consulta);
-
     const upstream = await fetch(url, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${jwt}`,
-      },
+      headers: { Authorization: `Bearer ${jwt}` },
+      signal: AbortSignal.timeout(30_000),
     });
+    const { payload } = await parseJsonResponse(upstream);
 
-    const upstreamText = await upstream.text();
-    let payload: unknown = upstreamText;
-    try {
-      payload = JSON.parse(upstreamText);
-    } catch {
-      // Keep text response.
+    if (contractVersion === FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
+      return jsonResponse(
+        {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
+          ok: upstream.ok,
+          data: payload,
+        },
+        upstream.status,
+      );
     }
-
     return jsonResponse(payload, upstream.status);
   } catch (error) {
-    return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
+    const message = error instanceof Error ? error.message : "Unexpected error";
+    const status = error instanceof DOMException && error.name === "TimeoutError" ? 504 : 500;
+    return jsonResponse({ error: message }, status);
   }
 });

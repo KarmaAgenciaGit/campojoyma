@@ -1,7 +1,9 @@
-# Documentacion tecnica: facturas y albaranes ERP
+# Documentacion tecnica: facturas y albaranes Netagro
 
-Generado a partir de la copia local `erpcomer` el `2026-06-29T16:01:26Z`.
-Actualizado el `2026-06-30` con maestro de clientes, estructura real de facturas recibidas/proveedores, endpoints `/clientes` y flujo de contraste OCR para PDFs de facturas en correos.
+Generado a partir de la copia local `netagrocomer` el `2026-06-29T16:01:26Z`.
+Actualizado el `2026-07-15` con auditoria completa de la FastAPI, sus 41 operaciones,
+los endpoints de agricultores y catalogos, el contrato de escritura y el estado real
+de despliegue.
 
 ## Alcance y cautelas
 
@@ -10,14 +12,56 @@ Actualizado el `2026-06-30` con maestro de clientes, estructura real de facturas
 - Los nombres de columnas siguen prefijos historicos del ERP: `FRA` factura cliente, `ASA` albaran salida, `AEN` albaran entrada, etc.
 - La base no contiene comentarios de columna. El significado se infiere por nombre, tipo, indices y uso en consultas reales; los campos funcionales finos deben validarse con usuarios de negocio antes de escribir en produccion.
 - Fechas `1900-01-01`, `1900-01-01T00:00:00` o `0000-00-00` aparecen como valor nulo funcional/heredado.
-- La API de pruebas apunta a la copia local del VPS intermedio (`karma-box`) y usa un usuario MariaDB de solo lectura para los endpoints descritos.
+- La API de pruebas apunta exclusivamente a la copia MariaDB del servidor intermedio
+  (`karma-box`). Las lecturas usan `netagro_api`; el unico endpoint de escritura usa
+  `netagro_api_write`, esta limitado a `netagrocomer` y nunca debe apuntar a produccion.
+- Este archivo es la referencia canonica. Las copias del Escritorio y del VPS son
+  artefactos sincronizados, no fuentes independientes.
+
+## Actualizacion de copia de pruebas 2026-07-08
+
+La copia local del VPS intermedio se actualizo con un nuevo dump de produccion el `2026-07-08T10:21:09Z`, manteniendo la base original como solo lectura desde el procedimiento de dump.
+
+Ficheros generados en el intermedio:
+
+| Fichero | Uso | Tamano | SHA256 |
+|---|---|---:|---|
+| `/home/karma/db_clone/local-before-20260708-102109.sql.gz` | Backup de la copia local anterior antes del restore | 790 MB | `b93cf43ebbd2069a6874499c6d14f948e066f0ee7dfe3a19c8c1a97856d54a28` |
+| `/home/karma/db_clone/prod-nonsystem-20260708-102109.sql.gz` | Nuevo dump de produccion restaurado en pruebas | 793 MB | `ebd5c97c7df682080cdd514e23a4e00ce11df79108c406649d732d729582977e` |
+| `/home/karma/db_clone/validation-local-20260708-102109.txt` | Informe de validacion posterior | 613 B | n/d |
+| `/home/karma/db_clone/update-20260708-102109.log` | Log del proceso completo | 4.5 KB | n/d |
+
+Validacion posterior en `karma-box`:
+
+| Metrica | Valor |
+|---|---:|
+| Esquemas de aplicacion | 47 |
+| Tablas | 3471 |
+| Vistas | 95 |
+| Rutinas | 88 |
+| `netagrocomer.acreedores` | 1836 |
+| `netagrocomer.empresas` | 1 |
+| `netagrocomer.facturasrecibidas` | 48820 |
+| `netagrocomer.facturasrecibidas_ctb` | 37027 |
+| `netagrocomer.clientes` | 1205 |
+| `netagrocomer.facturas` | 180616 |
+
+Endpoints probados desde n8n despues del restore:
+
+```text
+GET http://172.19.0.1:18000/health -> 200
+GET http://172.19.0.1:18000/acreedores?limit=1 -> total 1836
+GET http://172.19.0.1:18000/facturasrecibidas?limit=1 -> total 48820
+GET http://172.19.0.1:18000/facturasrecibidas/tipos -> 11 tipos observados
+GET http://172.19.0.1:18000/empresas -> total 1
+```
 
 ## Resumen ejecutivo
 
 Hay cinco bloques principales:
 
 1. **Clientes**: `clientes` es el maestro que resuelve `CLI_Idcliente`, nombre, NIF/VAT, direccion, email, idioma/divisa y estado. Es la primera tabla a consultar cuando llega un PDF por OCR.
-2. **Proveedores/acreedores y facturas recibidas**: `acreedores` identifica proveedor por `ACR_Codigo`; `facturasrecibidas` es la cabecera real ERP de factura recibida, y `facturasrecibidas_ctb` es su desglose contable.
+2. **Proveedores/acreedores y facturas recibidas**: `empresas` identifica la empresa propietaria, `acreedores` identifica proveedor por `ACR_Codigo`; `facturasrecibidas` es la cabecera real Netagro de factura recibida, y `facturasrecibidas_ctb` es su desglose contable.
 3. **Facturas a clientes**: `facturas` como cabecera, `facturaslineasvar` como conceptos/lineas, `facturas_gastos` como gastos y `albsalida` como albaranes facturados.
 4. **Albaranes de salida**: `albsalida` como cabecera, `albsalida_lineas`, `albsalida_gastos`, `albsalida_palets` y `albsalida_lineas_desglose` como detalle.
 5. **Albaranes de entrada y facturas de agricultores**: `albentrada` y sus lineas/gastos/clasificaciones; `facturaagr` y `facturaagr_lineas` liquidan genero de agricultores.
@@ -32,6 +76,9 @@ clientes.CLI_Idcliente
 
 acreedores.ACR_Codigo
   -> facturasrecibidas.FRR_idproveedor
+
+empresas.EMP_idempresa
+  -> facturasrecibidas.FRR_Idempresa
 
 facturasrecibidas.FRR_id
   -> facturasrecibidas_ctb.FRC_idfacturarecibida
@@ -65,7 +112,7 @@ facturaagr_lineas.FAL_idpartida
 |---|---:|---|
 | `clientes_to_facturas` | clientes=1190, facturas=179532, clientes_usados=772, facturas_cliente_huerfano=0 | Todas las facturas emitidas apuntan a un cliente existente. |
 | `clientes_to_albsalida` | clientes=1190, albaranes=110048, clientes_usados=365, albaranes_cliente_huerfano=0 | Los albaranes de salida con cliente distinto de 0 apuntan a cliente existente. |
-| `acreedores_to_facturasrecibidas` | acreedores=1831, facturas=48641, proveedores_usados=1738, proveedor_match=45672, proveedor_cero=4, proveedor_no_cero_huerfano=2965 | `FRR_idproveedor` apunta logicamente a `ACR_Codigo`, pero hay historico con proveedor inexistente en `acreedores` dentro de `erpcomer`. |
+| `acreedores_to_facturasrecibidas` | acreedores=1831, facturas=48641, proveedores_usados=1738, proveedor_match=45672, proveedor_cero=4, proveedor_no_cero_huerfano=2965 | `FRR_idproveedor` apunta logicamente a `ACR_Codigo`, pero hay historico con proveedor inexistente en `acreedores` dentro de `netagrocomer`. |
 | `facturasrecibidas_to_ctb` | apuntes=37027, facturas_con_ctb=29783, apuntes_match=36621, factura_cero=38, factura_no_cero_huerfana=368 | `FRC_idfacturarecibida` apunta logicamente a `FRR_id`; hay apuntes contables historicos sin cabecera local. |
 | `facturas_to_albsalida` | albaranes_con_factura=108912, facturas_con_albaranes=103560, albaranes_huerfanos=0 | Albaranes de salida facturados; `ASA_idfactura=0` indica pendiente/no facturado. |
 | `facturas_to_lineasvar` | lineas=149032, facturas_con_lineas=75335, lineas_huerfanas=0 | Lineas o conceptos variables de factura emitida. |
@@ -80,9 +127,16 @@ facturaagr_lineas.FAL_idpartida
 
 ## Volumen por tabla
 
+Las cifras de esta tabla pertenecen al snapshot inicial del `2026-06-29`. Sirven para
+dimensionar el modelo, pero no son parte del contrato API ni deben interpretarse como
+conteos actuales. Las metricas verificadas tras el restore del 8 de julio aparecen en
+`Actualizacion de copia de pruebas 2026-07-08`; cualquier cifra operativa debe
+consultarse de nuevo contra la copia vigente.
+
 | Tabla | Filas exactas | MB aprox. | Descripcion |
 |---|---:|---:|---|
 | `clientes` | 1190 | n/d | Maestro de clientes: nombre, NIF/VAT, direccion, emails, idioma/divisa, EDI y estado. |
+| `empresas` | 1 | n/d | Maestro de empresas/razones sociales. Resuelve `facturasrecibidas.FRR_Idempresa`. |
 | `acreedores` | 1831 | 0.47 | Maestro de proveedores/acreedores: nombre, NIF, cuenta contable, cuenta de gasto, forma de pago y estado. |
 | `facturas` | 179532 | 88.72 | Cabecera de facturas emitidas a clientes. |
 | `facturaslineasvar` | 149032 | 24.06 | Lineas variables/conceptos de factura emitida. |
@@ -106,22 +160,49 @@ facturaagr_lineas.FAL_idpartida
 | `albentrada_hislineas` | 162602 | 39.13 | Historico de lineas de albaran de entrada. |
 | `albentrada_hisgastos` | 46819 | 18.09 | Historico de gastos de albaran de entrada. |
 
-## API actual de pruebas
+## API Netagro de pruebas: referencia completa
 
-La FastAPI desplegada usa la copia local y el usuario MariaDB `erp_api` con permisos `SELECT`. Desde n8n en este servidor se consume con:
+La FastAPI usa la copia local y separa credenciales de lectura y escritura. Desde n8n
+en el VPS se consume con:
 
 ```text
 http://172.19.0.1:18000
 ```
 
-Endpoints principales:
+Inventario exhaustivo del codigo en disco (`41` operaciones sobre `40` paths; `GET` y
+`POST` comparten `/facturasrecibidas`):
 
 | Endpoint | Uso |
 |---|---|
+| `GET /` | Identidad del servicio, esquema por defecto y esquemas permitidos. |
 | `GET /health` | Estado de API y conexion a BD local. |
 | `GET /meta/tables` | Tablas de facturas/albaranes detectadas. |
+| `GET /empresas` | Lista paginada de empresas. Sirve para poblar combo de `FRR_Idempresa`. |
+| `GET /empresas/{empresa_id}` | Ficha completa de empresa por `EMP_idempresa`. |
 | `GET /clientes` | Lista/busqueda paginada de clientes. Filtros: `q`, `nombre`, `nif`, `codigo_edi`, `activo`, `schema`, `limit`, `offset`. |
 | `GET /clientes/{cliente_id}` | Ficha de cliente por `CLI_Idcliente`. Incluye datos fiscales, direccion, emails de albaranes/pedidos y estado. |
+| `GET /acreedores` | Lista/busqueda paginada de proveedores/acreedores. Filtros: `q`, `nombre`, `nif`, `codigo`, `activo`, `schema`, `limit`, `offset`. |
+| `GET /acreedores/{acreedor_id}` | Ficha de acreedor/proveedor por `ACR_Codigo`. |
+| `GET /acreedores/{acreedor_id}/gastos` | Origenes de gasto configurados en `acreedores_gastos`. **En disco; pendiente de reiniciar el servicio vivo.** |
+| `GET /agricultores` | Maestro de agricultores con filtros `q`, `nombre`, `nif`, `codigo`, `tipo` y `activo`. **En disco; pendiente de reinicio.** |
+| `GET /agricultores/{agricultor_id}` | Ficha fiscal, contable y operativa del agricultor. **En disco; pendiente de reinicio.** |
+| `GET /agricultores/{agricultor_id}/gastos` | Reglas de gasto de `agricultorgastos`. **En disco; pendiente de reinicio.** |
+| `GET /facturasrecibidas/tipos` | Catalogo observado de `FRR_tipofactura` desde datos reales. No hay descripciones oficiales cargadas en la copia local. |
+| `GET /facturasrecibidas/buscar` | Busqueda exacta de factura recibida existente por `empresa_id`, `ejercicio`, `proveedor_id` y `numero_factura`. |
+| `GET /facturasrecibidas` | Lista paginada de facturas recibidas. Filtros: `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura`, `schema`. |
+| `GET /facturasrecibidas/{factura_id}` | Cabecera `FRR_*` completa de factura recibida por `FRR_id`, con datos del acreedor asociado. |
+| `GET /facturasrecibidas/{factura_id}/ctb` | Apuntes contables reales `FRC_*` de `facturasrecibidas_ctb`. No genera lineas desde `FRR_ctagasto*`. |
+| `GET /facturasrecibidas_ctb?factura_id={id}` | Alias para consultar apuntes `FRC_*` por query string. |
+| `GET /facturasrecibidas/{factura_id}/punteos` | Punteos/gastos reales enlazados a una factura recibida. Devuelve `source_table`, `source_id`, `Origen`, `Serie`, `Albaran`, `Ref`, `Fecha`, `Importe P`, `Importe`, `S`, `Ver`, empresa, acreedor y cuenta gasto si aplica. |
+| `GET /albaranes-gastos/punteables` | Lista de gastos/albaranes punteables, por defecto pendientes de factura recibida. Filtros: `source_table`, `proveedor_id`, `empresa_id`, `fecha_desde`, `fecha_hasta`, `solo_pendientes`, `limit`, `offset`. |
+| `GET /cuentas-contables` | Catalogo de cuentas con descripcion desde `contabilidad*.cuentas`. Filtros: `account_schema`, `q`, `cuenta`, `nif`, `limit`, `offset`. |
+| `GET /tipos-iva` | Catalogo de IVA desde `tiposivacli` y `tiposiva` si estuviera poblada. |
+| `GET /regimenes` | Catalogo observado de `FRR_idregimen`; no se ha encontrado tabla maestra poblada de regimenes. |
+| `GET /formas-pago` | Catalogo `formaspagocli`. **En disco; pendiente de reinicio.** |
+| `GET /bancos` | Catalogo `bancosalm`. **En disco; pendiente de reinicio.** |
+| `GET /series-factura` | Catalogo `seriefacturas`. **En disco; pendiente de reinicio.** |
+| `GET /conceptos-factura` | Catalogo `conceptosfactura`. **En disco; pendiente de reinicio.** |
+| `POST /facturasrecibidas` | Alta transaccional en la copia local. Por defecto `dry_run=true`; con `dry_run=false` inserta `FRR_*`, `FRC_*` reales y enlaza punteos seleccionados. |
 | `GET /facturas` | Lista paginada de facturas emitidas. Filtros: `fecha_desde`, `fecha_hasta`, `cliente_id`, `serie`, `numero`, `schema`. |
 | `GET /facturas/{factura_id}` | Cabecera de factura emitida. |
 | `GET /facturas/{factura_id}/lineas` | Lineas/conceptos de `facturaslineasvar`. |
@@ -134,14 +215,650 @@ Endpoints principales:
 | `GET /albaranes/entrada/{albaran_id}` | Cabecera de albaran de entrada. |
 | `GET /albaranes/entrada/{albaran_id}/lineas` | Lineas de albaran de entrada. |
 | `GET /facturas-agricultores` | Lista paginada de facturas/liquidaciones a agricultores. |
-| `GET /acreedores` | Lista/busqueda paginada de proveedores/acreedores. Filtros: `limit`, `offset`, `q`, `nombre`, `nif`, `codigo`. |
-| `GET /acreedores/{acreedor_id}` | Ficha completa del acreedor por `ACR_Codigo`. |
-| `GET /facturasrecibidas` | Lista paginada de facturas recibidas. Filtros: `limit`, `offset`, `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura`. |
-| `GET /facturasrecibidas/{factura_id}` | Cabecera completa de factura recibida con datos del acreedor asociado. |
-| `GET /facturasrecibidas/{factura_id}/ctb` | Desglose contable de una factura recibida. |
-| `GET /facturasrecibidas_ctb?factura_id={id}` | Variante de consulta del desglose contable por `FRC_idfacturarecibida`. |
 
-Nota operativa: los endpoints de facturas recibidas son de solo lectura contra la copia local de MariaDB del VPS intermedio. Produccion no se toca desde esta API.
+Los listados paginados nuevos de `empresas`, `acreedores` y `facturasrecibidas` devuelven:
+
+```json
+{
+  "items": [],
+  "limit": 50,
+  "offset": 0,
+  "total": 0
+}
+```
+
+Los endpoints de detalle devuelven un objeto JSON. Los desgloses contables devuelven `{ "items": [] }`. El catalogo observado `GET /facturasrecibidas/tipos` devuelve `{ "items": [], "source": "..." }`.
+
+Ejemplos desde n8n:
+
+```text
+GET http://172.19.0.1:18000/acreedores?limit=50
+GET http://172.19.0.1:18000/acreedores?nif=B04243655
+GET http://172.19.0.1:18000/acreedores/1941
+GET http://172.19.0.1:18000/empresas
+GET http://172.19.0.1:18000/facturasrecibidas/tipos
+GET http://172.19.0.1:18000/facturasrecibidas?proveedor_id=1941&numero_factura=FCD26%2F2820
+GET http://172.19.0.1:18000/facturasrecibidas/49165
+GET http://172.19.0.1:18000/facturasrecibidas/34602/ctb
+GET http://172.19.0.1:18000/facturasrecibidas_ctb?factura_id=34602
+GET http://172.19.0.1:18000/facturasrecibidas/43753/punteos?limit=50
+GET http://172.19.0.1:18000/albaranes-gastos/punteables?proveedor_id=2073&source_table=albsalida_gastos
+GET http://172.19.0.1:18000/cuentas-contables?cuenta=4009
+GET http://172.19.0.1:18000/tipos-iva
+GET http://172.19.0.1:18000/regimenes
+GET http://172.19.0.1:18000/facturasrecibidas/buscar?empresa_id=1&ejercicio=24&proveedor_id=2073&numero_factura=80032863
+```
+
+Alta de factura recibida en pruebas:
+
+```http
+POST http://172.19.0.1:18000/facturasrecibidas?dry_run=true
+Content-Type: application/json
+```
+
+```json
+{
+  "cabecera": {
+    "FRR_Idempresa": 1,
+    "FRR_ejercicio": 25,
+    "FRR_idproveedor": 2073,
+    "FRR_numerofactura": "DRYRUN-001",
+    "FRR_fechafactura": "2025-07-08",
+    "FRR_fechactb": "2025-07-08",
+    "FRR_tipofactura": "OT",
+    "FRR_idregimen": 2110,
+    "FRR_idcuenta": "40090002073",
+    "FRR_base1": "10.00",
+    "FRR_iva1": "21.00",
+    "FRR_cuota1": "2.10",
+    "FRR_totalfac": "12.10",
+    "FRR_Concepto": "DRY RUN API"
+  },
+  "ctb": [
+    {
+      "FRC_Importe": "12.10",
+      "FRC_Cuenta": "40090002073"
+    }
+  ],
+  "punteos": [
+    {
+      "source_table": "albsalida_gastos",
+      "source_id": 429016,
+      "importe_factura": "6.14"
+    }
+  ]
+}
+```
+
+Reglas del alta:
+
+- `dry_run=true` no escribe; valida duplicados, columnas y devuelve `FRR_id`/`FRR_numero` previstos.
+- `dry_run=false` escribe solo en la copia local del VPS intermedio, usando usuario MariaDB de escritura limitado.
+- `FRR_id` y `FRC_id` los genera la API; no se aceptan ids manuales.
+- `ctb` solo acepta columnas reales `FRC_*`; no se fabrican apuntes desde `FRR_ctagasto*`.
+- `punteos` se enlaza por `source_table` + `source_id`; si un punteo ya esta enlazado a otra factura, devuelve error de validacion y no inserta nada.
+
+Nota sobre webhook externo: estos endpoints existen en la FastAPI interna del VPS intermedio. Si se quiere consumir mediante el webhook actual:
+
+```text
+https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma?consulta=...
+```
+
+el workflow de n8n debe traducir `query.consulta` a llamadas HTTP contra `http://172.19.0.1:18000`. La autenticacion JWT Bearer, si se usa, pertenece a la capa del webhook/n8n; la FastAPI interna queda accesible por el tunel privado y no se expone publicamente.
+
+### Estado verificado el 2026-07-15
+
+| Elemento | Estado |
+|---|---|
+| Titulo OpenAPI | `Netagro Test API` |
+| Version OpenAPI | `0.1.0` (valor por defecto de FastAPI) |
+| Codigo en VPS e intermedio | Mismo `main.py`, SHA256 `9f9615dc74cea4e72172006dd7d4bad08fdc9a4e91f27ab7446c5595a00c363b` |
+| Superficie del codigo en disco | `41` operaciones sobre `40` paths distintos |
+| Superficie del proceso vivo | `33` operaciones sobre `32` paths distintos |
+| Servicio vivo | `netagro-api.service`, activo desde el 2026-07-08 |
+| Codigo nuevo en disco | Modificado el 2026-07-14; Uvicorn aun no lo ha recargado |
+| Lecturas | Usuario `netagro_api` sobre las copias permitidas |
+| Escrituras | `DB_WRITES_ENABLED=true`, usuario `netagro_api_write`, solo esquema `netagrocomer` |
+| Seguridad del POST | `dry_run=true` por defecto; `dry_run=false` escribe realmente en la copia de pruebas |
+
+Las ocho operaciones ausentes del proceso vivo son:
+
+```text
+GET /agricultores
+GET /agricultores/{agricultor_id}
+GET /agricultores/{agricultor_id}/gastos
+GET /acreedores/{acreedor_id}/gastos
+GET /formas-pago
+GET /bancos
+GET /series-factura
+GET /conceptos-factura
+```
+
+Estan desplegadas en disco y se han ejercitado directamente contra la copia de pruebas,
+pero el puerto `8000` no las publicara hasta reiniciar `netagro-api.service`. Esta
+documentacion describe el contrato completo del codigo en disco y marca esa diferencia
+operativa de forma explicita.
+
+Prueba de humo del codigo nuevo, ejecutada sin escribir el 2026-07-15:
+
+| Operacion | Resultado |
+|---|---:|
+| `GET /agricultores` | OK; 1197 filas en la instantanea actual |
+| `GET /agricultores/{id}` | OK |
+| `GET /agricultores/{id}/gastos` | OK |
+| `GET /acreedores/{id}/gastos` | OK |
+| `GET /formas-pago` | OK; 10 filas |
+| `GET /bancos` | OK; 9 filas |
+| `GET /series-factura` | OK; 104 filas |
+| `GET /conceptos-factura` | OK; 40 filas |
+
+Las cantidades son una fotografia de la copia y no forman parte del contrato.
+
+### Arquitectura, URLs y acceso
+
+```text
+n8n (Docker en el VPS)
+  -> http://172.19.0.1:18000
+  -> netagro-api-tunnel.service en 82.25.119.150
+  -> SSH a karma@88.30.71.235:2222
+  -> http://127.0.0.1:8000 en karma-box
+  -> MariaDB local de pruebas
+```
+
+URLs segun el punto de acceso:
+
+| Consumidor | Base URL |
+|---|---|
+| n8n dentro del VPS | `http://172.19.0.1:18000` |
+| Shell del VPS | `http://127.0.0.1:18000` |
+| Servidor intermedio | `http://127.0.0.1:8000` |
+| Exterior | No se expone FastAPI directamente; usar el webhook controlado de n8n |
+
+Documentacion generada por FastAPI:
+
+| Recurso | Ruta |
+|---|---|
+| Swagger UI | `/docs` |
+| ReDoc | `/redoc` |
+| Especificacion OpenAPI | `/openapi.json` |
+
+Estas tres rutas auxiliares no se cuentan entre las 41 operaciones de negocio.
+
+La FastAPI interna no implementa autenticacion ni autorizacion. Uvicorn escucha solo en
+loopback y la barrera actual es la red privada/tunel. El JWT Bearer pertenece al webhook
+de n8n, no a FastAPI. No se debe publicar el puerto `8000` o `18000` en Internet sin
+incorporar autenticacion, TLS, rate limiting y registro de auditoria.
+
+### Convenciones comunes
+
+#### Seleccion de esquema
+
+Casi todas las operaciones aceptan `schema` opcional:
+
+| Valor | Uso |
+|---|---|
+| `netagrocomer` | Esquema predeterminado y unico permitido para escritura |
+| `netagrocomer_2` | Copia permitida para lectura |
+| `netagrocomer_au` | Copia permitida para lectura |
+
+Un valor fuera de la allowlist devuelve `400`. `GET /cuentas-contables` usa en su lugar
+`account_schema`; admite `contabilidad`, `contabilidad_2`, `contabilidad_6`,
+`contabilidad_7`, `contabilidad_10`, `contabilidad_11`, `contabilidad_12`,
+`contabilidad_13`, `contabilidad_14`, `contabilidad_15` y `contabilidad_99`.
+
+#### Paginacion y filtros
+
+- `limit`: entero entre `1` y `200`; valor habitual `50`.
+- `offset`: entero mayor o igual que `0`; valor predeterminado `0`.
+- `/facturasrecibidas/{id}/punteos` usa `limit=200` por defecto.
+- Fechas: `YYYY-MM-DD`; `fecha_desde` y `fecha_hasta` son inclusivas.
+- Todos los filtros distintos de una peticion se combinan con `AND`.
+- Los filtros `q` aplican `OR` entre las columnas documentadas para cada maestro.
+- Las busquedas parciales usan `LIKE` de MariaDB; no son busqueda difusa.
+- Los identificadores, series y numeros indicados como exactos usan igualdad.
+- Los booleanos aceptan los formatos que reconoce FastAPI (`true`, `false`, `1`, `0`).
+
+#### Formatos de respuesta
+
+No todos los listados tienen el mismo contrato:
+
+| Forma | Operaciones |
+|---|---|
+| `{items, limit, offset, total}` | empresas, acreedores, agricultores, facturas recibidas, busqueda de recibidas, cuentas contables y gastos punteables |
+| `{items, limit, offset}` | clientes, facturas emitidas, albaranes, facturas de agricultores y punteos de una recibida |
+| `{items}` | lineas, gastos, CTB y catalogos simples |
+| Objeto directo | endpoints de detalle |
+
+Normalizacion de tipos:
+
+- `Decimal` se serializa como string para no perder precision.
+- Fechas, horas y timestamps se serializan en ISO.
+- Bytes se decodifican como UTF-8 con reemplazo de caracteres invalidos.
+- Los valores heredados `1900-01-01`, `0000-00-00`, cadena vacia y cero no se
+  reinterpretan automaticamente como `null`.
+- Los detalles que usan `SELECT *` conservan los nombres ERP originales (`EMP_*`,
+  `ASA_*`, `AEN_*`, `FRR_*`).
+- OpenAPI muestra respuestas genericas porque el codigo no declara modelos Pydantic de
+  salida. Este documento define el contrato observable real.
+
+#### Errores
+
+| HTTP | Causa habitual |
+|---:|---|
+| `400` | `schema`, `account_schema` o esquema de escritura fuera de la allowlist |
+| `403` | Escritura deshabilitada mediante `DB_WRITES_ENABLED` |
+| `404` | Recurso no encontrado en endpoints de detalle |
+| `409` | No se obtiene en 10 segundos el bloqueo de creacion de factura |
+| `422` | Query/path/body invalido o punteo inexistente/ya enlazado durante escritura |
+| `500` | Error SQL o fallo interno no traducido |
+
+Los errores semanticos del `POST` (columnas desconocidas, campos requeridos ausentes o
+duplicado) se devuelven con HTTP `200`, `ok=false` y `validation_errors`. Los
+subrecursos de un identificador inexistente suelen devolver `items=[]`, no `404`.
+
+Ejemplos de error:
+
+```json
+{"detail":"schema not allowed: produccion"}
+```
+
+```json
+{
+  "ok": false,
+  "dry_run": true,
+  "would_create": false,
+  "validation_errors": [
+    {"field":"FRR_Idempresa","error":"required for duplicate detection"}
+  ]
+}
+```
+
+### Referencia de las 41 operaciones
+
+#### Servicio y metadatos
+
+| Operacion | Parametros | Respuesta | Fuente/efecto |
+|---|---|---|---|
+| `GET /` | Ninguno | `{service, default_schema, allowed_schemas}` | No consulta tablas |
+| `GET /health` | Ninguno | `{status:"ok", database:{ok, db_host, db_version}}` | `SELECT 1`, hostname y version de MariaDB |
+| `GET /meta/tables` | `schema` | `{schema, tables:[{TABLE_NAME,TABLE_TYPE,TABLE_ROWS}]}` | `information_schema.TABLES`; filtra nombres de facturas y albaranes |
+
+`/meta/tables` es un inventario filtrado, no un listado de todas las tablas. Por eso no
+debe usarse para concluir que un maestro como `acreedores` o `agricultores` no existe.
+
+#### Empresas y clientes
+
+| Operacion | Parametros | Respuesta | Fuente |
+|---|---|---|---|
+| `GET /empresas` | `schema`, `limit=50`, `offset=0` | `{items,limit,offset,total}`. Cada item: `id`, `empresa_id`, `nombre`, `cif`, domicilio, poblacion, provincia, CP, pais, email, web, ejercicio predeterminado y demo | `empresas` |
+| `GET /empresas/{empresa_id}` | `empresa_id:int`, `schema` | Objeto con todas las columnas `EMP_*`; `404` si no existe | `empresas` |
+| `GET /clientes` | `schema`, `limit=50`, `offset=0`, `q`, `nombre`, `nif`, `codigo_edi`, `activo` | `{items,limit,offset}` sin `total`; identificacion, contacto, domicilio, pago, divisa, idioma, empresa y estado | `clientes` |
+| `GET /clientes/{cliente_id}` | `cliente_id:int`, `schema` | Detalle normalizado; incluye EDI, pagos, vendedor, comisionista, emails de pedidos/albaranes, observaciones y bloqueos; `404` si no existe | `clientes` |
+
+Busqueda de clientes:
+
+- `q`: coincidencia parcial sobre nombre, NIF, codigo EDI, numero de identificacion o email.
+- `nombre`, `nif`, `codigo_edi`: coincidencia parcial sobre su campo.
+- `activo=true`: `CLI_bloqueo='N'` y `CLI_InactivoRGPD='N'`.
+- `activo=false`: alguna de esas condiciones no se cumple.
+
+#### Acreedores y agricultores
+
+| Operacion | Parametros | Respuesta | Fuente |
+|---|---|---|---|
+| `GET /acreedores` | `schema`, `limit=50`, `offset=0`, `q`, `nombre`, `nif`, `codigo`, `activo` | `{items,limit,offset,total}`; identidad, contacto, cuentas, forma de pago, banco, divisa, pais, retencion, IVA y estado | `acreedores` |
+| `GET /acreedores/{acreedor_id}` | `acreedor_id:int`, `schema` | Detalle fiscal, bancario, contable, operativo y de auditoria; `404` si no existe | `acreedores` |
+| `GET /acreedores/{acreedor_id}/gastos` | `acreedor_id:int`, `schema` | `{items:[{id,acreedor_id,origen_gasto_id}],acreedor_id}` | `acreedores_gastos` |
+| `GET /agricultores` | `schema`, `limit=50`, `offset=0`, `q`, `nombre`, `nif`, `codigo`, `tipo`, `activo` | `{items,limit,offset,total}`; identidad, cuenta, tipo, banco, pago, serie, empresa y estado | `agricultores` |
+| `GET /agricultores/{agricultor_id}` | `agricultor_id:int`, `schema` | Detalle fiscal, contacto, cuenta, banco, pago, serie, empresa, numeracion, observaciones, estado y auditoria; `404` si no existe | `agricultores` |
+| `GET /agricultores/{agricultor_id}/gastos` | `agricultor_id:int`, `schema` | `{items,agricultor_id}`; cada item contiene gasto, valor, fijo, pedir entrada, acreedor, tipo FC, centro, familia y visibilidad | `agricultorgastos` |
+
+Busqueda de acreedores:
+
+- `codigo`: igualdad exacta sobre `ACR_Codigo`.
+- `q`: parcial sobre nombre, NIF, email, cuenta contable o cuenta de gasto.
+- `nombre` y `nif`: coincidencia parcial.
+- `activo=true`: no bloqueado y no inactivo por RGPD.
+
+Busqueda de agricultores:
+
+- `codigo`: igualdad exacta sobre `AGR_Idagricultor`.
+- `tipo`: igualdad exacta sobre `AGR_idtipo`.
+- `q`: parcial sobre nombre, NIF, email o cuenta.
+- `nombre` y `nif`: coincidencia parcial.
+- `activo=true`: `AGR_Activo='S'` y `AGR_bloqueado='N'`.
+
+Los endpoints de gastos no validan primero la existencia del padre: una ID sin filas
+devuelve `items=[]`.
+
+Semantica obligatoria:
+
+- `agricultores` no es un alias de `acreedores`; hay agricultores que no aparecen en
+  el maestro de acreedores.
+- `/facturas-agricultores` devuelve liquidaciones/facturas emitidas al agricultor; no
+  sustituye al maestro `/agricultores`.
+- Ante una factura recibida, el resolver debe probar `acreedores` y, solo cuando la
+  naturaleza del proveedor lo justifique y no haya match, buscar en `agricultores`.
+  No debe reinterpretar automaticamente un tipo de proveedor como el otro.
+
+#### Catalogos contables y de facturacion
+
+| Operacion | Parametros | Respuesta | Fuente |
+|---|---|---|---|
+| `GET /facturasrecibidas/tipos` | `schema` | `{items:[{tipo_factura,descripcion:null,total,fecha_min,fecha_max}],source}` | Valores observados de `facturasrecibidas.FRR_tipofactura` |
+| `GET /cuentas-contables` | `account_schema=contabilidad`, `limit=50`, `offset=0`, `q`, `cuenta`, `nif` | `{items,limit,offset,total,source}`; cuenta, descripcion, NIF, contrapartida, IVA, IRPF, pago, banco y bloqueos | `{account_schema}.cuentas` |
+| `GET /tipos-iva` | `schema` | `{items}` con `id`, `nombre`, `iva`, `recargo_equivalencia`, `cuenta`, `source` | `tiposivacli` + `tiposiva` |
+| `GET /regimenes` | `schema` | `{items:[{regimen_id,descripcion:null,total,fecha_min,fecha_max}],source}` | Valores observados de `facturasrecibidas.FRR_idregimen` |
+| `GET /formas-pago` | `schema` | `{items}` con `id`, `nombre`, `dias_vencimiento`, `genera_cartera`, `tipo_doc_id`, `codigo_edi` | `formaspagocli` |
+| `GET /bancos` | `schema` | `{items}` con `id`, `nombre`, `cuenta_contable`, `iban`, `bic` | `bancosalm` |
+| `GET /series-factura` | `schema` | `{items}` con `id`, `nombre`, `tipo_iva_id` | `seriefacturas` |
+| `GET /conceptos-factura` | `schema` | `{items}` con `id`, `nombre`, `tipo_iva_id` | `conceptosfactura` |
+
+Filtros de cuentas:
+
+- `cuenta`: busqueda por prefijo.
+- `nif`: coincidencia parcial.
+- `q`: coincidencia parcial sobre numero, descripcion o NIF.
+
+No confundir catalogos:
+
+- `/facturasrecibidas/tipos` son codigos observados en `FRR_tipofactura`.
+- `/series-factura` es el maestro `seriefacturas`; no es la misma dimension.
+- `/conceptos-factura` es un catalogo; `/facturas/{id}/lineas` son lineas reales.
+- IDs de forma de pago, banco, serie o concepto deben seleccionarse mediante match
+  explicito; no se deben inferir por parecido de texto sin confirmacion.
+
+#### Facturas recibidas, CTB y punteos
+
+| Operacion | Parametros | Respuesta | Fuente/efecto |
+|---|---|---|---|
+| `GET /facturasrecibidas` | `schema`, `limit=50`, `offset=0`, `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura` | `{items,limit,offset,total}`; resumen `FRR_*` mas nombre/NIF del acreedor | `facturasrecibidas` + `acreedores` |
+| `GET /facturasrecibidas/buscar` | Obligatorios: `empresa_id`, `ejercicio`, `proveedor_id`, `numero_factura`; opcionales: `schema`, `limit=50`, `offset=0` | `{items,limit,offset,total}` con columnas `FRR_*` crudas | Busqueda exacta y criterio de duplicado |
+| `GET /facturasrecibidas/{factura_id}` | `factura_id:int`, `schema` | Todos los campos `FRR_*` mas datos del acreedor; `404` si no existe | `facturasrecibidas` + `acreedores` |
+| `GET /facturasrecibidas/{factura_id}/ctb` | `factura_id:int`, `schema` | `{items}` con los 11 campos `FRC_*` | `facturasrecibidas_ctb` |
+| `GET /facturasrecibidas_ctb` | Query obligatorio `factura_id:int`; `schema` | Igual que la ruta `/ctb` | Alias por query string |
+| `GET /facturasrecibidas/{factura_id}/punteos` | `factura_id:int`, `schema`, `limit=200`, `offset=0` | `{items,limit,offset}` sin `total` | Union de cinco origenes, solo los enlazados a la factura |
+| `GET /albaranes-gastos/punteables` | `schema`, `limit=50`, `offset=0`, `source_table`, `proveedor_id`, `empresa_id`, fechas, `solo_pendientes=true` | `{items,limit,offset,total}` | Misma union; por defecto solo registros sin factura recibida |
+| `POST /facturasrecibidas` | `schema`, `dry_run=true`, body JSON | Validacion o alta transaccional descrita abajo | Puede insertar cabecera/CTB y enlazar punteos en `netagrocomer` |
+
+Filtros de facturas recibidas:
+
+- Fechas, `proveedor_id`, `ejercicio` y `tipo_factura`: exactos/inclusivos.
+- `proveedor_nif` y `numero_factura`: coincidencia parcial.
+- `/buscar` usa igualdad exacta en empresa + ejercicio + proveedor + numero externo.
+
+Campos resumidos del listado: `id`, `frr_id`, `numero`, `fecha_factura`,
+`numero_factura`, `ejercicio`, proveedor, `base1`, `iva1`, `cuota1`, total, tipo,
+regimen, cuenta, concepto, empresa y fecha contable.
+
+##### Contrato de punteos
+
+`source_table` solo admite:
+
+```text
+albsalida_gastos
+albentrada_hisgastos
+albaranescompra_gastos
+facturas_gastos
+albarancoste
+```
+
+La union normaliza estos campos:
+
+```text
+id_interno_estable, source_table, source_id, factura_recibida_id,
+Origen, Serie, Albaran, Ref, Fecha, Importe P, Importe, S, Ver,
+empresa, acreedor_id, acreedor_nombre, gasto_id, gasto_nombre,
+cuenta_gasto, albaran_id
+```
+
+`Importe P` conserva un espacio y varias claves conservan mayusculas por compatibilidad
+con la pantalla ERP.
+
+Con `solo_pendientes=true`, se exige `factura_recibida_id=0`. Con `false` se incluyen
+registros pendientes y ya enlazados. Los cinco origenes y relaciones exactas son:
+
+| `source_table` | Tabla principal | Campo enlace a factura recibida | Campo de importe actualizable |
+|---|---|---|---|
+| `albsalida_gastos` | `albsalida_gastos` | `ASG_idfactura` | `ASG_importefactura` |
+| `albentrada_hisgastos` | `albentrada_hisgastos` | `AHG_idfacturaproveedor` | No se actualiza |
+| `albaranescompra_gastos` | `albaranescompra_gastos` | `AGT_IdFactura` | No se actualiza |
+| `facturas_gastos` | `facturas_gastos` | `FGC_idfacturaReci` | `FGC_importefacturaReci` |
+| `albarancoste` | `albarancoste` | `ALB_IdFactura` | No se actualiza |
+
+##### Contrato de `POST /facturasrecibidas`
+
+Body:
+
+```json
+{
+  "cabecera": {"FRR_Idempresa": 1},
+  "ctb": [{"FRC_Importe": "12.10", "FRC_Cuenta": "40090002073"}],
+  "punteos": [
+    {
+      "source_table": "albsalida_gastos",
+      "source_id": 429016,
+      "importe_factura": "6.14"
+    }
+  ]
+}
+```
+
+Reglas estructurales:
+
+- `cabecera` es obligatoria; `ctb` y `punteos` valen `[]` por defecto.
+- No se aceptan propiedades extra en el nivel superior ni dentro de un punteo.
+- `cabecera` solo admite las 74 columnas declaradas en `FRR_COLUMNS`; la seccion
+  `facturasrecibidas` de este documento enumera el contrato completo.
+- Cada fila CTB solo admite las 11 columnas `FRC_COLUMNS` documentadas.
+- Cada punteo exige `source_id > 0`; `importe_factura` es decimal opcional.
+
+Campos semanticos obligatorios:
+
+```text
+FRR_Idempresa
+FRR_ejercicio
+FRR_idproveedor
+FRR_numerofactura
+FRR_tipofactura
+```
+
+Generacion y duplicados:
+
+- `FRR_id`, `FRC_id` y `FRC_idfacturarecibida` los genera la API.
+- Si llega `FRR_numero` distinto de cero se conserva; de lo contrario se calcula
+  `MAX(FRR_numero)+1` para tipo + ejercicio + empresa.
+- El duplicado se detecta por empresa + ejercicio + proveedor + numero de factura del
+  proveedor.
+- La API no crea un asiento contable. `FRR_IdAsientoNet` se conserva si llega o se
+  devuelve como `0`.
+
+Con `dry_run=true` o errores semanticos no se escribe y se devuelve HTTP `200`:
+
+```json
+{
+  "ok": true,
+  "dry_run": true,
+  "would_create": true,
+  "FRR_id": 50000,
+  "FRR_numero": 125,
+  "FRR_IdAsientoNet": 0,
+  "punteos_requested": [],
+  "ids_punteos_enlazados": [],
+  "validation_errors": [],
+  "duplicate": null
+}
+```
+
+El dry run no comprueba que los punteos existan o esten libres; esa validacion ocurre
+dentro de la transaccion real.
+
+Con `dry_run=false`, payload valido y escrituras habilitadas:
+
+1. Obtiene un bloqueo MariaDB de 10 segundos.
+2. Repite la comprobacion de duplicado dentro de la transaccion.
+3. Genera IDs y numero interno.
+4. Inserta cabecera `facturasrecibidas`.
+5. Inserta las filas `facturasrecibidas_ctb`.
+6. Bloquea y enlaza cada punteo; aborta si falta o pertenece a otra factura.
+7. Confirma todo conjuntamente; cualquier fallo provoca rollback.
+
+Respuesta de exito real:
+
+```json
+{
+  "ok": true,
+  "dry_run": false,
+  "FRR_id": 50000,
+  "FRR_numero": 125,
+  "FRR_IdAsientoNet": 0,
+  "ids_punteos_enlazados": [],
+  "validation_errors": [],
+  "erp_errors": []
+}
+```
+
+La clave `erp_errors` es un nombre historico del contrato; no significa que se haya
+escrito en produccion.
+
+#### Facturas emitidas
+
+| Operacion | Parametros | Respuesta | Fuente |
+|---|---|---|---|
+| `GET /facturas` | `schema`, `limit=50`, `offset=0`, fechas, `cliente_id`, `serie`, `numero` | `{items,limit,offset}`; id, serie, numero, fecha, cliente, empresa, tipo, total, cambio y vencimiento | `facturas` |
+| `GET /facturas/{factura_id}` | `factura_id:int`, `schema` | Detalle con bases/cuotas 1-4, vencimiento, observaciones y referencia; `404` si no existe | `facturas` |
+| `GET /facturas/{factura_id}/lineas` | `factura_id:int`, `schema` | `{items}` con tipo, codigo, concepto, cantidad, precio, kilos, bultos, palets e importe | `facturaslineasvar` |
+| `GET /facturas/{factura_id}/gastos` | `factura_id:int`, `schema` | `{items}` con gasto, tipos, valor, importes y acreedor | `facturas_gastos` |
+| `GET /facturas/{factura_id}/albaranes` | `factura_id:int`, `schema` | `{items}` con ejercicio, serie, numero, fecha, cliente, pedido, referencia, factura y empresa | `albsalida` |
+
+#### Albaranes y liquidaciones de agricultores
+
+| Operacion | Parametros | Respuesta | Fuente |
+|---|---|---|---|
+| `GET /albaranes/salida` | `schema`, `limit=50`, `offset=0`, fechas, `cliente_id`, `factura_id`, `serie`, `numero` | `{items,limit,offset}` sin `total` | `albsalida` |
+| `GET /albaranes/salida/{albaran_id}` | `albaran_id:int`, `schema` | Todas las columnas `ASA_*`; `404` si no existe | `albsalida` |
+| `GET /albaranes/salida/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con genero, categoria, kilos, palets, bultos, piezas, precio e importe | `albsalida_lineas` |
+| `GET /albaranes/entrada` | `schema`, `limit=50`, `offset=0`, fechas, `agricultor_id`, `serie`, `numero` | `{items,limit,offset}`; campana, agricultor, punto de venta, centro, referencia y empresa | `albentrada` |
+| `GET /albaranes/entrada/{albaran_id}` | `albaran_id:int`, `schema` | Todas las columnas `AEN_*`; `404` si no existe | `albentrada` |
+| `GET /albaranes/entrada/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con genero, categoria, kilos, palets, bultos, piezas, precio e importe | `albentrada_lineas` |
+| `GET /facturas-agricultores` | `schema`, `limit=50`, `offset=0`, fechas, `agricultor_id`, `serie`, `numero` | `{items,limit,offset}`; id, serie, numero, fecha, agricultor, empresa, total, base, IVA y retencion | `facturaagr` |
+
+Los filtros de estas operaciones son exactos salvo los rangos de fecha, que son
+inclusivos. La API actual no ofrece detalle ni lineas para `/facturas-agricultores`;
+las tablas `facturaagr` y `facturaagr_lineas` quedan documentadas mas adelante para
+consulta SQL y futura evolucion del contrato.
+
+### Despliegue, activacion y rollback
+
+Ubicaciones:
+
+| Elemento | Ruta |
+|---|---|
+| Codigo de desarrollo en el VPS | `/root/fastapi-netagro/app/main.py` |
+| Codigo ejecutable en el intermedio | `/home/karma/fastapi-netagro/app/main.py` |
+| Entorno del servicio | `/home/karma/fastapi-netagro/.env` |
+| Servicio FastAPI | `netagro-api.service` en `karma-box` |
+| Servicio de tunel | `netagro-api-tunnel.service` en el VPS |
+| Documento canonico | `documentacion_facturas_albaranes.md` en este repositorio |
+| Copia documental del VPS | `/root/netagro_docs/documentacion_facturas_albaranes.md` |
+
+Activacion pendiente de las ocho rutas nuevas:
+
+```bash
+# En karma-box; requiere sudo del usuario karma.
+sudo systemctl restart netagro-api.service
+sudo systemctl status netagro-api.service --no-pager
+```
+
+Comprobaciones posteriores desde el VPS:
+
+```bash
+curl -fsS http://127.0.0.1:18000/health
+curl -fsS 'http://127.0.0.1:18000/agricultores?limit=1'
+curl -fsS http://127.0.0.1:18000/openapi.json
+```
+
+Tras el reinicio, OpenAPI debe mostrar `41` operaciones y `40` paths. Antes de darlo
+por valido se debe comprobar tambien que `/docs` carga y que el servicio sigue
+conectado a `db_host=karma-box`.
+
+Backups disponibles:
+
+```text
+/root/fastapi-netagro/app/main.py.bak-20260714-152705
+/home/karma/fastapi-netagro/app/main.py.bak-20260714-152728
+```
+
+Rollback en el intermedio:
+
+```bash
+cp /home/karma/fastapi-netagro/app/main.py.bak-20260714-152728 \
+  /home/karma/fastapi-netagro/app/main.py
+sudo systemctl restart netagro-api.service
+```
+
+El rollback elimina las ocho rutas nuevas del proceso, pero no revierte datos. Las
+pruebas realizadas para estos endpoints fueron de lectura y no generaron datos.
+
+### Integracion recomendada para facturas recibidas
+
+Resolucion de proveedor:
+
+1. Normalizar NIF y texto en el flujo de origen; corregir extraccion/parseo antes de
+   introducir compensaciones locales.
+2. Consultar `/acreedores?nif=...` y, si no hay match, `/acreedores?q=...`.
+3. Cuando el documento corresponda a un productor/agricultor y no exista acreedor,
+   consultar `/agricultores?nif=...` y despues `/agricultores?q=...`.
+4. Mantener la identidad semantica del resultado: acreedor y agricultor no son el
+   mismo tipo de entidad.
+5. Si persiste la ambiguedad, dejar seleccion manual en la UI; no elegir por similitud
+   debil.
+6. Cargar reglas de gasto con el subrecurso que corresponda al tipo resuelto.
+7. Poblar forma de pago, banco, IVA y regimen solo mediante catalogos con mapeo
+   confirmado; no inventar IDs. `/series-factura` y `/conceptos-factura` son
+   referencias auxiliares: no mapearlos automaticamente a `FRR_tipofactura` o al
+   texto libre `FRR_Concepto` sin validacion funcional explicita.
+8. Ejecutar siempre primero `POST /facturasrecibidas?dry_run=true`.
+9. Mostrar `validation_errors` al usuario y requerir confirmacion explicita antes de
+   cualquier `dry_run=false`.
+
+El resolver n8n documentado en julio solo consultaba `/acreedores`. Debe incorporar el
+fallback explicito a `/agricultores` para aprovechar los endpoints nuevos.
+
+### Limitaciones conocidas
+
+- FastAPI no tiene autenticacion propia; depende del aislamiento de red.
+- Los modelos de respuesta son diccionarios genericos y OpenAPI no enumera sus campos.
+- Algunos listados no devuelven `total`, aunque acepten `limit` y `offset`.
+- Catalogos simples no tienen paginacion ni filtros.
+- Los subrecursos vacios no distinguen entre padre inexistente y padre sin filas.
+- El dry run del POST no valida existencia ni disponibilidad de punteos.
+- El nombre `erp_errors` persiste en la respuesta de alta por compatibilidad historica.
+- No hay detalle ni lineas HTTP de facturas de agricultores.
+- No hay rate limiting ni auditoria HTTP dentro de FastAPI.
+- Los IDs `MAX+1` quedan protegidos frente a esta API por un lock, pero deben revisarse
+  si aparece otro escritor concurrente sobre la copia.
+- Las ocho rutas nuevas no estan activas en el proceso vivo hasta su reinicio.
+
+### Mantenimiento de esta documentacion
+
+Ante cualquier cambio en `app/main.py`:
+
+1. Generar `app.openapi()` desde el codigo que se va a desplegar y contar operaciones.
+2. Compararlo con `/openapi.json` del proceso vivo.
+3. Actualizar este inventario, parametros, respuestas, fuentes y changelog.
+4. Probar rutas nuevas contra la copia de pruebas sin datos personales en los ejemplos.
+5. Sincronizar este archivo al Escritorio y al VPS y comprobar que los SHA256 coinciden.
+6. No marcar una ruta como viva hasta verificarla a traves del puerto `18000`.
+
+### Changelog documental
+
+| Fecha | Cambio |
+|---|---|
+| 2026-06-29 | Inventario inicial generado desde la copia local |
+| 2026-07-08 | Nuevo dump de pruebas; endpoints de facturas recibidas, CTB, punteos, catalogos contables y POST |
+| 2026-07-14 | Codigo de ocho endpoints para agricultores, gastos y catalogos desplegado en disco y probado en puerto temporal |
+| 2026-07-15 | Referencia completa de 41 operaciones; arquitectura, seguridad, escritura, errores, despliegue y estado vivo documentados |
 
 ## Flujo OCR para PDFs de facturas en correos
 
@@ -296,11 +1013,14 @@ Actualmente devuelve ids y valores de gasto. Para que OCR pueda mostrar nombres 
 
 ### Facturas recibidas de proveedores
 
-Si el PDF entrante es una factura recibida de proveedor/acreedor, no debe forzarse el flujo por `clientes`. La estructura real de ERP en la copia local es:
+Si el PDF entrante es una factura recibida de proveedor/acreedor, no debe forzarse el flujo por `clientes`. La estructura real de Netagro en la copia local es:
 
 ```text
 acreedores.ACR_Codigo
   -> facturasrecibidas.FRR_idproveedor
+
+empresas.EMP_idempresa
+  -> facturasrecibidas.FRR_Idempresa
 
 facturasrecibidas.FRR_id
   -> facturasrecibidas_ctb.FRC_idfacturarecibida
@@ -310,24 +1030,25 @@ Lectura funcional:
 
 | Tabla | Papel |
 |---|---|
+| `empresas` | Maestro de empresas/razones sociales. Resuelve `FRR_Idempresa`. |
 | `acreedores` | Maestro de proveedores/acreedores. Resuelve nombre, NIF, cuenta contable, cuenta de gasto, forma de pago y estado. |
-| `facturasrecibidas` | Cabecera real de factura recibida en ERP. Tiene 74 columnas `FRR_*`/vencimientos/contabilidad. |
+| `facturasrecibidas` | Cabecera real de factura recibida en Netagro. Tiene 74 columnas `FRR_*`/vencimientos/contabilidad. |
 | `facturasrecibidas_ctb` | Lineas de desglose contable de la factura recibida. Tiene 11 columnas `FRC_*`. |
 
-La tabla staging/OCR creada fuera de ERP con unas 97 columnas no debe confundirse con la tabla real. Esa tabla mezcla:
+La tabla staging/OCR creada fuera de Netagro con unas 97 columnas no debe confundirse con la tabla real. Esa tabla mezcla:
 
 | Bloque de columnas staging | Naturaleza |
 |---|---|
-| `id`, `archivo_pdf_id`, `duplicada_de`, `estado`, `created_at`, `updated_at` | Control interno de la app OCR/Supabase. No existe asi en ERP. |
-| `proveedor_nombre`, `proveedor_nif`, `source_pdf_name`, `email_*`, `confidence`, `extraction`, `validation_errors` | Metadatos de extraccion OCR y correo. No existe asi en ERP. |
-| Columnas `FRR_*`, `FechaVto`, `ImporteVto` | Borrador/copia nullable de los campos reales de `erpcomer.facturasrecibidas`. |
-| `erp_sent_at`, `erp_response`, `erp_error` | Estado de sincronizacion hacia ERP. No existe en ERP. |
+| `id`, `archivo_pdf_id`, `duplicada_de`, `estado`, `created_at`, `updated_at` | Control interno de la app OCR/Supabase. No existe asi en Netagro. |
+| `proveedor_nombre`, `proveedor_nif`, `source_pdf_name`, `email_*`, `confidence`, `extraction`, `validation_errors` | Metadatos de extraccion OCR y correo. No existe asi en Netagro. |
+| Columnas `FRR_*`, `FechaVto`, `ImporteVto` | Borrador/copia nullable de los campos reales de `netagrocomer.facturasrecibidas`. |
+| `netagro_sent_at`, `netagro_response`, `netagro_error` | Estado de sincronizacion hacia Netagro. No existe en Netagro. |
 
 Conclusion: esa tabla staging puede ser correcta como bandeja de trabajo para OCR, pero la documentacion de integracion debe tratarla como capa intermedia. El modelo real de destino es `facturasrecibidas` + `facturasrecibidas_ctb` + `acreedores`.
 
 Para OCR de facturas recibidas, contrastar:
 
-| Dato OCR | Tabla/campo ERP |
+| Dato OCR | Tabla/campo Netagro |
 |---|---|
 | Nombre proveedor | `acreedores.ACR_Nombre` |
 | NIF/CIF/VAT proveedor | `acreedores.ACR_Nif` |
@@ -342,7 +1063,77 @@ Para OCR de facturas recibidas, contrastar:
 | Vencimientos | `FechaVto`/`ImporteVto`, `FRR_FechaVto1..3`, `FRR_ImporteVto1..3` |
 | Tipo/serie interna | `FRR_tipofactura`, `FRR_numero`, `FRR_IdTipoDoc` |
 
-En la copia local no hay duplicados para la combinacion `FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura` excluyendo numero vacio. Por tanto, esa combinacion es buena para detectar duplicados en staging, aunque ERP no declara esa restriccion unica en su DDL.
+En la copia local no hay duplicados para la combinacion `FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura` excluyendo numero vacio. Por tanto, esa combinacion es buena para detectar duplicados en staging, aunque Netagro no declara esa restriccion unica en su DDL.
+
+### Catalogos para combos de facturas recibidas
+
+#### `FRR_Idempresa`
+
+`FRR_Idempresa` sale del maestro real `empresas`:
+
+```text
+empresas.EMP_idempresa = facturasrecibidas.FRR_Idempresa
+```
+
+Endpoint:
+
+```text
+GET http://172.19.0.1:18000/empresas
+GET http://172.19.0.1:18000/empresas/1
+```
+
+Valores vistos en la copia local:
+
+| `EMP_idempresa` | Nombre | CIF | Ejercicio predeterminado |
+|---:|---|---|---:|
+| 1 | CAMPOJOYMA, S.L. | B04493482 | 25 |
+
+Para el combo debe usarse `empresa_id`/`EMP_idempresa` como valor y `nombre` como etiqueta. En la copia dumpeada solo hay una empresa.
+
+#### `FRR_tipofactura`
+
+`FRR_tipofactura` es un codigo corto de tipo/serie interna de factura recibida. En la copia local existe una tabla candidata llamada `facturasrecibidastipo`, pero esta vacia; por tanto no hay descripciones oficiales cargadas para mostrar en combo.
+
+El endpoint disponible devuelve el catalogo observado desde las facturas reales:
+
+```text
+GET http://172.19.0.1:18000/facturasrecibidas/tipos
+```
+
+Respuesta:
+
+```json
+{
+  "items": [
+    {
+      "tipo_factura": "OT",
+      "descripcion": null,
+      "total": 30570,
+      "fecha_min": "2013-10-01",
+      "fecha_max": "2026-08-01"
+    }
+  ],
+  "source": "distinct facturasrecibidas.FRR_tipofactura; facturasrecibidastipo exists but has 0 rows"
+}
+```
+
+Valores observados:
+
+| `FRR_tipofactura` | Facturas | Fecha min | Fecha max | Descripcion |
+|---|---:|---|---|---|
+| OT | 30570 | 2013-10-01 | 2026-08-01 | Sin descripcion oficial en la copia local. |
+| GE | 8121 | 2020-01-02 | 2026-06-26 | Sin descripcion oficial en la copia local. |
+| MA | 4919 | 2020-04-27 | 2026-04-07 | Sin descripcion oficial en la copia local. |
+| GV | 2704 | 2020-06-30 | 2026-06-09 | Sin descripcion oficial en la copia local. |
+| FI | 1279 | 2021-06-22 | 2026-04-20 | Sin descripcion oficial en la copia local. |
+| GC | 361 | 2020-08-31 | 2026-06-22 | Sin descripcion oficial en la copia local. |
+| CE | 356 | 2021-08-10 | 2025-10-31 | Sin descripcion oficial en la copia local. |
+| FZ | 308 | 2020-02-08 | 2021-05-20 | Sin descripcion oficial en la copia local. |
+| CX | 14 | 2020-07-30 | 2021-03-03 | Sin descripcion oficial en la copia local. |
+| GM | 8 | 2022-10-31 | 2024-04-30 | Sin descripcion oficial en la copia local. |
+| vacio/null | 1 | 1900-01-01 | 1900-01-01 | Registro historico sin tipo informado. |
+
+No se ha visto `FRR_tipofactura = '1'` en la copia MariaDB dumpeada. Si aparece `1` en staging/OCR, debe tratarse como valor pendiente de validacion o como confusion con `FRR_Idempresa = 1` hasta que negocio confirme lo contrario.
 
 ## Ejemplos reales
 
@@ -550,7 +1341,7 @@ Buscar cliente por NIF/VAT:
 SELECT CLI_Idcliente, CLI_Nombre, CLI_Nif, CLI_Mail,
        CLI_Domicilio, CLI_Poblacion, CLI_IdPais,
        CLI_bloqueo, CLI_InactivoRGPD
-FROM erpcomer.clientes
+FROM netagrocomer.clientes
 WHERE CLI_Nif LIKE ?;
 ```
 
@@ -559,7 +1350,7 @@ Buscar cliente por texto flexible:
 ```sql
 SELECT CLI_Idcliente, CLI_Nombre, CLI_Nif, CLI_Mail,
        CLI_Domicilio, CLI_Poblacion, CLI_IdPais
-FROM erpcomer.clientes
+FROM netagrocomer.clientes
 WHERE CLI_Nombre LIKE ?
    OR CLI_Nif LIKE ?
    OR CLI_CodigoEdi LIKE ?
@@ -575,8 +1366,8 @@ Factura con cliente:
 SELECT f.FRA_idfactura, f.FRA_serie, f.FRA_factura, f.FRA_fecha,
        f.FRA_idcliente, c.CLI_Nombre, c.CLI_Nif,
        f.FRA_totalfactura, f.FRA_RefCliente, f.FRA_RefVentas
-FROM erpcomer.facturas f
-JOIN erpcomer.clientes c ON c.CLI_Idcliente = f.FRA_idcliente
+FROM netagrocomer.facturas f
+JOIN netagrocomer.clientes c ON c.CLI_Idcliente = f.FRA_idcliente
 WHERE f.FRA_idcliente = ?
   AND f.FRA_serie = ?
   AND f.FRA_factura = ?;
@@ -589,8 +1380,8 @@ SELECT f.FRA_idfactura, f.FRA_serie, f.FRA_factura, f.FRA_fecha,
        f.FRA_idcliente, f.FRA_totalfactura,
        a.ASA_idalbaran, a.ASA_serie, a.ASA_albaran,
        a.ASA_fechasalida, a.ASA_idpedido, a.ASA_referencia
-FROM erpcomer.facturas f
-JOIN erpcomer.albsalida a ON a.ASA_idfactura = f.FRA_idfactura
+FROM netagrocomer.facturas f
+JOIN netagrocomer.albsalida a ON a.ASA_idfactura = f.FRA_idfactura
 WHERE f.FRA_idfactura = ?;
 ```
 
@@ -598,8 +1389,8 @@ Albaran de salida completo:
 
 ```sql
 SELECT a.*, l.*
-FROM erpcomer.albsalida a
-JOIN erpcomer.albsalida_lineas l ON l.ASL_idalbaran = a.ASA_idalbaran
+FROM netagrocomer.albsalida a
+JOIN netagrocomer.albsalida_lineas l ON l.ASL_idalbaran = a.ASA_idalbaran
 WHERE a.ASA_idalbaran = ?;
 ```
 
@@ -607,8 +1398,8 @@ Albaran de entrada completo:
 
 ```sql
 SELECT e.*, l.*
-FROM erpcomer.albentrada e
-JOIN erpcomer.albentrada_lineas l ON l.AEL_idalbaran = e.AEN_idalbaran
+FROM netagrocomer.albentrada e
+JOIN netagrocomer.albentrada_lineas l ON l.AEL_idalbaran = e.AEN_idalbaran
 WHERE e.AEN_idalbaran = ?;
 ```
 
@@ -616,8 +1407,8 @@ Factura de agricultor con partidas:
 
 ```sql
 SELECT f.*, l.*
-FROM erpcomer.facturaagr f
-JOIN erpcomer.facturaagr_lineas l ON l.FAL_idfactura = f.FGR_idfactura
+FROM netagrocomer.facturaagr f
+JOIN netagrocomer.facturaagr_lineas l ON l.FAL_idfactura = f.FGR_idfactura
 WHERE f.FGR_idfactura = ?;
 ```
 
@@ -626,7 +1417,7 @@ Buscar acreedor/proveedor por NIF:
 ```sql
 SELECT ACR_Codigo, ACR_Nombre, ACR_Nif, ACR_Mail,
        ACR_IdCuenta, ACR_Cuentagasto, ACR_Bloqueado, ACR_InactivoRGPD
-FROM erpcomer.acreedores
+FROM netagrocomer.acreedores
 WHERE ACR_Nif LIKE ?;
 ```
 
@@ -638,8 +1429,8 @@ SELECT f.FRR_id, f.FRR_numero, f.FRR_fechafactura, f.FRR_numerofactura,
        a.ACR_Nombre, a.ACR_Nif,
        f.FRR_base1, f.FRR_iva1, f.FRR_cuota1, f.FRR_totalfac,
        f.FRR_tipofactura, f.FRR_idcuenta, f.FRR_Concepto
-FROM erpcomer.facturasrecibidas f
-LEFT JOIN erpcomer.acreedores a ON a.ACR_Codigo = f.FRR_idproveedor
+FROM netagrocomer.facturasrecibidas f
+LEFT JOIN netagrocomer.acreedores a ON a.ACR_Codigo = f.FRR_idproveedor
 WHERE f.FRR_idproveedor = ?
   AND f.FRR_numerofactura = ?;
 ```
@@ -650,7 +1441,7 @@ Desglose contable de una factura recibida:
 SELECT c.FRC_id, c.FRC_idfacturarecibida, c.FRC_Importe, c.FRC_Cuenta,
        c.FRC_IdActividad, c.FRC_Idseccion,
        c.FRC_Iddepartamento, c.FRC_Idsubdepartamento
-FROM erpcomer.facturasrecibidas_ctb c
+FROM netagrocomer.facturasrecibidas_ctb c
 WHERE c.FRC_idfacturarecibida = ?
 ORDER BY c.FRC_id;
 ```
@@ -660,13 +1451,17 @@ Deteccion de duplicados para staging OCR:
 ```sql
 SELECT FRR_Idempresa, FRR_ejercicio, FRR_idproveedor, FRR_numerofactura,
        COUNT(*) AS repeticiones
-FROM erpcomer.facturasrecibidas
+FROM netagrocomer.facturasrecibidas
 WHERE FRR_numerofactura <> ''
 GROUP BY FRR_Idempresa, FRR_ejercicio, FRR_idproveedor, FRR_numerofactura
 HAVING COUNT(*) > 1;
 ```
 
 ## Catalogo completo de campos
+
+Las lineas `Filas exactas en copia local` y los tamanos de las fichas siguientes
+corresponden tambien al snapshot del `2026-06-29`. El DDL y los nombres de campo son
+la referencia estructural; las volumetrias deben recalcularse despues de cada restore.
 
 ### `clientes`
 
@@ -1143,17 +1938,19 @@ Cabecera de facturas recibidas de proveedores/acreedores.
 
 - Filas exactas en copia local: `48641`
 - Tamano aproximado: `30.59 MB`
-- Columnas reales en ERP: `74`.
+- Columnas reales en Netagro: `74`.
 - Clave tecnica: `FRR_id`.
 - Relacion con proveedor: `FRR_idproveedor = acreedores.ACR_Codigo`.
+- Relacion con empresa: `FRR_Idempresa = empresas.EMP_idempresa`.
 - Identidad documental: `FRR_tipofactura` + `FRR_ejercicio` + `FRR_numero` es la numeracion interna; `FRR_numerofactura` es el numero de factura del proveedor.
+- Catalogo de tipo: no hay tabla maestra poblada para `FRR_tipofactura`; usar `GET /facturasrecibidas/tipos` como lista observada hasta que negocio aporte descripciones.
 - Clave practica para duplicados OCR: `FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura`.
 
 Bloques funcionales:
 
 | Bloque | Campos principales | Uso |
 |---|---|---|
-| Identidad interna | `FRR_id`, `FRR_numero`, `FRR_tipofactura`, `FRR_ejercicio`, `FRR_IdTipoDoc` | Numeracion y clasificacion interna de ERP. |
+| Identidad interna | `FRR_id`, `FRR_numero`, `FRR_tipofactura`, `FRR_ejercicio`, `FRR_IdTipoDoc` | Numeracion y clasificacion interna de Netagro. `FRR_tipofactura` son codigos observados, no descripciones. |
 | Documento proveedor | `FRR_numerofactura`, `FRR_fechafactura`, `FRR_idproveedor`, `FRR_Concepto` | Lo que debe casar con OCR del PDF. |
 | Proveedor/cuenta | `FRR_idproveedor`, `FRR_idcuenta`, `FRR_IdBanco`, `FRR_IdFormaPago` | Relacion con `acreedores` y datos de pago/contabilidad. |
 | Impuestos | `FRR_base1..5`, `FRR_iva1..5`, `FRR_cuota1..5` | Bases y cuotas por tramos de IVA. |
@@ -1161,7 +1958,7 @@ Bloques funcionales:
 | Gastos/cuentas | `FRR_igasto1..4`, `FRR_ctagasto1..4`, `FRR_CtaSuplido`, `FRR_ImpSuplido`, `FRR_CuotaNoDeducible` | Desglose resumido de gastos/suplidos/no deducible. |
 | Vencimientos | `FechaVto`, `ImporteVto`, `FRR_FechaVto1..3`, `FRR_ImporteVto1..3`, `FRR_FechaPrevPago`, `FRR_BancoPrevPago` | Plan de pagos/vencimientos. |
 | Contabilidad | `FRR_fechactb`, `FRR_IdAsientoNet`, `FRR_CtaCartera`, `FRR_Contabilizar`, `FRR_CancelarporCtb` | Asiento, cartera y contabilizacion. |
-| Organizacion | `FRR_Idempresa`, `FRR_idcentro`, `FRR_idpuntoventa`, `FRR_IdSeccion`, `FRR_IdActividad` | Empresa, centro y dimensiones internas. |
+| Organizacion | `FRR_Idempresa`, `FRR_idcentro`, `FRR_idpuntoventa`, `FRR_IdSeccion`, `FRR_IdActividad` | Empresa, centro y dimensiones internas. `FRR_Idempresa` apunta a `empresas.EMP_idempresa`. |
 | Auditoria | `FRR_IdUsuarioLog`, `FRR_FechaLog`, `FRR_HoraLog` | Trazabilidad de cambios. |
 
 Indices:
@@ -1213,7 +2010,7 @@ Campos:
 | `FRR_igasto4` | `decimal(10,2)` | NO |  | gasto (factura recibida) |
 | `FRR_ctagasto4` | `varchar(11)` | NO |  | gasto (factura recibida) |
 | `FRR_totalfac` | `decimal(12,2)` | NO |  | total de factura (factura recibida) |
-| `FRR_tipofactura` | `varchar(2)` | NO | MUL | numero de factura dentro de la serie (factura recibida) |
+| `FRR_tipofactura` | `varchar(2)` | NO | MUL | codigo de tipo/serie interna de factura recibida; valores observados en `/facturasrecibidas/tipos` |
 | `FRR_idcuenta` | `varchar(11)` | NO | MUL | cuenta contable (factura recibida) |
 | `FRR_idpuntoventa` | `int(11)` | NO |  | id de punto de venta (factura recibida) |
 | `FRR_ClaveIRPF` | `varchar(5)` | NO |  | campo operativo inferido por nombre: claveirpf (factura recibida) |
@@ -1224,7 +2021,7 @@ Campos:
 | `FechaVto` | `date` | NO |  | fecha de vencimiento |
 | `ImporteVto` | `decimal(18,2)` | NO |  | importe |
 | `FRR_Modificable` | `varchar(1)` | NO |  | indicador de registro modificable (factura recibida) |
-| `FRR_Idempresa` | `int(11)` | NO | MUL | id de empresa (factura recibida) |
+| `FRR_Idempresa` | `int(11)` | NO | MUL | id de empresa propietaria; relaciona con `empresas.EMP_idempresa` |
 | `FRR_idpago` | `int(11)` | NO |  | id de pago (factura recibida) |
 | `FRR_IdUsuarioLog` | `int(11)` | NO |  | usuario que creo o modifico el registro (factura recibida) |
 | `FRR_FechaLog` | `date` | NO |  | fecha principal del documento (factura recibida) |
@@ -1261,7 +2058,7 @@ Desglose contable de facturas recibidas.
 
 - Filas exactas en copia local: `37027`
 - Tamano aproximado: `3.88 MB`
-- Columnas reales en ERP: `11`.
+- Columnas reales en Netagro: `11`.
 - Clave tecnica: `FRC_id`.
 - Relacion logica: `FRC_idfacturarecibida = facturasrecibidas.FRR_id`.
 - Esta tabla no representa lineas OCR de producto/servicio. Representa imputaciones contables: importe, cuenta y dimensiones de actividad/seccion/departamento.
@@ -2048,8 +2845,9 @@ Campos:
 - No escribir nunca en produccion usando el usuario `sa`; crear usuario de aplicacion con permisos minimos y whitelisting de IP/tunel.
 - Para OCR de facturas de cliente, resolver primero `clientes` por `CLI_Nif`/`CLI_Nombre` y despues buscar `facturas` por `cliente_id`, `serie`, `numero`, `fecha` y `total`.
 - Para OCR de facturas recibidas, resolver primero `acreedores` por `ACR_Nif`/`ACR_Nombre`, despues validar `facturasrecibidas` por `FRR_idproveedor`, `FRR_numerofactura`, `FRR_fechafactura`, `FRR_totalfac` y tramos de IVA.
-- Mantener la tabla staging/OCR de 97 columnas como bandeja de trabajo, no como definicion del modelo ERP. Sus metadatos (`estado`, `extraction`, `validation_errors`, `erp_response`, etc.) son propios de la app y no deben enviarse ni asumirse como columnas ERP.
-- No hacer que staging tenga mas autoridad que ERP: las columnas `FRR_*` deben mapearse 1:1 contra `facturasrecibidas` antes de cualquier envio, y `facturasrecibidas_ctb` debe generarse como tabla hija, no embutirse en JSON si se va a sincronizar con el ERP.
+- Para combos de facturas recibidas, usar `GET /empresas` para `FRR_Idempresa` y `GET /facturasrecibidas/tipos` para `FRR_tipofactura`. Las etiquetas de `FRR_tipofactura` quedan pendientes de confirmacion funcional porque no hay maestro poblado en la copia local.
+- Mantener la tabla staging/OCR de 97 columnas como bandeja de trabajo, no como definicion del modelo Netagro. Sus metadatos (`estado`, `extraction`, `validation_errors`, `netagro_response`, etc.) son propios de la app y no deben enviarse ni asumirse como columnas ERP.
+- No hacer que staging tenga mas autoridad que Netagro: las columnas `FRR_*` deben mapearse 1:1 contra `facturasrecibidas` antes de cualquier envio, y `facturasrecibidas_ctb` debe generarse como tabla hija, no embutirse en JSON si se va a sincronizar con el ERP.
 - Exponer como siguientes maestros de solo lectura: `gastos` para traducir `FGC_idgasto`/`ASG_idgasto`, maestro de generos/productos para `ASL_idgenero`, paises/divisas para etiquetas legibles y `clientesdescargas` si se necesita validar direcciones de entrega.
 - Si los PDFs son facturas recibidas de proveedores, documentar y exponer el flujo separado `acreedores` + `facturasrecibidas` + `facturasrecibidas_ctb`; no mezclarlo con el flujo de facturas emitidas a clientes.
 - Para facturar albaranes, validar primero el flujo real del ERP: campos `ASA_idfactura`, `ASA_idfacturaestimativa`, `ASA_idfacturanegativa`, `ASA_fechavaloracion`, `FRA_DefinitivaEstimativa` y asientos contables.

@@ -6,6 +6,224 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
+type FacturasRecibidasRow = {
+  id: string
+  archivo_pdf_id: number | null
+  duplicada_de: string | null
+  estado: string
+  proveedor_nombre: string | null
+  proveedor_nif: string | null
+  source_pdf_name: string | null
+  source_page_number: number | null
+  source_page_count: number | null
+  email_from: string | null
+  email_subject: string | null
+  email_received_at: string | null
+  confidence: number | null
+  extraction: Json
+  validation_errors: Json
+  source_kind: string
+  remote_frr_id: number | null
+  is_readonly_reference: boolean
+  match_status: string
+  match_evidence: Json
+  row_version: number
+  sync_status: string
+  accounting_status: string
+  accounting_visible_number: string | null
+  accounting_date: string | null
+  erp_last_read_at: string | null
+  erp_last_read_payload: Json | null
+  last_request_id: string | null
+  FRR_id: number | null
+  FRR_numero: number | null
+  FRR_fechafactura: string | null
+  FRR_numerofactura: string | null
+  FRR_ejercicio: number | null
+  FRR_idcentro: number | null
+  FRR_idproveedor: number | null
+  FRR_idregimen: number | null
+  FRR_fechactb: string | null
+  FRR_base1: number | null
+  FRR_base2: number | null
+  FRR_base3: number | null
+  FRR_base4: number | null
+  FRR_base5: number | null
+  FRR_iva1: number | null
+  FRR_iva2: number | null
+  FRR_iva3: number | null
+  FRR_iva4: number | null
+  FRR_iva5: number | null
+  FRR_cuota1: number | null
+  FRR_cuota2: number | null
+  FRR_cuota3: number | null
+  FRR_cuota4: number | null
+  FRR_cuota5: number | null
+  FRR_baseret: number | null
+  FRR_ret: number | null
+  FRR_cuotaret: number | null
+  FRR_igasto1: number | null
+  FRR_ctagasto1: string | null
+  FRR_igasto2: number | null
+  FRR_ctagasto2: string | null
+  FRR_igasto3: number | null
+  FRR_ctagasto3: string | null
+  FRR_igasto4: number | null
+  FRR_ctagasto4: string | null
+  FRR_totalfac: number | null
+  FRR_tipofactura: string | null
+  FRR_idcuenta: string | null
+  FRR_idpuntoventa: number | null
+  FRR_ClaveIRPF: string | null
+  FRR_IdAsientoNet: number | null
+  FRR_CtaCartera: string | null
+  FRR_IdBanco: number | null
+  FRR_IdFormaPago: number | null
+  FechaVto: string | null
+  ImporteVto: number | null
+  FRR_Modificable: string | null
+  FRR_Idempresa: number | null
+  FRR_idpago: number | null
+  FRR_IdUsuarioLog: number | null
+  FRR_FechaLog: string | null
+  FRR_HoraLog: string | null
+  FRR_Concepto: string | null
+  FRR_GeneraCartera: string | null
+  FRR_FechaVto1: string | null
+  FRR_ImporteVto1: number | null
+  FRR_FechaVto2: string | null
+  FRR_ImporteVto2: number | null
+  FRR_FechaVto3: string | null
+  FRR_ImporteVto3: number | null
+  FRR_IdTipoDoc: number | null
+  FRR_IdAgricultorDto: number | null
+  FRR_CtaSuplido: string | null
+  FRR_ImpSuplido: number | null
+  FRR_CuotaNoDeducible: number | null
+  FRR_CancelarporCtb: string | null
+  FRR_Observaciones: string | null
+  FRR_FechaPrevPago: string | null
+  FRR_BancoPrevPago: number | null
+  FRR_IdSeccion: number | null
+  FRR_IdActividad: number | null
+  FRR_ObservacionesAEAT: string | null
+  FRR_Contabilizar: string | null
+  FRR_IdfacturaRec: number | null
+  erp_sent_at: string | null
+  erp_sent_by: string | null
+  erp_response: Json | null
+  erp_error: string | null
+  created_by: string | null
+  updated_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+type FacturasRecibidasCtbRow = {
+  id: string
+  factura_id: string
+  posicion: number
+  FRC_id: number | null
+  FRC_idfacturarecibida: number | null
+  FRC_Importe: number | null
+  FRC_Cuenta: string | null
+  FRC_IdActividad: number | null
+  FRC_Idseccion: number | null
+  FRC_Iddepartamento: number | null
+  FRC_Idsubdepartamento: number | null
+  FRC_IdUsuarioLog: number | null
+  FRC_FechaLog: string | null
+  FRC_HoraLog: string | null
+  created_at: string
+  updated_at: string
+}
+
+type FacturasRecibidasPunteoRow = {
+  id: string
+  factura_id: string
+  posicion: number
+  remote_id: string | null
+  source_table: string | null
+  source_id: number | null
+  importe_factura: number | null
+  line_count: number
+  source_lines: Json
+  Origen: string | null
+  Serie: string | null
+  Albaran: number | null
+  Ref: string | null
+  Fecha: string | null
+  "Importe P": number | null
+  Importe: number | null
+  S: boolean
+  Ver: boolean
+  empresa_id: number | null
+  proveedor_id: number | null
+  cuenta_gasto: string | null
+  raw: Json
+  created_at: string
+  updated_at: string
+}
+
+type FacturasRecibidasRevisionRow = {
+  id: number
+  factura_id: string
+  revision_number: number
+  request_id: string | null
+  change_type: string
+  change_source: string
+  reason: string | null
+  changed_by: string | null
+  snapshot: Json
+  created_at: string
+}
+
+type FacturasRecibidasSyncAttemptRow = {
+  id: string
+  factura_id: string
+  request_id: string
+  contract_version: number
+  phase: string
+  dry_run: boolean
+  status: string
+  request_payload: Json
+  response_payload: Json | null
+  http_status: number | null
+  error: string | null
+  started_at: string
+  completed_at: string | null
+  created_by: string | null
+  updated_at: string
+}
+
+type FacturasRecibidasAsientoRow = {
+  id: string
+  factura_id: string
+  request_id: string
+  technical_id: number | null
+  visible_number: string | null
+  accounting_date: string | null
+  concept: string | null
+  status: string
+  total_debit: number
+  total_credit: number
+  balanced: boolean
+  raw: Json
+  captured_at: string
+}
+
+type FacturasRecibidasAsientoApunteRow = {
+  id: string
+  asiento_id: string
+  posicion: number
+  cuenta: string | null
+  descripcion: string | null
+  debe: number
+  haber: number
+  analytic: Json
+  raw: Json
+}
+
 export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "13.0.5"
@@ -16,6 +234,7 @@ export type Database = {
         Row: {
           b64_contenido: string | null
           created_at: string
+          created_by: string | null
           hash_sha256: string
           id: number
           mime_type: string
@@ -29,6 +248,7 @@ export type Database = {
         Insert: {
           b64_contenido?: string | null
           created_at?: string
+          created_by?: string | null
           hash_sha256: string
           id?: number
           mime_type?: string
@@ -42,6 +262,7 @@ export type Database = {
         Update: {
           b64_contenido?: string | null
           created_at?: string
+          created_by?: string | null
           hash_sha256?: string
           id?: number
           mime_type?: string
@@ -89,6 +310,99 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      facturasrecibidas: {
+        Row: FacturasRecibidasRow
+        Insert: Partial<FacturasRecibidasRow>
+        Update: Partial<FacturasRecibidasRow>
+        Relationships: [
+          {
+            foreignKeyName: "facturasrecibidas_archivo_pdf_id_fkey"
+            columns: ["archivo_pdf_id"]
+            isOneToOne: false
+            referencedRelation: "archivos_pdf"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facturasrecibidas_duplicada_de_fkey"
+            columns: ["duplicada_de"]
+            isOneToOne: false
+            referencedRelation: "facturasrecibidas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facturasrecibidas_ctb: {
+        Row: FacturasRecibidasCtbRow
+        Insert: Partial<FacturasRecibidasCtbRow> & Pick<FacturasRecibidasCtbRow, "factura_id">
+        Update: Partial<FacturasRecibidasCtbRow>
+        Relationships: [
+          {
+            foreignKeyName: "facturasrecibidas_ctb_factura_id_fkey"
+            columns: ["factura_id"]
+            isOneToOne: false
+            referencedRelation: "facturasrecibidas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facturasrecibidas_punteos: {
+        Row: FacturasRecibidasPunteoRow
+        Insert: Partial<FacturasRecibidasPunteoRow> & Pick<FacturasRecibidasPunteoRow, "factura_id">
+        Update: Partial<FacturasRecibidasPunteoRow>
+        Relationships: [
+          {
+            foreignKeyName: "facturasrecibidas_punteos_factura_id_fkey"
+            columns: ["factura_id"]
+            isOneToOne: false
+            referencedRelation: "facturasrecibidas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facturasrecibidas_revisions: {
+        Row: FacturasRecibidasRevisionRow
+        Insert: Partial<FacturasRecibidasRevisionRow> &
+          Pick<FacturasRecibidasRevisionRow, "factura_id" | "revision_number" | "change_type" | "change_source" | "snapshot">
+        Update: Partial<FacturasRecibidasRevisionRow>
+        Relationships: []
+      }
+      facturasrecibidas_sync_attempts: {
+        Row: FacturasRecibidasSyncAttemptRow
+        Insert: Partial<FacturasRecibidasSyncAttemptRow> &
+          Pick<FacturasRecibidasSyncAttemptRow, "factura_id" | "request_id" | "phase" | "dry_run">
+        Update: Partial<FacturasRecibidasSyncAttemptRow>
+        Relationships: []
+      }
+      facturasrecibidas_asientos: {
+        Row: FacturasRecibidasAsientoRow
+        Insert: Partial<FacturasRecibidasAsientoRow> &
+          Pick<FacturasRecibidasAsientoRow, "factura_id" | "request_id" | "status">
+        Update: Partial<FacturasRecibidasAsientoRow>
+        Relationships: [
+          {
+            foreignKeyName: "facturasrecibidas_asientos_factura_id_fkey"
+            columns: ["factura_id"]
+            isOneToOne: false
+            referencedRelation: "facturasrecibidas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facturasrecibidas_asiento_apuntes: {
+        Row: FacturasRecibidasAsientoApunteRow
+        Insert: Partial<FacturasRecibidasAsientoApunteRow> &
+          Pick<FacturasRecibidasAsientoApunteRow, "asiento_id" | "posicion">
+        Update: Partial<FacturasRecibidasAsientoApunteRow>
+        Relationships: [
+          {
+            foreignKeyName: "facturasrecibidas_asiento_apuntes_asiento_id_fkey"
+            columns: ["asiento_id"]
+            isOneToOne: false
+            referencedRelation: "facturasrecibidas_asientos"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       cambios: {
         Row: {
@@ -403,6 +717,11 @@ export type Database = {
           matricula_tractora: string | null
           referencia_cliente: string | null
           referencia2_cliente: string | null
+          enviado: boolean | null
+          enviado_orizon: boolean
+          idpedido_orizon: number | null
+          needs_sync: boolean
+          pedidoclienteid: string | number | null
           serieid: number
           sujetodomicilioid_destino: number | null
           sujetodomicilioid_envio: number | null
@@ -429,6 +748,11 @@ export type Database = {
           matricula_tractora?: string | null
           referencia_cliente?: string | null
           referencia2_cliente?: string | null
+          enviado?: boolean | null
+          enviado_orizon?: boolean
+          idpedido_orizon?: number | null
+          needs_sync?: boolean
+          pedidoclienteid?: string | number | null
           serieid?: number
           sujetodomicilioid_destino?: number | null
           sujetodomicilioid_envio?: number | null
@@ -455,6 +779,11 @@ export type Database = {
           matricula_tractora?: string | null
           referencia_cliente?: string | null
           referencia2_cliente?: string | null
+          enviado?: boolean | null
+          enviado_orizon?: boolean
+          idpedido_orizon?: number | null
+          needs_sync?: boolean
+          pedidoclienteid?: string | number | null
           serieid?: number
           sujetodomicilioid_destino?: number | null
           sujetodomicilioid_envio?: number | null
@@ -606,8 +935,82 @@ export type Database = {
         ]
       }
     }
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
     Views: {}
     Functions: {
+      begin_factura_recibida_sync_v2: {
+        Args: {
+          p_actor?: string | null
+          p_expected_version: number
+          p_factura_id: string
+          p_request_id: string
+          p_request_payload?: Json
+        }
+        Returns: Json
+      }
+      create_factura_recibida_v2: {
+        Args: {
+          p_actor?: string | null
+          p_change_source?: string
+          p_ctb?: Json
+          p_factura: Json
+          p_punteos?: Json
+          p_reason?: string | null
+          p_request_id?: string | null
+        }
+        Returns: Json
+      }
+      delete_factura_recibida_v2: {
+        Args: {
+          p_actor?: string | null
+          p_expected_version: number
+          p_factura_id: string
+          p_reason?: string | null
+          p_request_id?: string | null
+        }
+        Returns: Json
+      }
+      factura_recibida_snapshot_v2: {
+        Args: { p_factura_id: string }
+        Returns: Json
+      }
+      finalize_factura_recibida_sync_v2: {
+        Args: {
+          p_actor?: string | null
+          p_factura_id: string
+          p_readback: Json
+          p_request_id: string
+          p_write_response: Json
+        }
+        Returns: Json
+      }
+      finish_factura_recibida_sync_v2: {
+        Args: {
+          p_actor?: string | null
+          p_error?: string | null
+          p_factura_id: string
+          p_http_status?: number | null
+          p_phase: string
+          p_request_id: string
+          p_response_payload?: Json | null
+          p_status: string
+        }
+        Returns: Json
+      }
+      save_factura_recibida_v2: {
+        Args: {
+          p_actor?: string | null
+          p_change_source?: string
+          p_ctb?: Json
+          p_expected_version: number
+          p_factura: Json
+          p_factura_id: string
+          p_punteos?: Json
+          p_reason?: string | null
+          p_request_id?: string | null
+        }
+        Returns: Json
+      }
       admin_delete_user: {
         Args: {
           p_user_id: string
@@ -648,7 +1051,9 @@ export type Database = {
         }[]
       }
     }
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
     Enums: {}
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
     CompositeTypes: {}
   }
 }

@@ -1,0 +1,530 @@
+# Contrato canónico API v2 de facturas recibidas
+
+Versión del contrato: `2`.
+
+Esta especificación define el intercambio entre frontend, Supabase/Edge Functions,
+n8n y la FastAPI de la copia de Netagro. Su objetivo es conservar la factura sin
+pérdidas, impedir duplicados y no afirmar que existe un asiento mientras no pueda
+verificarse en el diario oficial.
+
+Referencias:
+
+- [OpenAPI FastAPI v0.2.0](openapi/netagro-test-api-v0.2.0.json)
+- [Runbook de homologación y despliegue](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
+- [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
+
+## Principios del modelo
+
+- La factura es el documento recibido del proveedor.
+- Los campos `FRR_igasto*/FRR_ctagasto*` son las cuatro posiciones de gasto de la
+  cabecera.
+- Las filas `FRC_*` son el desglose CTB real. No se fabrican a partir de los gastos.
+- Un asiento es el conjunto verificable de apuntes Debe/Haber del diario oficial.
+- `FRR_IdAsientoNet` es solo el identificador técnico. No es el número visible.
+- La copia actual no contiene el diario ni el mecanismo oficial de contabilización.
+  Por ello el estado verificable máximo actual es `reference_only`.
+
+## Alta o preflight
+
+### Operación
+
+```http
+POST /facturasrecibidas
+Content-Type: application/json
+```
+
+El cliente v2 debe enviar siempre el siguiente sobre:
+
+```json
+{
+  "contract_version": 2,
+  "request_id": "a1bd3078-c5e8-42a6-a90b-37f2c5869197",
+  "dry_run": true,
+  "cabecera": {},
+  "ctb": [],
+  "punteos": []
+}
+```
+
+| Campo | Tipo | Regla |
+|---|---|---|
+| `contract_version` | entero | Debe ser `2`. |
+| `request_id` | UUID | Obligatorio en v2; identifica el intento de extremo a extremo. |
+| `dry_run` | booleano | Debe enviarse expresamente. Primero `true`; después, si procede, `false` con el mismo UUID y payload funcional. |
+| `cabecera` | objeto | Campos de la factura `FRR_*` y vencimientos permitidos. |
+| `ctb` | array | Solo filas `FRC_*` reales. Puede ser `[]`. |
+| `punteos` | array | Enlaces explícitamente seleccionados por el usuario o flujo de origen. |
+
+Por compatibilidad, la FastAPI aún acepta el parámetro query `dry_run` y el contrato
+v1 sin los campos nuevos. En v2, `dry_run` del cuerpo tiene prioridad. Todo consumidor
+nuevo debe usar exclusivamente el sobre v2.
+
+### Cabecera
+
+La API conserva las 74 columnas del contrato físico de `facturasrecibidas`, entre
+ellas:
+
+- Identidad funcional: empresa, ejercicio, centro, proveedor, cuenta y número de
+  factura del proveedor.
+- Fechas: factura, CTB, previsión de pago y vencimientos.
+- Hasta cinco bases, tipos y cuotas de IVA.
+- Base, porcentaje y cuota de retención; clave IRPF y cuota no deducible.
+- Cuatro importes/cuentas de gasto.
+- Forma de pago, banco, cartera, suplidos y agricultor a descontar.
+- Concepto de asiento, observaciones generales y observaciones AEAT.
+- Controles ERP `S/N`, total y datos de cartera.
+
+Campos mínimos para detectar duplicados:
+
+```text
+FRR_Idempresa
+FRR_ejercicio
+FRR_idproveedor
+FRR_numerofactura
+```
+
+También se requiere `FRR_tipofactura` para generar el número interno.
+
+El cliente v2 no puede inyectar:
+
+```text
+FRR_id
+FRR_numero
+FRR_IdAsientoNet
+FRR_IdUsuarioLog
+FRR_FechaLog
+FRR_HoraLog
+FRR_IdfacturaRec
+```
+
+Los valores no vacíos se rechazan y estos campos se eliminan del payload antes de
+generar la propuesta. `FRR_id` y `FRR_numero` los genera la API; el identificador de
+asiento solo puede devolverlo el mecanismo oficial del ERP.
+
+Mientras el mecanismo oficial no esté disponible, un request v2 con
+`FRR_Contabilizar="S"` se bloquea durante el dry-run. No se crea una factura que
+quede falsamente presentada como contabilizada.
+
+### CTB
+
+Una fila de entrada puede contener:
+
+```json
+{
+  "FRC_Importe": 42341.52,
+  "FRC_Cuenta": "60200000001",
+  "FRC_IdActividad": null,
+  "FRC_Idseccion": null,
+  "FRC_Iddepartamento": null,
+  "FRC_Idsubdepartamento": null
+}
+```
+
+El cliente no puede fijar:
+
+```text
+FRC_id
+FRC_idfacturarecibida
+FRC_IdUsuarioLog
+FRC_FechaLog
+FRC_HoraLog
+```
+
+Si la factura no tiene CTB real, debe enviarse `ctb: []`. Los gastos de cabecera no
+se convierten en CTB.
+
+### Punteos
+
+Forma de cada selección:
+
+```json
+{
+  "source_table": "albmaterial",
+  "source_id": 23265,
+  "importe_factura": 1056.0
+}
+```
+
+Valores admitidos para `source_table`:
+
+```text
+albsalida_gastos
+albentrada_hisgastos
+albaranescompra_gastos
+facturas_gastos
+albarancoste
+albmaterial
+```
+
+Reglas:
+
+- `source_id` debe ser positivo, existir y estar sin enlazar.
+- En `albmaterial`, la tabla física no tiene `AMA_id`. La PK estable es
+  `AMA_idalb`; por tanto `source_id=AMA_idalb` y el origen visual es `MA`.
+- Para MA, `importe_factura` puede omitirse o coincidir con `AMA_importe` completo
+  con tolerancia de `0,01`. Se rechazan repartos parciales o diferentes.
+- La API no cambia importes de MA; únicamente enlaza `AMA_idfactura` cuando los
+  permisos y la capacidad estén habilitados.
+- La escritura de MA permanece bloqueada hasta que el usuario de escritura tenga
+  `SELECT, UPDATE` sobre `netagrocomer.albmaterial` y se active
+  `ALBMATERIAL_WRITES_ENABLED=true`.
+
+## Respuesta normalizada
+
+Todos los resultados v2 usan la siguiente forma:
+
+```json
+{
+  "ok": false,
+  "contract_version": 2,
+  "request_id": "a1bd3078-c5e8-42a6-a90b-37f2c5869197",
+  "dry_run": true,
+  "would_create": false,
+  "factura": {
+    "FRR_id": 49399,
+    "FRR_numero": 1,
+    "FRR_IdAsientoNet": 0
+  },
+  "ctb": [],
+  "punteos": [],
+  "validations": {
+    "errors": [
+      {
+        "field": "cabecera.FRR_Contabilizar",
+        "error": "official Netagro accounting mechanism is unavailable in the test copy; invoice and journal entry were not created"
+      }
+    ],
+    "warnings": []
+  },
+  "accounting": {
+    "requested": true,
+    "created": false,
+    "status": "unavailable",
+    "technical_id": null,
+    "visible_number": null,
+    "date": "2026-06-30",
+    "concept": "FRA. ONDUSPAN, S.A",
+    "balanced": null,
+    "total_debit": null,
+    "total_credit": null
+  },
+  "duplicate": null,
+  "readback_confirmed": false,
+  "FRR_id": 49399,
+  "FRR_numero": 1,
+  "FRR_IdAsientoNet": 0,
+  "ids_punteos_enlazados": [],
+  "punteos_requested": [],
+  "validation_errors": [],
+  "erp_errors": []
+}
+```
+
+Semántica:
+
+- `ok=true` en dry-run significa que no hay errores de validación.
+- `would_create=true` significa que la propuesta podría pasar a escritura; no
+  confirma que se haya escrito.
+- En una escritura, `ok=true` requiere al menos lectura posterior de la cabecera.
+- `validations.errors` contiene errores bloqueantes y `warnings` avisos operativos.
+- `factura`, `ctb` y `punteos` representan la propuesta en dry-run y el resultado
+  leído/enlazado después de una escritura.
+- El workflow n8n no finaliza hasta consultar también CTB, punteos y asiento.
+
+### Compatibilidad temporal
+
+Se conservan en el nivel superior:
+
+```text
+FRR_id
+FRR_numero
+FRR_IdAsientoNet
+ids_punteos_enlazados
+punteos_requested
+validation_errors
+erp_errors
+```
+
+Son aliases de transición. Los clientes nuevos deben consumir `factura`, `punteos`,
+`validations` y `accounting`.
+
+## Dry-run, idempotencia y reconciliación
+
+Secuencia obligatoria:
+
+1. Generar un UUID `request_id`.
+2. Enviar el payload con `dry_run=true`.
+3. Mostrar y resolver todos los errores.
+4. Si el usuario confirma, enviar el mismo contenido funcional y el mismo UUID con
+   `dry_run=false`.
+5. Leer cabecera, CTB, punteos y asiento antes de finalizar en Supabase.
+
+El dry-run no reserva el UUID porque no escribe.
+
+En escritura v2:
+
+- Se calcula un hash estable del payload funcional.
+- Un UUID nuevo queda `in_progress`.
+- Si termina y se confirma la lectura, queda `completed` con la respuesta guardada.
+- Repetir el mismo UUID y payload completado devuelve exactamente la respuesta
+  persistida.
+- Reutilizar el UUID con otro payload devuelve `409`.
+- Un estado `in_progress` o `needs_reconciliation` devuelve `409` y nunca dispara
+  otra alta a ciegas.
+
+El diario se guarda de forma aislada en:
+
+```text
+<directorio-del-despliegue>/data/facturas-idempotency.sqlite3
+```
+
+El proceso alternativo usa expresamente:
+
+```text
+/home/karma/fastapi-netagro-v2-20260716/data/idempotency.sqlite3
+```
+
+Ante timeout o resultado incierto, el consumidor debe buscar por empresa, ejercicio,
+proveedor y número de factura; después debe leer el detalle y solo entonces decidir
+si el intento requiere intervención manual.
+
+## Lectura de factura y CTB
+
+### Cabecera
+
+```http
+GET /facturasrecibidas/{factura_id}
+```
+
+Devuelve las columnas ERP completas y datos auxiliares del acreedor.
+
+### CTB
+
+```http
+GET /facturasrecibidas/{factura_id}/ctb
+GET /facturasrecibidas_ctb?factura_id={factura_id}
+```
+
+Respuesta:
+
+```json
+{
+  "items": []
+}
+```
+
+Un array vacío significa que no existen filas CTB. No autoriza a generarlas desde
+los gastos.
+
+## Lectura de punteos
+
+### Punteos ya vinculados
+
+```http
+GET /facturasrecibidas/{factura_id}/punteos?limit=200&offset=0&include_lines=true
+```
+
+Respuesta:
+
+```json
+{
+  "items": [
+    {
+      "id_interno_estable": "AMA:23265",
+      "source_table": "albmaterial",
+      "source_id": 23265,
+      "factura_recibida_id": 49305,
+      "Origen": "MA",
+      "Serie": "A26",
+      "Albaran": 2108,
+      "Ref": "479628",
+      "Fecha": "2026-06-29",
+      "Importe P": "0.00",
+      "Importe": "87.40",
+      "S": "S",
+      "Ver": "S",
+      "line_count": 1,
+      "lines": [
+        {
+          "line_id": 1,
+          "position": 1,
+          "article_id": 123,
+          "description": "Material",
+          "reference": null,
+          "quantity": "1.0000",
+          "unit_price": "87.400000",
+          "purchase_price": "87.400000",
+          "discount_pct": "0.00",
+          "plastic_amount": "0.000000",
+          "amount": "87.40",
+          "observations": null,
+          "unit_id": 1
+        }
+      ]
+    }
+  ],
+  "limit": 200,
+  "offset": 0,
+  "total": 17,
+  "include_lines": true
+}
+```
+
+`lines` solo se incorpora cuando `include_lines=true`. Para fuentes distintas de MA
+es `[]`; `line_count` sigue disponible.
+
+### Candidatos
+
+```http
+GET /albaranes-gastos/punteables
+```
+
+Filtros:
+
+```text
+source_table
+proveedor_id
+empresa_id
+fecha_desde
+fecha_hasta
+solo_pendientes
+limit
+offset
+```
+
+La respuesta es `{items, limit, offset, total}`.
+
+## Lectura del asiento
+
+```http
+GET /facturasrecibidas/{factura_id}/asiento
+```
+
+Forma:
+
+```json
+{
+  "factura_id": 49305,
+  "accounting": {
+    "requested": true,
+    "created": false,
+    "status": "reference_only",
+    "technical_id": 390305,
+    "visible_number": null,
+    "date": "2026-06-30",
+    "concept": "FRA. ONDUSPAN, S.A",
+    "balanced": null,
+    "total_debit": null,
+    "total_credit": null
+  },
+  "entries": [],
+  "source": {
+    "schema": "netagrocomer",
+    "mechanism": null,
+    "ledger_available": false,
+    "available_accounting_tables": [
+      "cuentas"
+    ],
+    "missing_capability": "Servicio/procedimiento oficial de Netagro y diario de asientos con mapeo entre FRR_IdAsientoNet y el numero visible"
+  },
+  "warnings": []
+}
+```
+
+Estados admitidos:
+
+| Estado | Significado |
+|---|---|
+| `not_requested` | La factura no solicita contabilización. |
+| `pending` | Reservado para un mecanismo oficial que haya aceptado el trabajo pero aún no lo confirme. |
+| `created` | Reservado para asiento oficial leído, identificado y verificable. |
+| `reference_only` | Existe ID técnico, pero no diario para verificar número visible ni Debe/Haber. |
+| `unavailable` | Se solicitó contabilización, pero el mecanismo oficial no está disponible. |
+| `error` | El mecanismo oficial devolvió un error confirmado. |
+
+En la copia actual nunca se devuelve `created=true`.
+
+## Listados, búsqueda y catálogos
+
+Operaciones principales:
+
+| Operación | Uso |
+|---|---|
+| `GET /facturasrecibidas` | Listado paginado y filtrado de facturas recibidas. |
+| `GET /facturasrecibidas/buscar` | Duplicados por empresa, ejercicio, proveedor y número. |
+| `GET /facturasrecibidas/tipos` | Valores históricos de tipo de factura. |
+| `GET /acreedores` | Búsqueda por NIF, texto o código. |
+| `GET /acreedores/{id}` | Detalle del acreedor. |
+| `GET /acreedores/{id}/gastos` | Reglas/cuentas de gasto del acreedor. |
+| `GET /agricultores` | Fallback explícito para productores; no se mezcla su identidad con acreedores. |
+| `GET /agricultores/{id}/gastos` | Gastos configurados para agricultor. |
+| `GET /empresas` | Empresas disponibles. |
+| `GET /cuentas-contables` | Cuenta, descripción, NIF, contrapartida, IVA, IRPF, pago y banco. |
+| `GET /tipos-iva` | Tipos de IVA observados en las tablas maestras. |
+| `GET /regimenes` | Regímenes observados en facturas recibidas. |
+| `GET /formas-pago` | Formas de pago. |
+| `GET /bancos` | Bancos. |
+| `GET /series-factura` | Series auxiliares; no mapear automáticamente a tipo de factura. |
+| `GET /conceptos-factura` | Conceptos auxiliares; no sustituir automáticamente `FRR_Concepto`. |
+
+El OpenAPI enlazado es la fuente para filtros, límites y esquemas exactos.
+
+## Errores y códigos HTTP
+
+| HTTP | Caso |
+|---:|---|
+| `200` | Lectura correcta o dry-run procesado. Puede contener `ok=false` con errores de negocio. |
+| `400` | Esquema/columna no permitidos o parámetro funcional inválido. |
+| `403` | Escrituras deshabilitadas para la API o esquema. |
+| `404` | Factura, acreedor u otro recurso no encontrado. |
+| `409` | UUID en uso o con payload distinto, reconciliación pendiente, lock no adquirido o duplicado concurrente. |
+| `422` | JSON/Pydantic inválido o conflicto detectado durante la transacción de punteos. |
+| `500` | Error inesperado. El consumidor no debe reintentar una escritura sin reconciliar. |
+
+Los errores de validación funcional se devuelven como:
+
+```json
+{
+  "field": "punteos[0].importe_factura",
+  "error": "albmaterial only accepts its full AMA_importe; partial or different allocation is not supported"
+}
+```
+
+## Flujo n8n y finalización
+
+El webhook v2 dedicado debe permanecer desactivado hasta cerrar los bloqueos del
+runbook. Cuando se autorice:
+
+1. Validar formato, UUID y arrays.
+2. Enviar siempre el preflight con `dry_run=true`.
+3. Si `ok=false`, responder sin escribir.
+4. Si el request original era dry-run, devolver el preflight.
+5. Para escritura confirmada, enviar `dry_run=false` una sola vez.
+6. Exigir `ok=true` y `FRR_id` positivo.
+7. Leer de nuevo:
+   - `/facturasrecibidas/{id}`
+   - `/facturasrecibidas/{id}/ctb`
+   - `/facturasrecibidas/{id}/punteos?include_lines=true`
+   - `/facturasrecibidas/{id}/asiento`
+8. Si falta una lectura o el asiento solicitado no está en `created`, devolver
+   `reconciliation_required`/`accounting_unverified`, con `retry_safe=false`.
+
+El workflow exportado:
+
+- usa autenticación JWT administrada por n8n;
+- no contiene el secreto;
+- no tiene `pinData`;
+- no guarda ejecuciones correctas, erróneas ni manuales con payloads.
+
+## Estado operativo actual
+
+- API activa: v0.1.0 en `karma-box:8000`, expuesta al VPS por `18000`.
+- API v2 staging: v0.2.0 en `karma-box:8001`, solo loopback.
+- El túnel no permite todavía el destino `8001`.
+- Workflow v2 importado pero `active=false`.
+- Escritura MA deshabilitada por falta de grants.
+- Contabilización v2 bloqueada por ausencia del mecanismo oficial y del diario.
+- Producción no se ha modificado.
+
+La activación, recuperación, promoción futura y rollback están detallados en el
+[runbook](FACTURAS_RECIBIDAS_API_V2_STAGING.md).

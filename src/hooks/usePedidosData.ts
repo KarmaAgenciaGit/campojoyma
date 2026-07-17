@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { agroirisAuth } from '@/services/agroirisAuth';
 import { useToast } from '@/hooks/use-toast';
 import { parseOrizonId } from '@/utils/orizon';
@@ -83,7 +83,7 @@ export const usePedidosData = ({ tipoPedido, filters, page, pageSize }: UsePedid
   const queryClient = useQueryClient();
 
   const withTimeout = useCallback(
-    async <T,>(promise: Promise<T>, label: string, timeoutMs = 15000): Promise<T> => {
+    async <T,>(promise: PromiseLike<T>, label: string, timeoutMs = 15000): Promise<T> => {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(new Error(`Timeout al cargar ${label}. Verifica la conexión y reintenta.`));

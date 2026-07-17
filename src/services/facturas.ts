@@ -2,8 +2,14 @@ import { supabase } from '@/integrations/supabase/client';
 import { facturasRecibidas } from '@/services/facturasRecibidas';
 import type {
   FacturaRecibida as UiFacturaRecibida,
+  FacturaRecibidaAccounting,
+  FacturaRecibidaAsientoLinea,
   FacturaRecibidaEstado as UiFacturaEstado,
+  FacturaRecibidaIvaTramo,
   FacturaRecibidaLinea,
+  FacturaRecibidaPunteo,
+  FacturaRecibidaPunteoLinea,
+  FacturaRecibidaVencimiento,
 } from '@/services/apiContracts';
 import type {
   FacturaRecibida as ERPFacturaRecibida,
@@ -12,6 +18,7 @@ import type {
 import { nullableNumber } from '@/types/facturasRecibidas';
 
 const PDF_PATH_PREFIX = 'archivo_pdf_id:';
+const MAX_FACTURA_PDF_BYTES = 20 * 1024 * 1024;
 const ERP_READ_FUNCTION = 'facturas-recibidas-erp-read';
 const ERP_READ_SOURCE = 'erp-read';
 const ERP_REMOTE_ID_PREFIX = 'erp:';
@@ -25,7 +32,14 @@ type ERPReadListResponse<T> = {
 
 type ERPReadFacturaRow = Record<string, unknown>;
 type ERPReadCtbRow = Record<string, unknown>;
+type ERPReadPunteoRow = Record<string, unknown>;
 type ERPReadGenericRow = Record<string, unknown>;
+type ERPReadAccountingResponse = {
+  factura_id?: number | null;
+  accounting?: Record<string, unknown>;
+  entries?: Array<Record<string, unknown>>;
+  warnings?: string[];
+};
 
 export type FacturaEmpresaOption = {
   id: string;
@@ -37,6 +51,49 @@ export type FacturaEmpresaOption = {
 export type FacturaTipoOption = {
   value: string;
   label: string;
+};
+
+export type FacturaRegimenOption = {
+  value: string;
+  label: string;
+};
+
+export type FacturaCuentaOption = {
+  value: string;
+  label: string;
+};
+
+export type FacturaERPMatch = {
+  frrId: number;
+  numero: number | null;
+  numeroFactura: string | null;
+  proveedor: string | null;
+  fecha: string | null;
+  total: number | null;
+};
+
+export type FacturaRecibidaPageOptions = {
+  page: number;
+  pageSize: number;
+  proveedor?: string;
+  numero?: string;
+  fechaDesde?: string;
+  fechaHasta?: string;
+  erpStatus?: 'all' | 'sent' | 'not_sent';
+  sortOrder?:
+    | 'created_desc'
+    | 'created_asc'
+    | 'fecha_desc'
+    | 'fecha_asc'
+    | 'total_desc'
+    | 'total_asc';
+};
+
+export type FacturaRecibidaUiPage = {
+  items: UiFacturaRecibida[];
+  total: number;
+  page: number;
+  pageSize: number;
 };
 
 const cleanText = (value: unknown) => {
@@ -64,6 +121,130 @@ const readNumber = (source: Record<string, unknown>, keys: string[], fallback: n
 const readText = (source: Record<string, unknown>, keys: string[], fallback: string | null = null) =>
   cleanText(firstValue(source, keys)) ?? fallback;
 
+const readBoolean = (
+  source: Record<string, unknown>,
+  keys: string[],
+  fallback: boolean | null = null,
+) => {
+  const value = firstValue(source, keys);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 's', 'si', 'sí', 'yes'].includes(normalized)) return true;
+    if (['false', '0', 'n', 'no'].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+const asRecordArray = (value: unknown): Array<Record<string, unknown>> =>
+  Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : [];
+
+const buildIvaTramos = (source: Record<string, unknown>): FacturaRecibidaIvaTramo[] =>
+  [1, 2, 3, 4, 5].map((posicion) => ({
+    posicion: posicion as FacturaRecibidaIvaTramo['posicion'],
+    base: readNumber(source, [`FRR_base${posicion}`, `base${posicion}`], null),
+    porcentaje: readNumber(source, [`FRR_iva${posicion}`, `iva${posicion}`], null),
+    cuota: readNumber(source, [`FRR_cuota${posicion}`, `cuota${posicion}`], null),
+  }));
+
+const buildVencimientos = (source: Record<string, unknown>): FacturaRecibidaVencimiento[] => [
+  {
+    posicion: 1,
+    fecha: readText(source, ['FechaVto', 'fecha_vto'], null),
+    importe: readNumber(source, ['ImporteVto', 'importe_vto'], null),
+  },
+  ...[1, 2, 3].map((slot, index) => ({
+    posicion: (index + 2) as FacturaRecibidaVencimiento['posicion'],
+    fecha: readText(source, [`FRR_FechaVto${slot}`, `fecha_vto${slot}`], null),
+    importe: readNumber(source, [`FRR_ImporteVto${slot}`, `importe_vto${slot}`], null),
+  })),
+];
+
+const totalIvaBase = (tramos: FacturaRecibidaIvaTramo[]) =>
+  tramos.reduce((sum, tramo) => sum + (tramo.base ?? 0), 0);
+
+const totalIvaCuota = (tramos: FacturaRecibidaIvaTramo[]) =>
+  tramos.reduce((sum, tramo) => sum + (tramo.cuota ?? 0), 0);
+
+const mapPunteoLinea = (linea: Record<string, unknown>, index: number): FacturaRecibidaPunteoLinea => ({
+  id: firstValue(linea, ['line_id', 'id', 'AML_id', 'ID']) as string | number | null,
+  posicion: readNumber(linea, ['position', 'posicion', 'linea'], index + 1),
+  articulo_id: firstValue(linea, ['article_id', 'articulo_id', 'id_articulo']) as string | number | null,
+  descripcion: readText(linea, ['description', 'descripcion', 'articulo', 'nombre'], null),
+  referencia: readText(linea, ['reference', 'referencia'], null),
+  cantidad: readNumber(linea, ['quantity', 'cantidad', 'unidades'], null),
+  precio: readNumber(linea, ['unit_price', 'purchase_price', 'price', 'precio'], null),
+  importe: readNumber(linea, ['amount', 'importe', 'total'], null),
+  observaciones: readText(linea, ['observations', 'observaciones'], null),
+  unidad_id: firstValue(linea, ['unit_id', 'unidad_id']) as string | number | null,
+  raw: asRecord(linea.raw),
+});
+
+const mapAccountingEntry = (
+  entry: Record<string, unknown>,
+  index: number,
+): FacturaRecibidaAsientoLinea => ({
+  id: firstValue(entry, ['id', 'entry_id', 'apunte_id']) as string | number | null,
+  posicion: readNumber(entry, ['position', 'posicion'], index + 1) ?? index + 1,
+  cuenta: readText(entry, ['account', 'cuenta'], null),
+  descripcion: readText(entry, ['description', 'descripcion', 'concept'], null),
+  debe: readNumber(entry, ['debit', 'debe'], 0) ?? 0,
+  haber: readNumber(entry, ['credit', 'haber'], 0) ?? 0,
+  actividad_id: readNumber(entry, ['activity_id', 'actividad_id', 'FRC_IdActividad'], null),
+  seccion_id: readNumber(entry, ['section_id', 'seccion_id', 'FRC_Idseccion'], null),
+  departamento_id: readNumber(entry, ['department_id', 'departamento_id', 'FRC_Iddepartamento'], null),
+  subdepartamento_id: readNumber(entry, ['subdepartment_id', 'subdepartamento_id', 'FRC_Idsubdepartamento'], null),
+  raw: asRecord(entry.raw),
+});
+
+const mapAccounting = (
+  factura: Record<string, unknown>,
+  response?: ERPReadAccountingResponse | null,
+): FacturaRecibidaAccounting => {
+  const accounting = asRecord(response?.accounting ?? factura.accounting);
+  const entries = response?.entries ?? asRecordArray(factura.accounting_entries ?? factura.asiento_lineas);
+  const technicalId =
+    readNumber(accounting, ['technical_id'], null) ??
+    readNumber(factura, ['accounting_technical_id', 'FRR_IdAsientoNet'], null);
+  const visibleNumber =
+    readText(accounting, ['visible_number'], null) ??
+    readText(factura, ['accounting_visible_number', 'asiento_numero'], null);
+  const status =
+    readText(accounting, ['status'], null) ??
+    readText(factura, ['accounting_status', 'asiento_estado'], null) ??
+    (technicalId ? 'pending' : 'not_requested');
+  const lines = entries.map(mapAccountingEntry);
+  const calculatedDebit = lines.reduce((sum, line) => sum + line.debe, 0);
+  const calculatedCredit = lines.reduce((sum, line) => sum + line.haber, 0);
+
+  return {
+    requested: readBoolean(accounting, ['requested'], Boolean(technicalId)) ?? false,
+    created: readBoolean(accounting, ['created'], status === 'created') ?? false,
+    status,
+    technical_id: technicalId,
+    visible_number: visibleNumber,
+    fecha:
+      readText(accounting, ['date', 'fecha'], null) ??
+      readText(factura, ['accounting_date', 'asiento_fecha'], null),
+    concepto:
+      readText(accounting, ['concept', 'concepto'], null) ??
+      readText(factura, ['FRR_Concepto', 'concepto'], null),
+    balanced:
+      readBoolean(accounting, ['balanced', 'cuadrado'], null) ??
+      (lines.length ? Math.abs(calculatedDebit - calculatedCredit) <= 0.01 : null),
+    total_debe: readNumber(accounting, ['total_debit', 'total_debe'], lines.length ? calculatedDebit : null),
+    total_haber: readNumber(accounting, ['total_credit', 'total_haber'], lines.length ? calculatedCredit : null),
+    lines,
+    error: readText(accounting, ['error'], null),
+  };
+};
+
 const responseItems = (value: unknown): unknown[] => {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
@@ -90,15 +271,36 @@ const erpIdFromUiId = (id?: string | null) => {
 };
 
 export const isERPReadOnlyFactura = (factura: Partial<UiFacturaRecibida> | null | undefined) =>
-  factura?.erp_payload?.source === ERP_READ_SOURCE || Boolean(erpIdFromUiId(factura?.id ?? null));
+  factura?.erp_payload?.source === ERP_READ_SOURCE ||
+  factura?.is_readonly_reference === true ||
+  factura?.source_kind === 'erp_reference' ||
+  Boolean(cleanText(factura?.erp_factura_id)) ||
+  Boolean(factura?.remote_frr_id) ||
+  factura?.accounting?.created === true ||
+  factura?.asiento_estado === 'created' ||
+  ['sending', 'unknown', 'reconciling', 'sent'].includes(factura?.sync_status ?? '') ||
+  Boolean(erpIdFromUiId(factura?.id ?? null));
 
 const erpRead = async <T>(consulta: string): Promise<T> => {
   const { data, error } = await supabase.functions.invoke(ERP_READ_FUNCTION, {
-    body: { consulta },
+    body: {
+      contract_version: 2,
+      request_id: crypto.randomUUID(),
+      consulta,
+    },
   });
   if (error) throw error;
   const message = getFunctionErrorMessage(data);
   if (message) throw new Error(message);
+  if (
+    data &&
+    typeof data === 'object' &&
+    (data as Record<string, unknown>).contract_version === 2
+  ) {
+    const envelope = data as { ok?: boolean; data?: unknown };
+    if (envelope.ok === false) throw new Error('El ERP no pudo completar la consulta.');
+    return envelope.data as T;
+  }
   return data as T;
 };
 
@@ -140,6 +342,7 @@ const erpFacturaPayloadKeys = [
   'FRR_ejercicio',
   'FRR_idcentro',
   'FRR_idproveedor',
+  'FRR_idregimen',
   'FRR_idcuenta',
   'FRR_numerofactura',
   'FRR_fechafactura',
@@ -163,13 +366,51 @@ const erpFacturaPayloadKeys = [
   'FRR_baseret',
   'FRR_ret',
   'FRR_cuotaret',
+  'FRR_igasto1',
+  'FRR_ctagasto1',
+  'FRR_igasto2',
+  'FRR_ctagasto2',
+  'FRR_igasto3',
+  'FRR_ctagasto3',
+  'FRR_igasto4',
+  'FRR_ctagasto4',
   'FRR_totalfac',
   'FRR_tipofactura',
+  'FRR_idpuntoventa',
+  'FRR_ClaveIRPF',
+  'FRR_IdAsientoNet',
+  'FRR_CtaCartera',
+  'FRR_IdBanco',
+  'FRR_IdFormaPago',
+  'FechaVto',
+  'ImporteVto',
+  'FRR_Modificable',
+  'FRR_GeneraCartera',
+  'FRR_idpago',
+  'FRR_IdUsuarioLog',
+  'FRR_FechaLog',
+  'FRR_HoraLog',
+  'FRR_FechaVto1',
+  'FRR_ImporteVto1',
+  'FRR_FechaVto2',
+  'FRR_ImporteVto2',
+  'FRR_FechaVto3',
+  'FRR_ImporteVto3',
+  'FRR_IdTipoDoc',
+  'FRR_IdAgricultorDto',
+  'FRR_CtaSuplido',
   'FRR_Concepto',
   'FRR_Observaciones',
   'FRR_ObservacionesAEAT',
   'FRR_ImpSuplido',
   'FRR_CuotaNoDeducible',
+  'FRR_FechaPrevPago',
+  'FRR_BancoPrevPago',
+  'FRR_IdSeccion',
+  'FRR_IdActividad',
+  'FRR_CancelarporCtb',
+  'FRR_Contabilizar',
+  'FRR_IdfacturaRec',
 ] as const;
 
 const erpCtbPayloadKeys = [
@@ -186,14 +427,58 @@ const erpCtbPayloadKeys = [
   'FRC_HoraLog',
 ] as const;
 
+const erpPunteoPayloadKeys = [
+  'remote_id',
+  'source_table',
+  'source_id',
+  'importe_factura',
+  'Origen',
+  'Serie',
+  'Albaran',
+  'Ref',
+  'Fecha',
+  'Importe P',
+  'Importe',
+  'S',
+  'Ver',
+  'empresa_id',
+  'proveedor_id',
+  'cuenta_gasto',
+] as const;
+
 const pickPayloadKeys = <TSource extends Record<string, unknown>>(source: TSource, keys: readonly string[]) =>
   Object.fromEntries(keys.map((key) => [key, source[key] ?? null]));
 
 const buildERPWebhookPayloadPreview = (factura: ERPFacturaRecibida) => ({
+  contract_version: 2,
   operation: 'factura_recibida.create',
   request_id: factura.id,
-  factura: pickPayloadKeys(factura as unknown as Record<string, unknown>, erpFacturaPayloadKeys),
+  dry_run: true,
+  cabecera: pickPayloadKeys(factura as unknown as Record<string, unknown>, erpFacturaPayloadKeys),
   ctb: factura.ctb.map((linea) => pickPayloadKeys(linea as unknown as Record<string, unknown>, erpCtbPayloadKeys)),
+  punteos: factura.punteos.map((punteo) => {
+    const source = {
+      remote_id: punteo.remote_id,
+      source_table: punteo.source_table,
+      source_id: punteo.source_id,
+      importe_factura: punteo.importe_factura,
+      Origen: punteo.Origen,
+      Serie: punteo.Serie,
+      Albaran: punteo.Albaran,
+      Ref: punteo.Ref,
+      Fecha: punteo.Fecha,
+      'Importe P': punteo['Importe P'],
+      Importe: punteo.Importe,
+      S: punteo.S,
+      Ver: punteo.Ver,
+      empresa_id: punteo.empresa_id,
+      proveedor_id: punteo.proveedor_id,
+      cuenta_gasto: punteo.cuenta_gasto,
+    };
+    return pickPayloadKeys(source, erpPunteoPayloadKeys);
+  }),
+  // Alias temporal para consumidores del contrato v1.
+  factura: pickPayloadKeys(factura as unknown as Record<string, unknown>, erpFacturaPayloadKeys),
 });
 
 const mapLineToUi = (linea: ERPFacturaRecibida['ctb'][number], index: number): FacturaRecibidaLinea => ({
@@ -202,11 +487,92 @@ const mapLineToUi = (linea: ERPFacturaRecibida['ctb'][number], index: number): F
   posicion: linea.posicion ?? index + 1,
   descripcion: linea.FRC_Cuenta ?? '',
   importe: linea.FRC_Importe ?? 0,
+  FRC_id: linea.FRC_id,
+  FRC_idfacturarecibida: linea.FRC_idfacturarecibida,
+  FRC_IdActividad: linea.FRC_IdActividad,
+  FRC_Idseccion: linea.FRC_Idseccion,
+  FRC_Iddepartamento: linea.FRC_Iddepartamento,
+  FRC_Idsubdepartamento: linea.FRC_Idsubdepartamento,
+  FRC_IdUsuarioLog: linea.FRC_IdUsuarioLog,
+  FRC_FechaLog: linea.FRC_FechaLog,
+  FRC_HoraLog: linea.FRC_HoraLog,
   created_at: linea.created_at,
   updated_at: linea.updated_at,
 });
 
-const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida => ({
+const mapGastosToUi = (factura: ERPFacturaRecibida): FacturaRecibidaLinea[] =>
+  [1, 2, 3, 4]
+    .map((slot): FacturaRecibidaLinea | null => {
+      const importe = Number((factura as unknown as Record<string, unknown>)[`FRR_igasto${slot}`] ?? 0);
+      const cuenta = cleanText((factura as unknown as Record<string, unknown>)[`FRR_ctagasto${slot}`]);
+      if (!cuenta && Math.abs(importe) <= 0.01) return null;
+      return {
+        posicion: slot,
+        descripcion: cuenta ?? '',
+        importe: Number.isFinite(importe) ? importe : 0,
+      } satisfies FacturaRecibidaLinea;
+    })
+    .filter((linea): linea is FacturaRecibidaLinea => Boolean(linea));
+
+const mapPunteoToUi = (punteo: ERPFacturaRecibida['punteos'][number]): FacturaRecibidaPunteo => ({
+  id: punteo.id,
+  posicion: punteo.posicion,
+  remote_id: punteo.remote_id,
+  source_table: punteo.source_table,
+  source_id: punteo.source_id,
+  importe_factura: punteo.importe_factura,
+  origen: punteo.Origen,
+  serie: punteo.Serie,
+  albaran: punteo.Albaran,
+  ref: punteo.Ref,
+  fecha: punteo.Fecha,
+  importe_punteado: punteo['Importe P'],
+  importe: punteo.Importe,
+  seleccionado: punteo.S,
+  ver: punteo.Ver,
+  empresa_id: punteo.empresa_id,
+  proveedor_id: punteo.proveedor_id,
+  cuenta_gasto: punteo.cuenta_gasto,
+  line_count: punteo.line_count,
+  lines: asRecordArray(punteo.source_lines).map(mapPunteoLinea),
+  raw: asRecord(punteo.raw),
+});
+
+export const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida => {
+  const source = factura as unknown as Record<string, unknown>;
+  const ivaTramos = buildIvaTramos(source);
+  const vencimientos = buildVencimientos(source);
+  const latestAsiento = factura.asientos[0] ?? null;
+  const accounting = mapAccounting(
+    source,
+    latestAsiento
+      ? {
+          accounting: {
+            requested: true,
+            created: latestAsiento.status === 'created',
+            status: latestAsiento.status,
+            technical_id: latestAsiento.technical_id,
+            visible_number: latestAsiento.visible_number,
+            date: latestAsiento.accounting_date,
+            concept: latestAsiento.concept,
+            balanced: latestAsiento.balanced,
+            total_debit: latestAsiento.total_debit,
+            total_credit: latestAsiento.total_credit,
+          },
+          entries: latestAsiento.apuntes.map((linea) => ({
+            id: linea.id,
+            position: linea.posicion,
+            account: linea.cuenta,
+            description: linea.descripcion,
+            debit: linea.debe,
+            credit: linea.haber,
+            raw: linea.raw,
+          })),
+        }
+      : null,
+  );
+
+  return {
   id: factura.id,
   documento_codigo:
     cleanText(factura.FRR_id) ??
@@ -220,21 +586,32 @@ const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida => ({
   proveedor_cuenta: cleanText(factura.FRR_idcuenta),
   numero_factura: factura.FRR_numerofactura,
   referencia: cleanText(factura.FRR_numero),
+  ejercicio: factura.FRR_ejercicio,
+  fecha_ctb: factura.FRR_fechactb,
+  tipo_iva_codigo: cleanText(factura.FRR_idregimen),
+  asiento: factura.FRR_IdAsientoNet,
+  asiento_tecnico: accounting.technical_id,
+  asiento_numero: accounting.visible_number,
+  asiento_fecha: accounting.fecha,
+  asiento_estado: accounting.status,
+  asiento_cuadrado: accounting.balanced,
+  asiento_total_debe: accounting.total_debe,
+  asiento_total_haber: accounting.total_haber,
+  asiento_lineas: accounting.lines,
+  accounting,
   fr_alm: cleanText(factura.FRR_Idempresa),
   fr_sufa: factura.FRR_tipofactura,
   fecha_factura: factura.FRR_fechafactura,
-  base_imponible: factura.FRR_base1,
-  iva_porcentaje: factura.FRR_iva1,
-  iva_importe:
-    (factura.FRR_cuota1 ?? 0) +
-    (factura.FRR_cuota2 ?? 0) +
-    (factura.FRR_cuota3 ?? 0) +
-    (factura.FRR_cuota4 ?? 0) +
-    (factura.FRR_cuota5 ?? 0),
+  iva_tramos: ivaTramos,
+  base_imponible: totalIvaBase(ivaTramos),
+  iva_porcentaje: ivaTramos[0]?.porcentaje ?? null,
+  iva_importe: totalIvaCuota(ivaTramos),
+  base_retencion: factura.FRR_baseret,
   retencion_porcentaje: factura.FRR_ret,
   retencion_importe: factura.FRR_cuotaret,
+  clave_irpf: factura.FRR_ClaveIRPF,
   total: factura.FRR_totalfac,
-  asunto_email: factura.FRR_Concepto ?? factura.FRR_Observaciones,
+  asunto_email: factura.email_subject,
   pdf_path: pdfPathFromId(factura.archivo_pdf_id),
   pdf_nombre: factura.source_pdf_name,
   pdf_mime_type: 'application/pdf',
@@ -246,10 +623,37 @@ const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida => ({
   erp_error: factura.erp_error,
   erp_payload: null,
   erp_factura_id: factura.FRR_id ? String(factura.FRR_id) : null,
+  source_kind: factura.source_kind,
+  remote_frr_id: factura.remote_frr_id,
+  is_readonly_reference: factura.is_readonly_reference,
+  match_status: factura.match_status,
+  match_evidence: factura.match_evidence as Record<string, unknown> | null,
+  concepto_asiento: factura.FRR_Concepto,
+  obs_aeat: factura.FRR_ObservacionesAEAT,
+  observaciones: factura.FRR_Observaciones,
+  cuota_no_deducible: factura.FRR_CuotaNoDeducible,
+  cuenta_suplido: factura.FRR_CtaSuplido,
+  importe_suplido: factura.FRR_ImpSuplido,
+  contabilizar: factura.FRR_Contabilizar,
+  genera_cartera: factura.FRR_GeneraCartera,
+  forma_pago: cleanText(factura.FRR_IdFormaPago),
+  cta_cartera: factura.FRR_CtaCartera,
+  banco: cleanText(factura.FRR_IdBanco),
+  tipo_doc: cleanText(factura.FRR_IdTipoDoc),
+  fecha_vto: vencimientos[0]?.fecha ?? null,
+  importe_vto: vencimientos[0]?.importe ?? null,
+  vencimientos,
+  version: readNumber(source, ['row_version', 'version'], null),
+  sync_status: readText(source, ['sync_status'], null),
+  accounting_status: readText(source, ['accounting_status'], accounting.status),
+  erp_last_read_at: readText(source, ['erp_last_read_at'], null),
   created_at: factura.created_at,
   updated_at: factura.updated_at,
-  facturas_recibidas_lineas: factura.ctb.map(mapLineToUi),
-});
+  ctb_lineas: factura.ctb.map(mapLineToUi),
+  punteos: factura.punteos.map(mapPunteoToUi),
+  facturas_recibidas_lineas: mapGastosToUi(factura),
+  };
+};
 
 const mapRemoteCtbToUi = (
   linea: ERPReadCtbRow,
@@ -267,26 +671,77 @@ const mapRemoteCtbToUi = (
     posicion: index + 1,
     descripcion: readText(linea, ['cuenta', 'FRC_Cuenta'], '') ?? '',
     importe: readNumber(linea, ['importe', 'FRC_Importe'], 0) ?? 0,
+    FRC_id: readNumber(linea, ['frc_id', 'FRC_id'], null),
+    FRC_idfacturarecibida: readNumber(linea, ['factura_id', 'FRC_idfacturarecibida'], null),
+    FRC_IdActividad: readNumber(linea, ['actividad_id', 'FRC_IdActividad'], null),
+    FRC_Idseccion: readNumber(linea, ['seccion_id', 'FRC_Idseccion'], null),
+    FRC_Iddepartamento: readNumber(linea, ['departamento_id', 'FRC_Iddepartamento'], null),
+    FRC_Idsubdepartamento: readNumber(linea, ['subdepartamento_id', 'FRC_Idsubdepartamento'], null),
+    FRC_IdUsuarioLog: readNumber(linea, ['usuario_log_id', 'FRC_IdUsuarioLog'], null),
+    FRC_FechaLog: fechaLog,
+    FRC_HoraLog: horaLog,
     created_at: timestamp,
     updated_at: timestamp,
   };
 };
 
-const mapRemoteFacturaToUi = (
+const mapRemoteGastosToUi = (factura: ERPReadFacturaRow): FacturaRecibidaLinea[] =>
+  [1, 2, 3, 4]
+    .map((slot): FacturaRecibidaLinea | null => {
+      const importe = readNumber(factura, [`FRR_igasto${slot}`, `igasto${slot}`], 0) ?? 0;
+      const cuenta = readText(factura, [`FRR_ctagasto${slot}`, `ctagasto${slot}`], null);
+      if (!cuenta && Math.abs(importe) <= 0.01) return null;
+      return {
+        id: `${ERP_REMOTE_ID_PREFIX}gasto:${slot}`,
+        posicion: slot,
+        descripcion: cuenta ?? '',
+        importe,
+      } satisfies FacturaRecibidaLinea;
+    })
+    .filter((linea): linea is FacturaRecibidaLinea => Boolean(linea));
+
+const mapRemotePunteoToUi = (
+  punteo: ERPReadPunteoRow,
+  index: number,
+  facturaId: number | string,
+): FacturaRecibidaPunteo => ({
+  id: `${ERP_REMOTE_ID_PREFIX}punteo:${readText(punteo, ['remote_id', 'id', 'ID'], `${facturaId}-${index + 1}`)}`,
+  posicion: index + 1,
+  remote_id: readText(punteo, ['remote_id', 'id', 'ID'], null),
+  source_table: readText(punteo, ['source_table'], null),
+  source_id: readNumber(punteo, ['source_id'], null),
+  importe_factura: readNumber(punteo, ['importe_factura'], null),
+  origen: readText(punteo, ['Origen', 'origen'], null),
+  serie: readText(punteo, ['Serie', 'serie'], null),
+  albaran: readNumber(punteo, ['Albaran', 'albaran'], null),
+  ref: readText(punteo, ['Ref', 'ref', 'referencia'], null),
+  fecha: readText(punteo, ['Fecha', 'fecha'], null),
+  importe_punteado: readNumber(punteo, ['Importe P', 'importe_p', 'importe_punteado'], null),
+  importe: readNumber(punteo, ['Importe', 'importe'], null),
+  seleccionado: Boolean(firstValue(punteo, ['S', 'seleccionado']) ?? true),
+  ver: Boolean(firstValue(punteo, ['Ver', 'ver']) ?? false),
+  empresa_id: readNumber(punteo, ['empresa_id', 'FRR_Idempresa'], null),
+  proveedor_id: readNumber(punteo, ['proveedor_id', 'FRR_idproveedor'], null),
+  cuenta_gasto: readText(punteo, ['cuenta_gasto', 'FRR_ctagasto'], null),
+  line_count: readNumber(punteo, ['line_count'], 0),
+  lines: asRecordArray(punteo.lines).map(mapPunteoLinea),
+  raw: asRecord(punteo.raw),
+});
+
+export const mapRemoteFacturaToUi = (
   factura: ERPReadFacturaRow,
   lineas: ERPReadCtbRow[] = [],
+  punteos: ERPReadPunteoRow[] = [],
+  accountingResponse?: ERPReadAccountingResponse | null,
 ): UiFacturaRecibida => {
   const frrId = readNumber(factura, ['FRR_id', 'frr_id', 'id'], 0) ?? 0;
   const fechaFactura = readText(factura, ['FRR_fechafactura', 'fecha_factura'], null);
   const fechaContable = readText(factura, ['FRR_fechactb', 'fecha_contable'], fechaFactura);
   const fechaLog = readText(factura, ['FRR_FechaLog', 'fecha_log'], fechaContable);
   const timestamp = fechaLog ? `${fechaLog}T00:00:00` : new Date().toISOString();
-  const cuotaIva =
-    (readNumber(factura, ['FRR_cuota1', 'cuota1'], 0) ?? 0) +
-    (readNumber(factura, ['FRR_cuota2', 'cuota2'], 0) ?? 0) +
-    (readNumber(factura, ['FRR_cuota3', 'cuota3'], 0) ?? 0) +
-    (readNumber(factura, ['FRR_cuota4', 'cuota4'], 0) ?? 0) +
-    (readNumber(factura, ['FRR_cuota5', 'cuota5'], 0) ?? 0);
+  const ivaTramos = buildIvaTramos(factura);
+  const vencimientos = buildVencimientos(factura);
+  const accounting = mapAccounting(factura, accountingResponse);
 
   return {
     id: erpRemoteId(frrId),
@@ -298,16 +753,32 @@ const mapRemoteFacturaToUi = (
     proveedor_cuenta: readText(factura, ['FRR_idcuenta', 'cuenta_proveedor', 'ACR_Cuenta'], null),
     numero_factura: readText(factura, ['FRR_numerofactura', 'numero_factura'], null),
     referencia: cleanText(readNumber(factura, ['FRR_numero', 'numero'], null)),
+    ejercicio: readNumber(factura, ['FRR_ejercicio', 'ejercicio'], null),
+    fecha_ctb: fechaContable,
+    tipo_iva_codigo: cleanText(readNumber(factura, ['FRR_idregimen', 'idregimen', 'tipo_iva_id'], null)),
+    asiento: readNumber(factura, ['FRR_IdAsientoNet', 'asiento'], null),
+    asiento_tecnico: accounting.technical_id,
+    asiento_numero: accounting.visible_number,
+    asiento_fecha: accounting.fecha,
+    asiento_estado: accounting.status,
+    asiento_cuadrado: accounting.balanced,
+    asiento_total_debe: accounting.total_debe,
+    asiento_total_haber: accounting.total_haber,
+    asiento_lineas: accounting.lines,
+    accounting,
     fr_alm: cleanText(readNumber(factura, ['FRR_Idempresa', 'empresa_id'], null)),
     fr_sufa: readText(factura, ['FRR_tipofactura', 'tipo_factura'], null),
     fecha_factura: fechaFactura,
-    base_imponible: readNumber(factura, ['FRR_base1', 'base1'], null),
-    iva_porcentaje: readNumber(factura, ['FRR_iva1', 'iva1', 'iva_porcentaje', 'tipo_iva'], null),
-    iva_importe: cuotaIva,
+    iva_tramos: ivaTramos,
+    base_imponible: totalIvaBase(ivaTramos),
+    iva_porcentaje: ivaTramos[0]?.porcentaje ?? null,
+    iva_importe: totalIvaCuota(ivaTramos),
+    base_retencion: readNumber(factura, ['FRR_baseret', 'base_retencion'], null),
     retencion_porcentaje: readNumber(factura, ['FRR_ret', 'retencion_porcentaje'], null),
     retencion_importe: readNumber(factura, ['FRR_cuotaret', 'retencion_importe'], null),
+    clave_irpf: readText(factura, ['FRR_ClaveIRPF', 'clave_irpf'], null),
     total: readNumber(factura, ['FRR_totalfac', 'total_factura'], null),
-    asunto_email: readText(factura, ['FRR_Concepto', 'concepto', 'FRR_Observaciones'], null),
+    asunto_email: null,
     pdf_path: null,
     pdf_nombre: null,
     pdf_mime_type: null,
@@ -319,48 +790,204 @@ const mapRemoteFacturaToUi = (
     erp_error: null,
     erp_payload: { source: ERP_READ_SOURCE },
     erp_factura_id: frrId ? String(frrId) : null,
+    source_kind: 'erp_reference',
+    remote_frr_id: frrId || null,
+    is_readonly_reference: true,
+    match_status: 'reference',
+    match_evidence: { source: ERP_READ_SOURCE, remote_frr_id: frrId },
+    concepto_asiento: readText(factura, ['FRR_Concepto', 'concepto'], null),
+    obs_aeat: readText(factura, ['FRR_ObservacionesAEAT', 'observaciones_aeat'], null),
+    observaciones: readText(factura, ['FRR_Observaciones', 'observaciones'], null),
+    cuota_no_deducible: readNumber(factura, ['FRR_CuotaNoDeducible'], null),
+    cuenta_suplido: readText(factura, ['FRR_CtaSuplido'], null),
+    importe_suplido: readNumber(factura, ['FRR_ImpSuplido'], null),
+    contabilizar: readText(factura, ['FRR_Contabilizar'], null),
+    genera_cartera: readText(factura, ['FRR_GeneraCartera'], null),
+    forma_pago: cleanText(readNumber(factura, ['FRR_IdFormaPago'], null)),
+    cta_cartera: readText(factura, ['FRR_CtaCartera'], null),
+    banco: cleanText(readNumber(factura, ['FRR_IdBanco'], null)),
+    tipo_doc: cleanText(readNumber(factura, ['FRR_IdTipoDoc'], null)),
+    fecha_vto: vencimientos[0]?.fecha ?? null,
+    importe_vto: vencimientos[0]?.importe ?? null,
+    vencimientos,
+    version: readNumber(factura, ['version'], null),
+    sync_status: readText(factura, ['sync_status'], null),
+    accounting_status: readText(factura, ['accounting_status'], accounting.status),
+    erp_last_read_at: readText(factura, ['erp_last_read_at'], null),
     created_at: timestamp,
     updated_at: timestamp,
-    facturas_recibidas_lineas: lineas.map((linea, index) => mapRemoteCtbToUi(linea, index, frrId)),
+    ctb_lineas: lineas.map((linea, index) => mapRemoteCtbToUi(linea, index, frrId)),
+    punteos: punteos.map((punteo, index) => mapRemotePunteoToUi(punteo, index, frrId)),
+    facturas_recibidas_lineas: mapRemoteGastosToUi(factura),
   };
 };
 
-const buildFacturaPayload = (
+const normalizeSn = (value: unknown, fallback: 'S' | 'N'): 'S' | 'N' => {
+  const normalized = String(value ?? '').trim().toUpperCase();
+  return normalized === 'S' || normalized === 'N' ? normalized : fallback;
+};
+
+const normalizedIvaTramos = (
   factura: Partial<UiFacturaRecibida>,
   current?: ERPFacturaRecibida | null,
-) => ({
-  FRR_idproveedor: numberValue(factura.proveedor_codigo, current?.FRR_idproveedor ?? null),
-  FRR_idcuenta: cleanText(factura.proveedor_cuenta) ?? current?.FRR_idcuenta ?? null,
-  FRR_numerofactura: cleanText(factura.numero_factura) ?? current?.FRR_numerofactura ?? null,
-  FRR_fechafactura: cleanText(factura.fecha_factura) ?? current?.FRR_fechafactura ?? null,
-  FRR_fechactb: cleanText(factura.fecha_factura) ?? current?.FRR_fechactb ?? current?.FRR_fechafactura ?? null,
-  FRR_Idempresa: numberValue(factura.fr_alm, current?.FRR_Idempresa ?? 1) ?? 1,
-  FRR_tipofactura: cleanText(factura.fr_sufa) ?? current?.FRR_tipofactura ?? null,
-  FRR_base1: numberValue(factura.base_imponible, current?.FRR_base1 ?? 0) ?? 0,
-  FRR_iva1: numberValue(factura.iva_porcentaje, current?.FRR_iva1 ?? 0) ?? 0,
-  FRR_cuota1: numberValue(factura.iva_importe, current?.FRR_cuota1 ?? 0) ?? 0,
-  FRR_base2: current?.FRR_base2 ?? 0,
-  FRR_iva2: current?.FRR_iva2 ?? 0,
-  FRR_cuota2: current?.FRR_cuota2 ?? 0,
-  FRR_baseret: current?.FRR_baseret ?? 0,
-  FRR_ret: numberValue(factura.retencion_porcentaje, current?.FRR_ret ?? 0) ?? 0,
-  FRR_cuotaret: numberValue(factura.retencion_importe, current?.FRR_cuotaret ?? 0) ?? 0,
-  FRR_totalfac: numberValue(factura.total, current?.FRR_totalfac ?? null),
-  FRR_ImpSuplido: current?.FRR_ImpSuplido ?? 0,
-  FRR_CuotaNoDeducible: current?.FRR_CuotaNoDeducible ?? 0,
-  FRR_Concepto: cleanText(factura.asunto_email) ?? current?.FRR_Concepto ?? null,
-  FRR_Observaciones: current?.FRR_Observaciones ?? null,
-});
+): FacturaRecibidaIvaTramo[] => {
+  const currentTramos = current
+    ? buildIvaTramos(current as unknown as Record<string, unknown>)
+    : buildIvaTramos({});
+  const supplied = factura.iva_tramos?.length
+    ? factura.iva_tramos
+    : [{
+        posicion: 1 as const,
+        base: factura.base_imponible,
+        porcentaje: factura.iva_porcentaje,
+        cuota: factura.iva_importe,
+      }];
 
-const buildCtbPayload = (lineas: FacturaRecibidaLinea[]) =>
+  return [1, 2, 3, 4, 5].map((slot) => {
+    const suppliedSlot = supplied.find((tramo) => tramo.posicion === slot);
+    const currentSlot = currentTramos[slot - 1];
+    return {
+      posicion: slot as FacturaRecibidaIvaTramo['posicion'],
+      base: numberValue(suppliedSlot?.base, currentSlot?.base ?? 0) ?? 0,
+      porcentaje: numberValue(suppliedSlot?.porcentaje, currentSlot?.porcentaje ?? 0) ?? 0,
+      cuota: numberValue(suppliedSlot?.cuota, currentSlot?.cuota ?? 0) ?? 0,
+    };
+  });
+};
+
+const normalizedVencimientos = (
+  factura: Partial<UiFacturaRecibida>,
+  current?: ERPFacturaRecibida | null,
+): FacturaRecibidaVencimiento[] => {
+  const currentVencimientos = current
+    ? buildVencimientos(current as unknown as Record<string, unknown>)
+    : buildVencimientos({});
+  const supplied = factura.vencimientos?.length
+    ? factura.vencimientos
+    : [{
+        posicion: 1 as const,
+        fecha: factura.fecha_vto,
+        importe: factura.importe_vto,
+      }];
+
+  return [1, 2, 3, 4].map((slot) => {
+    const suppliedSlot = supplied.find((vencimiento) => vencimiento.posicion === slot);
+    const currentSlot = currentVencimientos[slot - 1];
+    return {
+      posicion: slot as FacturaRecibidaVencimiento['posicion'],
+      fecha: cleanText(suppliedSlot?.fecha) ?? currentSlot?.fecha ?? null,
+      importe: numberValue(suppliedSlot?.importe, currentSlot?.importe ?? null),
+    };
+  });
+};
+
+export const buildFacturaPayload = (
+  factura: Partial<UiFacturaRecibida>,
+  current?: ERPFacturaRecibida | null,
+  gastos: FacturaRecibidaLinea[] = [],
+) => {
+  const ivaTramos = normalizedIvaTramos(factura, current);
+  const vencimientos = normalizedVencimientos(factura, current);
+  const payload: Record<string, unknown> = {
+    FRR_numero: numberValue(factura.referencia, current?.FRR_numero ?? null),
+    FRR_ejercicio: numberValue(factura.ejercicio, current?.FRR_ejercicio ?? null),
+    FRR_idproveedor: numberValue(factura.proveedor_codigo, current?.FRR_idproveedor ?? null),
+    FRR_idregimen: numberValue(factura.tipo_iva_codigo, current?.FRR_idregimen ?? null),
+    FRR_idcuenta: cleanText(factura.proveedor_cuenta) ?? current?.FRR_idcuenta ?? null,
+    FRR_numerofactura: cleanText(factura.numero_factura) ?? current?.FRR_numerofactura ?? null,
+    FRR_fechafactura: cleanText(factura.fecha_factura) ?? current?.FRR_fechafactura ?? null,
+    FRR_fechactb:
+      cleanText(factura.fecha_ctb) ??
+      cleanText(factura.fecha_factura) ??
+      current?.FRR_fechactb ??
+      current?.FRR_fechafactura ??
+      null,
+    FRR_Idempresa: numberValue(factura.fr_alm, current?.FRR_Idempresa ?? null),
+    FRR_tipofactura: cleanText(factura.fr_sufa) ?? current?.FRR_tipofactura ?? null,
+    FRR_baseret: numberValue(factura.base_retencion, current?.FRR_baseret ?? 0) ?? 0,
+    FRR_ret: numberValue(factura.retencion_porcentaje, current?.FRR_ret ?? 0) ?? 0,
+    FRR_cuotaret: numberValue(factura.retencion_importe, current?.FRR_cuotaret ?? 0) ?? 0,
+    FRR_ClaveIRPF: cleanText(factura.clave_irpf) ?? current?.FRR_ClaveIRPF ?? null,
+    FRR_totalfac: numberValue(factura.total, current?.FRR_totalfac ?? null),
+    FRR_ImpSuplido: numberValue(factura.importe_suplido, current?.FRR_ImpSuplido ?? 0) ?? 0,
+    FRR_CuotaNoDeducible: numberValue(factura.cuota_no_deducible, current?.FRR_CuotaNoDeducible ?? 0) ?? 0,
+    FRR_Concepto: (cleanText(factura.concepto_asiento) ?? current?.FRR_Concepto ?? null)?.slice(0, 50) ?? null,
+    FRR_ObservacionesAEAT: cleanText(factura.obs_aeat) ?? current?.FRR_ObservacionesAEAT ?? null,
+    FRR_Observaciones: cleanText(factura.observaciones) ?? current?.FRR_Observaciones ?? null,
+    FRR_Contabilizar: normalizeSn(factura.contabilizar ?? current?.FRR_Contabilizar, 'S'),
+    FRR_GeneraCartera: normalizeSn(factura.genera_cartera ?? current?.FRR_GeneraCartera, 'N'),
+    FRR_CtaCartera: cleanText(factura.cta_cartera) ?? current?.FRR_CtaCartera ?? null,
+    FRR_IdBanco: numberValue(factura.banco, current?.FRR_IdBanco ?? null),
+    FRR_IdFormaPago: numberValue(factura.forma_pago, current?.FRR_IdFormaPago ?? null),
+    FRR_IdTipoDoc: numberValue(factura.tipo_doc, current?.FRR_IdTipoDoc ?? null),
+    FechaVto: vencimientos[0]?.fecha ?? null,
+    ImporteVto: vencimientos[0]?.importe ?? null,
+    FRR_FechaVto1: vencimientos[1]?.fecha ?? null,
+    FRR_ImporteVto1: vencimientos[1]?.importe ?? null,
+    FRR_FechaVto2: vencimientos[2]?.fecha ?? null,
+    FRR_ImporteVto2: vencimientos[2]?.importe ?? null,
+    FRR_FechaVto3: vencimientos[3]?.fecha ?? null,
+    FRR_ImporteVto3: vencimientos[3]?.importe ?? null,
+    FRR_CtaSuplido: cleanText(factura.cuenta_suplido) ?? current?.FRR_CtaSuplido ?? null,
+  };
+
+  for (const tramo of ivaTramos) {
+    payload[`FRR_base${tramo.posicion}`] = tramo.base ?? 0;
+    payload[`FRR_iva${tramo.posicion}`] = tramo.porcentaje ?? 0;
+    payload[`FRR_cuota${tramo.posicion}`] = tramo.cuota ?? 0;
+  }
+
+  for (let index = 0; index < 4; index += 1) {
+    const slot = index + 1;
+    const gasto = gastos.find((linea) => linea.posicion === slot) ?? gastos[index];
+    const currentRecord = current as unknown as Record<string, unknown> | null;
+    const currentImporte = currentRecord?.[`FRR_igasto${slot}`] as number | null | undefined;
+    const currentCuenta = currentRecord?.[`FRR_ctagasto${slot}`] as string | null | undefined;
+    payload[`FRR_igasto${slot}`] = numberValue(gasto?.importe, currentImporte ?? 0) ?? 0;
+    payload[`FRR_ctagasto${slot}`] = cleanText(gasto?.descripcion) ?? currentCuenta ?? null;
+  }
+
+  return payload;
+};
+
+export const buildCtbPayload = (lineas: FacturaRecibidaLinea[]) =>
   lineas.map((linea, index) => ({
     posicion: index + 1,
+    FRC_id: numberValue(linea.FRC_id, null),
+    FRC_idfacturarecibida: numberValue(linea.FRC_idfacturarecibida, null),
     FRC_Cuenta: cleanText(linea.descripcion),
     FRC_Importe: numberValue(linea.importe, 0) ?? 0,
-    FRC_IdActividad: null,
-    FRC_Idseccion: null,
-    FRC_Iddepartamento: null,
-    FRC_Idsubdepartamento: null,
+    FRC_IdActividad: numberValue(linea.FRC_IdActividad, null),
+    FRC_Idseccion: numberValue(linea.FRC_Idseccion, null),
+    FRC_Iddepartamento: numberValue(linea.FRC_Iddepartamento, null),
+    FRC_Idsubdepartamento: numberValue(linea.FRC_Idsubdepartamento, null),
+    FRC_IdUsuarioLog: numberValue(linea.FRC_IdUsuarioLog, null),
+    FRC_FechaLog: cleanText(linea.FRC_FechaLog),
+    FRC_HoraLog: cleanText(linea.FRC_HoraLog),
+  }));
+
+export const buildPunteosPayload = (punteos: FacturaRecibidaPunteo[] = []) =>
+  punteos.map((punteo, index) => ({
+    posicion: index + 1,
+    remote_id: cleanText(punteo.remote_id),
+    source_table: cleanText(punteo.source_table),
+    source_id: numberValue(punteo.source_id, null),
+    importe_factura: numberValue(punteo.importe_factura, null),
+    Origen: cleanText(punteo.origen),
+    Serie: cleanText(punteo.serie),
+    Albaran: numberValue(punteo.albaran, null),
+    Ref: cleanText(punteo.ref),
+    Fecha: cleanText(punteo.fecha),
+    'Importe P': numberValue(punteo.importe_punteado, 0) ?? 0,
+    Importe: numberValue(punteo.importe, 0) ?? 0,
+    S: punteo.seleccionado,
+    Ver: punteo.ver,
+    empresa_id: numberValue(punteo.empresa_id, null),
+    proveedor_id: numberValue(punteo.proveedor_id, null),
+    cuenta_gasto: cleanText(punteo.cuenta_gasto),
+    line_count: numberValue(punteo.line_count, punteo.lines?.length ?? 0) ?? 0,
+    source_lines: punteo.lines ?? [],
+    raw: punteo.raw ?? {},
   }));
 
 const blobToBase64 = (blob: Blob): Promise<string> =>
@@ -370,13 +997,6 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
     reader.onerror = () => reject(reader.error ?? new Error('No se pudo leer el PDF.'));
     reader.readAsDataURL(blob);
   });
-
-const sha256Hex = async (buffer: ArrayBuffer) => {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-};
 
 const getFunctionErrorMessage = (data: unknown) => {
   if (!data || typeof data !== 'object') return null;
@@ -389,14 +1009,41 @@ export const fetchFacturasRecibidas = async (): Promise<UiFacturaRecibida[]> => 
   return page.items.map(mapFacturaToUi);
 };
 
+export const fetchFacturasRecibidasPage = async (
+  options: FacturaRecibidaPageOptions,
+): Promise<FacturaRecibidaUiPage> => {
+  const page = await facturasRecibidas.list({
+    page: options.page,
+    pageSize: options.pageSize,
+    proveedor: options.proveedor,
+    numero: options.numero,
+    fechaFrom: options.fechaDesde,
+    fechaTo: options.fechaHasta,
+    erpStatus: options.erpStatus,
+    sortOrder: options.sortOrder,
+    includeDiscarded: false,
+  });
+
+  return {
+    items: page.items.map(mapFacturaToUi),
+    total: page.total,
+    page: options.page,
+    pageSize: options.pageSize,
+  };
+};
+
 export const fetchFacturaRecibidaById = async (id: string): Promise<UiFacturaRecibida | null> => {
   const remoteId = erpIdFromUiId(id);
   if (remoteId) {
-    const [factura, ctb] = await Promise.all([
+    const [factura, ctb, punteos, accounting] = await Promise.all([
       erpRead<ERPReadFacturaRow>(`facturasrecibidas/${remoteId}`),
       erpRead<{ items?: ERPReadCtbRow[] }>(`facturasrecibidas/${remoteId}/ctb`),
+      erpRead<{ items?: ERPReadPunteoRow[] }>(
+        `facturasrecibidas/${remoteId}/punteos?include_lines=true`,
+      ),
+      erpRead<ERPReadAccountingResponse>(`facturasrecibidas/${remoteId}/asiento`),
     ]);
-    return mapRemoteFacturaToUi(factura, ctb.items ?? []);
+    return mapRemoteFacturaToUi(factura, ctb.items ?? [], punteos.items ?? [], accounting);
   }
 
   const factura = await facturasRecibidas.getById(id);
@@ -406,6 +1053,7 @@ export const fetchFacturaRecibidaById = async (id: string): Promise<UiFacturaRec
 export const saveFacturaRecibida = async (
   factura: Partial<UiFacturaRecibida>,
   lineas: FacturaRecibidaLinea[],
+  validar = false,
 ): Promise<UiFacturaRecibida> => {
   if (isERPReadOnlyFactura(factura)) {
     throw new Error('Las facturas reales de ERP son de solo lectura desde esta pantalla.');
@@ -413,55 +1061,34 @@ export const saveFacturaRecibida = async (
 
   if (factura.id) {
     const current = await facturasRecibidas.getById(factura.id);
+    if (!current) throw new Error('Factura no encontrada antes de guardar.');
     const updated = await facturasRecibidas.update({
       factura_id: factura.id,
-      estado: mapEstadoToERP(factura.estado),
+      expected_version: factura.version ?? current.row_version,
+      estado: validar ? 'validada' : mapEstadoToERP(factura.estado),
       proveedor_nombre: cleanText(factura.proveedor_nombre),
       proveedor_nif: cleanText(factura.proveedor_nif),
-      factura: buildFacturaPayload(factura, current),
-      ctb: buildCtbPayload(lineas),
+      factura: buildFacturaPayload(factura, current, lineas),
+      ctb: buildCtbPayload(factura.ctb_lineas ?? []),
+      punteos: buildPunteosPayload(factura.punteos ?? []),
     });
     return mapFacturaToUi(updated);
   }
 
-  const archivoPdfId = pdfIdFromPath(factura.pdf_path);
-  const insertPayload = {
-    archivo_pdf_id: archivoPdfId,
-    estado: mapEstadoToERP(factura.estado) ?? 'pendiente_revision',
-    proveedor_nombre: cleanText(factura.proveedor_nombre),
-    proveedor_nif: cleanText(factura.proveedor_nif),
-    source_pdf_name: cleanText(factura.pdf_nombre),
-    ...buildFacturaPayload(factura),
-  };
-
-  const { data, error } = await supabase
-    .from('facturasrecibidas')
-    .insert(insertPayload)
-    .select('id')
-    .single();
-  if (error || !data?.id) throw error ?? new Error('No se pudo crear la factura.');
-
-  if (lineas.length > 0) {
-    const { error: linesError } = await supabase.from('facturasrecibidas_ctb').insert(
-      buildCtbPayload(lineas).map((linea) => ({
-        ...linea,
-        factura_id: data.id,
-      })),
-    );
-    if (linesError) throw linesError;
-  }
-
-  const created = await facturasRecibidas.getById(data.id);
-  if (!created) throw new Error('Factura no encontrada tras crearla.');
-  return mapFacturaToUi(created);
+  throw new Error(
+    'La factura debe crearse mediante el flujo de PDF/OCR antes de editarse. No se realizan altas parciales desde el navegador.',
+  );
 };
 
-export const sendFacturaRecibidaToERP = async (id: string): Promise<UiFacturaRecibida> => {
+export const sendFacturaRecibidaToERP = async (
+  id: string,
+  version?: number | null,
+): Promise<UiFacturaRecibida> => {
   if (erpIdFromUiId(id)) {
     throw new Error('Esta factura ya existe en ERP y se muestra en modo solo lectura.');
   }
 
-  const sent = await facturasRecibidas.sendToERP(id);
+  const sent = await facturasRecibidas.sendToERP(id, version);
   return mapFacturaToUi(sent);
 };
 
@@ -496,19 +1123,6 @@ export const fetchFacturaRecibidaERPPayloadPreview = async (
     payload: factura ? buildERPWebhookPayloadPreview(factura) : {},
     body_json: JSON.stringify(factura ? buildERPWebhookPayloadPreview(factura) : {}, null, 2),
   };
-};
-
-export const cleanupFacturaRecibidaUpload = async (payload: {
-  id?: string | null;
-  pdf_path?: string | null;
-}): Promise<void> => {
-  if (payload.id) {
-    await facturasRecibidas.delete(payload.id).catch(() => undefined);
-  }
-  const pdfId = pdfIdFromPath(payload.pdf_path);
-  if (pdfId) {
-    await supabase.from('archivos_pdf').delete().eq('id', pdfId);
-  }
 };
 
 export type LocalizarProveedorResponse = {
@@ -618,62 +1232,146 @@ export const fetchFacturaTipos = async (): Promise<FacturaTipoOption[]> => {
   return Array.from(new Set(values)).map((value) => ({ value, label: value }));
 };
 
-export const uploadFacturaPdf = async (file: File) => {
+export const fetchFacturaRegimenes = async (): Promise<FacturaRegimenOption[]> => {
+  const response = await erpRead<ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[] | string[]>(
+    'regimenes',
+  );
+  return responseItems(response)
+    .map((item) => {
+      if (typeof item === 'string' || typeof item === 'number') {
+        const value = cleanText(item);
+        return value ? { value, label: value } : null;
+      }
+      if (!item || typeof item !== 'object') return null;
+      const record = item as ERPReadGenericRow;
+      const value = cleanText(firstValue(record, [
+        'id',
+        'codigo',
+        'regimen_id',
+        'idregimen',
+        'REG_id',
+        'FRR_idregimen',
+      ]));
+      const description = readText(record, [
+        'descripcion',
+        'nombre',
+        'regimen',
+        'REG_descripcion',
+      ], null);
+      return value
+        ? { value, label: description ? `${value} - ${description}` : value }
+        : null;
+    })
+    .filter((item): item is FacturaRegimenOption => Boolean(item));
+};
+
+export const fetchFacturaCuentas = async (search = ''): Promise<FacturaCuentaOption[]> => {
+  const query = search.trim()
+    ? `cuentas-contables?q=${encodeURIComponent(search.trim())}&limit=100`
+    : 'cuentas-contables?limit=100';
+  const response = await erpRead<ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[]>(query);
+  return responseItems(response)
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as ERPReadGenericRow;
+      const value = readText(record, ['cuenta', 'codigo', 'id', 'CTA_Cuenta'], null);
+      const description = readText(record, ['descripcion', 'nombre', 'CTA_Descripcion'], null);
+      return value
+        ? { value, label: description ? `${value} - ${description}` : value }
+        : null;
+    })
+    .filter((item): item is FacturaCuentaOption => Boolean(item));
+};
+
+export const searchFacturasERP = async (search: string): Promise<FacturaERPMatch[]> => {
+  const query = search.trim();
+  if (!query) return [];
+
+  const requests: Array<Promise<ERPReadListResponse<ERPReadFacturaRow> | ERPReadFacturaRow>> = [
+    erpRead<ERPReadListResponse<ERPReadFacturaRow>>(
+      `facturasrecibidas?numero_factura=${encodeURIComponent(query)}&limit=20`,
+    ),
+  ];
+  if (/^\d+$/.test(query)) {
+    requests.push(erpRead<ERPReadFacturaRow>(`facturasrecibidas/${encodeURIComponent(query)}`));
+  }
+
+  const settled = await Promise.allSettled(requests);
+  const rows = settled.flatMap((result) => {
+    if (result.status !== 'fulfilled') return [];
+    const items = responseItems(result.value);
+    return items.length > 0 ? items : [result.value];
+  });
+  if (rows.length === 0 && settled.every((result) => result.status === 'rejected')) {
+    const firstFailure = settled.find((result) => result.status === 'rejected');
+    if (firstFailure?.status === 'rejected') throw firstFailure.reason;
+  }
+
+  const byId = new Map<number, FacturaERPMatch>();
+  rows.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const row = item as ERPReadFacturaRow;
+    const frrId = readNumber(row, ['FRR_id', 'frr_id', 'id'], null);
+    if (!frrId) return;
+    byId.set(frrId, {
+      frrId,
+      numero: readNumber(row, ['FRR_numero', 'numero'], null),
+      numeroFactura: readText(row, ['FRR_numerofactura', 'numero_factura'], null),
+      proveedor: readText(row, ['acreedor_nombre', 'proveedor_nombre', 'ACR_Nombre'], null),
+      fecha: readText(row, ['FRR_fechafactura', 'fecha_factura'], null),
+      total: readNumber(row, ['FRR_totalfac', 'total'], null),
+    });
+  });
+  return Array.from(byId.values());
+};
+
+export const fetchFacturaPunteables = async (params: {
+  empresaId: number;
+  proveedorId: number;
+}): Promise<FacturaRecibidaPunteo[]> => {
+  const response = await erpRead<{ items?: ERPReadPunteoRow[] }>(
+    `albaranes-gastos/punteables?empresa_id=${params.empresaId}&proveedor_id=${params.proveedorId}&solo_pendientes=true&include_lines=true&limit=100`,
+  );
+  return (response.items ?? []).map((punteo, index) =>
+    mapRemotePunteoToUi(punteo, index, `candidate-${params.empresaId}-${params.proveedorId}`),
+  );
+};
+
+const validateFacturaPdf = (file: File) => {
   if (file.type && file.type !== 'application/pdf') {
     throw new Error('Solo se admiten archivos PDF.');
   }
-
-  const buffer = await file.arrayBuffer();
-  const hash = await sha256Hex(buffer);
-  const existing = await supabase
-    .from('archivos_pdf')
-    .select('id')
-    .eq('hash_sha256', hash)
-    .maybeSingle();
-  if (existing.error) throw existing.error;
-  if (existing.data?.id) {
-    return {
-      pdf_path: pdfPathFromId(existing.data.id),
-      pdf_nombre: file.name,
-      pdf_mime_type: file.type || 'application/pdf',
-      pdf_size: file.size,
-      pdf_reutilizado: true,
-    };
+  if (file.size > MAX_FACTURA_PDF_BYTES) {
+    throw new Error('El PDF supera el tamaño máximo permitido de 20 MB.');
   }
-
-  const base64 = await blobToBase64(file);
-  const { data, error } = await supabase
-    .from('archivos_pdf')
-    .insert({
-      hash_sha256: hash,
-      b64_contenido: base64,
-      nombre_archivo: file.name,
-      tamanio_bytes: file.size,
-      mime_type: file.type || 'application/pdf',
-    })
-    .select('id')
-    .single();
-  if (error || !data?.id) throw error ?? new Error('No se pudo guardar el PDF.');
-
-  return {
-    pdf_path: pdfPathFromId(data.id),
-    pdf_nombre: file.name,
-    pdf_mime_type: file.type || 'application/pdf',
-    pdf_size: file.size,
-    pdf_reutilizado: false,
-  };
 };
 
 export const getFacturaPdfSignedUrl = async (pdfPath?: string | null) => {
   const pdfId = pdfIdFromPath(pdfPath);
   if (!pdfId) return null;
+  const { data: metadata, error: metadataError } = await supabase
+    .from('archivos_pdf')
+    .select('storage_bucket, storage_path')
+    .eq('id', pdfId)
+    .single();
+  if (metadataError) throw metadataError;
+  if (metadata.storage_bucket && metadata.storage_path) {
+    const { data, error } = await supabase.storage
+      .from(metadata.storage_bucket)
+      .createSignedUrl(metadata.storage_path, 5 * 60);
+    if (error) throw error;
+    return data.signedUrl;
+  }
   const pdf = await facturasRecibidas.getPdfBase64(pdfId);
   return pdf.base64 ? `data:application/pdf;base64,${pdf.base64}` : null;
 };
 
 export type FacturaRecibidaExtraerResponse = {
+  contract_version?: number;
+  request_id?: string;
   ok?: boolean;
   factura_id?: string;
+  version?: number;
   factura?: {
     id?: string | null;
   } | null;
@@ -683,20 +1381,24 @@ export type FacturaRecibidaExtraerResponse = {
 };
 
 export const extractFacturaWithN8n = async (
-  factura: Partial<UiFacturaRecibida>,
+  file: File,
+  factura: Partial<UiFacturaRecibida> = {},
 ): Promise<UiFacturaRecibida> => {
-  const archivoPdfId = pdfIdFromPath(factura.pdf_path);
-  if (!archivoPdfId) {
-    throw new Error('No se encontro el PDF guardado para analizar.');
-  }
+  validateFacturaPdf(file);
+  const requestId = crypto.randomUUID();
+  const pdfBase64 = await blobToBase64(file);
 
   const { data, error } = await supabase.functions.invoke<FacturaRecibidaExtraerResponse>('factura-recibida-extraer', {
     body: {
-      archivo_pdf_id: archivoPdfId,
-      source: 'xfuego-front',
-      pdf_nombre: factura.pdf_nombre,
-      pdf_mime_type: factura.pdf_mime_type,
-      pdf_size: factura.pdf_size,
+      contract_version: 2,
+      request_id: requestId,
+      factura_id: factura.id ?? undefined,
+      expected_version: factura.id ? factura.version ?? undefined : undefined,
+      source: 'front_draft',
+      pdf_base64: pdfBase64,
+      pdf_nombre: file.name,
+      pdf_mime_type: file.type || 'application/pdf',
+      pdf_size: file.size,
     },
   });
 

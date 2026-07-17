@@ -19,6 +19,8 @@ export type PedidoWithMatch = Pedido & {
 
 export interface PedidoWithDetails extends Pedido {
   lineas?: (PedidoLinea & { centros?: PedidoLineaCentro[] })[];
+  matching_cambio_id?: number | null;
+  matching_cambio_revisado?: boolean | null;
 }
 
 export interface PrevisionWithDetails extends Prevision {

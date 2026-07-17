@@ -1,11 +1,21 @@
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
+  FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+  applyGastosToFrr,
+  cleanBase64,
   corsHeaders,
+  ensureArchivoPdf,
   getValidationErrorsForFactura,
+  integerValue,
   jsonResponse,
+  loadArchivoPdfBase64,
   normalizeFrcPayload,
+  normalizePunteoPayload,
   normalizeFrrPayload,
   pick,
+  requestIdValue,
   requireRouteUser,
+  rpcErrorStatus,
   signJwtHs256,
   text,
   type JsonObject,
@@ -23,17 +33,14 @@ type ValidationIssue = {
 type NormalizedExtraction = {
   frr: JsonObject;
   ctb: JsonObject[];
+  punteos: JsonObject[];
   extraction: JsonObject;
   metadata: JsonObject;
   warnings: string[];
 };
 
-const asObject = (value: unknown): JsonObject => {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as JsonObject;
-  }
-  return {};
-};
+const asObject = (value: unknown): JsonObject =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
@@ -48,12 +55,11 @@ const numberOrNull = (value: unknown): number | null => {
 };
 
 const parsePositiveInt = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value.replace(/^archivo_pdf_id:/, ""));
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-  }
-  return null;
+  const parsed = integerValue(
+    typeof value === "string" ? value.replace(/^archivo_pdf_id:/, "") : value,
+    null,
+  );
+  return parsed && parsed > 0 ? parsed : null;
 };
 
 const warningTexts = (...sources: unknown[]): string[] => {
@@ -80,15 +86,18 @@ const normalizeN8nResponse = (raw: unknown): NormalizedExtraction => {
   const output = asObject(root.output ?? root);
   const extraction = asObject(output.extraction ?? output.factura ?? output.invoice ?? output);
   const metadata = asObject(output.metadata ?? root.metadata ?? rawObject.metadata);
-  const ctbSource = output.ctb ?? extraction.ctb ?? extraction.lineas_ctb ?? extraction.lineas;
-  const warnings = warningTexts(metadata.warnings, extraction.warnings, output.warnings);
+  const ctbSource = output.ctb ?? extraction.ctb ?? extraction.lineas_ctb;
+  const punteosSource = output.punteos ?? extraction.punteos;
 
   return {
-    frr: normalizeFrrPayload(extraction),
+    frr: applyGastosToFrr(normalizeFrrPayload(extraction), output.gastos ?? extraction.gastos),
     ctb: asArray(ctbSource).map((linea, index) => normalizeFrcPayload(asObject(linea), index + 1)),
+    punteos: asArray(punteosSource).map((punteo, index) =>
+      normalizePunteoPayload(asObject(punteo), index + 1)
+    ),
     extraction,
     metadata,
-    warnings,
+    warnings: warningTexts(metadata.warnings, extraction.warnings, output.warnings),
   };
 };
 
@@ -116,13 +125,11 @@ const buildWebhookHeaders = async (): Promise<Record<string, string>> => {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
-
   const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET");
   if (jwtSecret) {
     const expiresInSeconds = parsePositiveInt(Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS")) ?? 300;
     headers.Authorization = `Bearer ${await signJwtHs256(jwtSecret, expiresInSeconds)}`;
   }
-
   return headers;
 };
 
@@ -137,82 +144,120 @@ const readResponseJson = async (response: Response): Promise<unknown> => {
 };
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
-  if (req.method !== "POST") {
-    return jsonResponse({ error: "Metodo no permitido" }, 405);
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return jsonResponse({ error: "Metodo no permitido" }, 405);
 
   const auth = await requireRouteUser(req);
   if (!auth.ok) return auth.response;
 
   try {
     const body = asObject(await req.json().catch(() => ({})));
-    const serviceClient = auth.serviceClient;
-
-    const facturaId = text(body.factura_id, null);
-    const source = text(body.source, "xfuego-front")!;
-    let archivoPdfId = parsePositiveInt(body.archivo_pdf_id ?? body.pdf_path);
-    let existingFactura: JsonObject | null = null;
-
-    if (!archivoPdfId && facturaId) {
-      const { data, error } = await serviceClient
-        .from("facturasrecibidas")
-        .select("id, archivo_pdf_id, source_pdf_name, email_from, email_subject, email_received_at")
-        .eq("id", facturaId)
-        .maybeSingle();
-
-      if (error) throw error;
-      existingFactura = asObject(data);
-      archivoPdfId = parsePositiveInt(existingFactura.archivo_pdf_id);
+    const contractVersion = integerValue(body.contract_version, FACTURAS_RECIBIDAS_CONTRACT_VERSION);
+    if (contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
+      return jsonResponse({ error: "contract_version=2 es requerido" }, 422);
     }
 
+    const requestId = requestIdValue(body.request_id);
+    const serviceClient = auth.serviceClient;
+    const facturaId = text(body.factura_id, null);
+    const source = text(body.source, "front_draft")!;
+    const expectedVersion = integerValue(
+      body.expected_version ?? body.row_version ?? body.version,
+      null,
+    );
+    let existingFactura: JsonObject | null = null;
+
+    if (facturaId) {
+      const { data, error } = await serviceClient
+        .from("facturasrecibidas")
+        .select("*")
+        .eq("id", facturaId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return jsonResponse({ error: "Factura no encontrada" }, 404);
+      existingFactura = asObject(data);
+      if (!expectedVersion || expectedVersion < 1) {
+        return jsonResponse({ error: "expected_version es requerido para reextraer" }, 422);
+      }
+      if (integerValue(existingFactura.row_version, null) !== expectedVersion) {
+        return jsonResponse(
+          {
+            error: `VERSION_CONFLICT: esperada ${expectedVersion}, actual ${existingFactura.row_version}`,
+          },
+          409,
+        );
+      }
+      if (
+        existingFactura.FRR_id ||
+        existingFactura.remote_frr_id ||
+        existingFactura.is_readonly_reference === true ||
+        ["sending", "unknown", "reconciling", "sent"].includes(String(existingFactura.sync_status ?? ""))
+      ) {
+        return jsonResponse({ error: "FACTURA_LOCKED: la factura no se puede reextraer" }, 409);
+      }
+    }
+
+    let archivoPdfId = parsePositiveInt(body.archivo_pdf_id ?? body.pdf_path ?? existingFactura?.archivo_pdf_id);
+    const incomingBase64 = cleanBase64(
+      body.pdf_base64 ?? body.file_base64 ?? body.b64_pdf ?? body.data,
+    );
+    const incomingName = text(
+      body.pdf_nombre ?? body.file_name ?? body.filename,
+      text(existingFactura?.source_pdf_name, "factura-recibida.pdf"),
+    );
+
+    if (incomingBase64) {
+      const pdf = await ensureArchivoPdf(serviceClient, incomingBase64, incomingName, auth.user.id);
+      archivoPdfId = pdf.archivoPdfId;
+    }
     if (!archivoPdfId) {
-      return jsonResponse({ error: "Falta archivo_pdf_id o factura_id con PDF asociado" }, 400);
+      return jsonResponse(
+        { error: "Falta pdf_base64, archivo_pdf_id o una factura con PDF asociado" },
+        422,
+      );
     }
 
     const { data: archivoPdf, error: archivoError } = await serviceClient
       .from("archivos_pdf")
-      .select("id, b64_contenido, nombre_archivo, mime_type, tamanio_bytes")
+      .select("id, b64_contenido, storage_bucket, storage_path, nombre_archivo, mime_type, tamanio_bytes")
       .eq("id", archivoPdfId)
       .maybeSingle();
-
     if (archivoError) throw archivoError;
-    const archivo = asObject(archivoPdf);
-    const pdfBase64 = text(archivo.b64_contenido, null);
-    if (!pdfBase64) {
-      return jsonResponse({ error: "El PDF no tiene contenido base64 disponible" }, 422);
-    }
+    if (!archivoPdf) return jsonResponse({ error: "PDF no encontrado" }, 404);
 
-    const pdfNombre = text(body.pdf_nombre, text(archivo.nombre_archivo, text(existingFactura?.source_pdf_name, "factura-recibida.pdf")))!;
+    const archivo = asObject(archivoPdf);
+    const pdfBase64 = incomingBase64 ?? await loadArchivoPdfBase64(serviceClient, archivo);
+    if (!pdfBase64) return jsonResponse({ error: "El PDF no tiene contenido disponible" }, 422);
+
+    const pdfNombre = text(body.pdf_nombre, text(archivo.nombre_archivo, incomingName))!;
     const pdfMimeType = text(body.pdf_mime_type, text(archivo.mime_type, "application/pdf"))!;
     const pdfSize = numberOrNull(body.pdf_size) ?? numberOrNull(archivo.tamanio_bytes);
-
     const webhookUrl = Deno.env.get("N8N_CAMPOJOYMA_EXTRACT_WEBHOOK_URL") || DEFAULT_WEBHOOK_URL;
-    const n8nPayload = {
-      factura_id: facturaId,
-      archivo_pdf_id: archivoPdfId,
-      source,
-      pdf_base64: pdfBase64,
-      pdf_nombre: pdfNombre,
-      pdf_mime_type: pdfMimeType,
-      pdf_size: pdfSize,
-      email: asObject(body.email),
-      requested_at: new Date().toISOString(),
-    };
 
     const webhookResponse = await fetch(webhookUrl, {
       method: "POST",
       headers: await buildWebhookHeaders(),
-      body: JSON.stringify(n8nPayload),
+      body: JSON.stringify({
+        contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+        request_id: requestId,
+        factura_id: facturaId,
+        archivo_pdf_id: archivoPdfId,
+        source,
+        pdf_base64: pdfBase64,
+        pdf_nombre: pdfNombre,
+        pdf_mime_type: pdfMimeType,
+        pdf_size: pdfSize,
+        email: asObject(body.email),
+        requested_at: new Date().toISOString(),
+      }),
     });
 
     const webhookJson = await readResponseJson(webhookResponse);
     if (!webhookResponse.ok) {
       return jsonResponse(
         {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
           error: "n8n no pudo extraer la factura",
           status: webhookResponse.status,
           details: webhookJson,
@@ -234,7 +279,7 @@ Deno.serve(async (req) => {
       .from("facturasrecibidas")
       .select("id")
       .eq("archivo_pdf_id", archivoPdfId)
-      .limit(1);
+      .limit(2);
     if (pdfDupError) throw pdfDupError;
     for (const candidate of asArray(pdfDuplicates)) {
       const id = text(asObject(candidate).id, null);
@@ -249,7 +294,8 @@ Deno.serve(async (req) => {
         .select("id")
         .eq("FRR_idproveedor", proveedorId)
         .eq("FRR_numerofactura", numeroFactura)
-        .limit(1);
+        .neq("estado", "duplicada")
+        .limit(2);
       if (supplierDupError) throw supplierDupError;
       for (const candidate of asArray(supplierDuplicates)) {
         const id = text(asObject(candidate).id, null);
@@ -267,9 +313,14 @@ Deno.serve(async (req) => {
       pick(normalized.extraction, ["proveedor_nif", "supplier_nif", "nif"]),
       text(pick(normalized.metadata, ["proveedor_nif", "supplier_nif", "nif"]), null),
     );
-    const rawConfidence = numberOrNull(pick(normalized.metadata, ["confidence", "confianza"]) ?? normalized.extraction.confidence);
-    const confidence =
-      rawConfidence === null ? null : rawConfidence > 1 ? (rawConfidence <= 100 ? rawConfidence / 100 : null) : rawConfidence;
+    const rawConfidence = numberOrNull(
+      pick(normalized.metadata, ["confidence", "confianza"]) ?? normalized.extraction.confidence,
+    );
+    const confidence = rawConfidence === null
+      ? null
+      : rawConfidence > 1
+        ? (rawConfidence <= 100 ? rawConfidence / 100 : null)
+        : rawConfidence;
 
     const facturaPayload: JsonObject = {
       ...normalized.frr,
@@ -280,70 +331,76 @@ Deno.serve(async (req) => {
       proveedor_nif: providerNif,
       source_pdf_name: pdfNombre,
       confidence,
+      source_kind: "front_draft",
+      remote_frr_id: null,
+      is_readonly_reference: false,
+      match_status: normalized.warnings.length > 0 || hasBlockingErrors ? "ambiguous" : "matched",
+      match_evidence: asObject(
+        normalized.metadata.match_evidence ??
+          normalized.extraction.match_evidence ??
+          normalized.extraction.matching,
+      ),
       extraction: {
         ...normalized.extraction,
         metadata: normalized.metadata,
       },
       validation_errors: validationErrors,
-      updated_by: auth.user.id,
     };
 
-    let savedFactura: JsonObject;
-    if (facturaId) {
-      const { data, error } = await serviceClient
-        .from("facturasrecibidas")
-        .update(facturaPayload)
-        .eq("id", facturaId)
-        .select("id, estado, archivo_pdf_id, duplicada_de, validation_errors")
-        .single();
-      if (error) throw error;
-      savedFactura = asObject(data);
-    } else {
-      const { data, error } = await serviceClient
-        .from("facturasrecibidas")
-        .insert({
-          ...facturaPayload,
-          created_by: auth.user.id,
-        })
-        .select("id, estado, archivo_pdf_id, duplicada_de, validation_errors")
-        .single();
-      if (error) throw error;
-      savedFactura = asObject(data);
+    const rpcName = facturaId ? "save_factura_recibida_v2" : "create_factura_recibida_v2";
+    const rpcArguments = facturaId
+      ? {
+        p_factura_id: facturaId,
+        p_expected_version: expectedVersion,
+        p_factura: facturaPayload,
+        p_ctb: normalized.ctb,
+        p_punteos: normalized.punteos,
+        p_actor: auth.user.id,
+        p_request_id: requestId,
+        p_change_source: "extract",
+        p_reason: "Extraccion OCR/n8n",
+      }
+      : {
+        p_factura: facturaPayload,
+        p_ctb: normalized.ctb,
+        p_punteos: normalized.punteos,
+        p_actor: auth.user.id,
+        p_request_id: requestId,
+        p_change_source: "extract",
+        p_reason: "Extraccion OCR/n8n",
+      };
+
+    const { data: saved, error: saveError } = await serviceClient.rpc(rpcName, rpcArguments);
+    if (saveError) {
+      return jsonResponse(
+        {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
+          error: saveError.message,
+        },
+        rpcErrorStatus(saveError.message),
+      );
     }
 
-    const savedId = text(savedFactura.id, null);
-    if (!savedId) {
-      throw new Error("No se pudo recuperar la factura creada");
-    }
-
-    await serviceClient.from("facturasrecibidas_ctb").delete().eq("factura_id", savedId);
-    if (normalized.ctb.length > 0) {
-      const ctbRows = normalized.ctb.map((linea, index) => ({
-        ...linea,
-        factura_id: savedId,
-        posicion: index + 1,
-        FRC_idfacturarecibida: null,
-        FRC_Importe: linea.FRC_Importe ?? 0,
-      }));
-      const { error: ctbError } = await serviceClient.from("facturasrecibidas_ctb").insert(ctbRows);
-      if (ctbError) throw ctbError;
-    }
-
+    const result = asObject(saved);
+    const savedFactura = asObject(result.factura);
     return jsonResponse({
+      contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      request_id: requestId,
       ok: true,
-      factura_id: savedId,
-      estado,
+      factura_id: savedFactura.id,
+      version: result.version,
+      estado: savedFactura.estado ?? estado,
       archivo_pdf_id: archivoPdfId,
       duplicada_de: duplicatedOf,
       validation_errors: validationErrors,
+      factura: savedFactura,
+      ctb: result.ctb ?? normalized.ctb,
+      punteos: result.punteos ?? normalized.punteos,
     });
   } catch (error) {
     console.error("factura-recibida-extraer error", error);
-    return jsonResponse(
-      {
-        error: error instanceof Error ? error.message : "No se pudo extraer la factura recibida",
-      },
-      500,
-    );
+    const message = error instanceof Error ? error.message : "No se pudo extraer la factura recibida";
+    return jsonResponse({ error: message }, rpcErrorStatus(message));
   }
 });

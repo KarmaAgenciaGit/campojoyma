@@ -1,0 +1,985 @@
+--- fastapi-netagro-v0.1-disk/app/main.py
++++ fastapi-netagro-v0.2.0/app/main.py
+@@ -1,9 +1,14 @@
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ import os
+-from datetime import date
++import sqlite3
++from datetime import date, datetime, timezone
+ from decimal import Decimal
++from pathlib import Path
+ from typing import Annotated, Any, Literal
++from uuid import UUID
+ 
+ from fastapi import FastAPI, HTTPException, Query
+ from pydantic import BaseModel, ConfigDict, Field
+@@ -26,12 +31,34 @@
+ )
+ 
+ 
+-app = FastAPI(title=os.getenv("API_TITLE", "Netagro Test API"))
++app = FastAPI(
++    title=os.getenv("API_TITLE", "Netagro Test API"),
++    version="0.2.0",
++    description=(
++        "API interna de la copia de pruebas de Netagro. El contrato v2 es aditivo; "
++        "la contabilizacion queda bloqueada mientras no exista un mecanismo oficial "
++        "de Netagro accesible desde esta copia."
++    ),
++)
+ 
+ Limit = Annotated[int, Query(ge=1, le=200)]
+ Offset = Annotated[int, Query(ge=0)]
+ 
+ ACCOUNT_SCHEMA_DESCRIPTIONS = ", ".join(sorted(DB_ALLOWED_ACCOUNT_SCHEMAS))
++ACCOUNTING_MECHANISM = "unavailable"
++ALBMATERIAL_WRITES_ENABLED = os.getenv("ALBMATERIAL_WRITES_ENABLED", "false").lower() in {
++    "1",
++    "true",
++    "yes",
++    "on",
++}
++APP_ROOT = Path(__file__).resolve().parents[1]
++IDEMPOTENCY_DB_PATH = Path(
++    os.getenv(
++        "FACTURAS_IDEMPOTENCY_DB",
++        str(APP_ROOT / "data" / "facturas-idempotency.sqlite3"),
++    )
++)
+ 
+ FRR_COLUMNS = [
+     "FRR_id",
+@@ -130,6 +157,15 @@
+     "albaranescompra_gastos",
+     "facturas_gastos",
+     "albarancoste",
++    "albmaterial",
++}
++PUNTEO_CONFIG = {
++    "albsalida_gastos": ("albsalida_gastos", "ASG_id", "ASG_idfactura", "ASG_importefactura"),
++    "albentrada_hisgastos": ("albentrada_hisgastos", "AHG_id", "AHG_idfacturaproveedor", None),
++    "albaranescompra_gastos": ("albaranescompra_gastos", "AGT_id", "AGT_IdFactura", None),
++    "facturas_gastos": ("facturas_gastos", "FGC_id", "FGC_idfacturaReci", "FGC_importefacturaReci"),
++    "albarancoste": ("albarancoste", "ALB_Id", "ALB_IdFactura", None),
++    "albmaterial": ("albmaterial", "AMA_idalb", "AMA_idfactura", None),
+ }
+ 
+ 
+@@ -142,6 +178,7 @@
+         "albaranescompra_gastos",
+         "facturas_gastos",
+         "albarancoste",
++        "albmaterial",
+     ]
+     source_id: int = Field(gt=0)
+     importe_factura: Decimal | None = None
+@@ -150,11 +187,71 @@
+ class FacturaRecibidaCreateRequest(BaseModel):
+     model_config = ConfigDict(extra="forbid")
+ 
++    contract_version: Literal[1, 2] = 1
++    request_id: UUID | None = None
++    dry_run: bool | None = None
+     cabecera: dict[str, Any]
+     ctb: list[dict[str, Any]] = Field(default_factory=list)
+     punteos: list[PunteoSeleccionado] = Field(default_factory=list)
+ 
+ 
++class AccountingState(BaseModel):
++    requested: bool
++    created: bool
++    status: Literal[
++        "not_requested",
++        "pending",
++        "created",
++        "reference_only",
++        "unavailable",
++        "error",
++    ]
++    technical_id: int | None = None
++    visible_number: str | None = None
++    date: str | None = None
++    concept: str | None = None
++    balanced: bool | None = None
++    total_debit: Decimal | None = None
++    total_credit: Decimal | None = None
++
++
++class ValidationEnvelope(BaseModel):
++    errors: list[dict[str, Any]] = Field(default_factory=list)
++    warnings: list[str] = Field(default_factory=list)
++
++
++class FacturaRecibidaWriteResponse(BaseModel):
++    model_config = ConfigDict(extra="allow")
++
++    ok: bool
++    contract_version: int
++    request_id: str | None
++    dry_run: bool
++    would_create: bool
++    factura: dict[str, Any] | None = None
++    ctb: list[dict[str, Any]] = Field(default_factory=list)
++    punteos: list[dict[str, Any]] = Field(default_factory=list)
++    validations: ValidationEnvelope
++    accounting: AccountingState
++    duplicate: dict[str, Any] | None = None
++    readback_confirmed: bool = False
++    FRR_id: int | None = None
++    FRR_numero: int | None = None
++    FRR_IdAsientoNet: int | None = None
++    ids_punteos_enlazados: list[dict[str, Any]] = Field(default_factory=list)
++    punteos_requested: list[dict[str, Any]] = Field(default_factory=list)
++    validation_errors: list[dict[str, Any]] = Field(default_factory=list)
++    erp_errors: list[dict[str, Any]] = Field(default_factory=list)
++
++
++class FacturaRecibidaAsientoResponse(BaseModel):
++    factura_id: int
++    accounting: AccountingState
++    entries: list[dict[str, Any]] = Field(default_factory=list)
++    source: dict[str, Any]
++    warnings: list[str] = Field(default_factory=list)
++
++
+ def paging(limit: int, offset: int) -> dict[str, int]:
+     return {"limit": limit, "offset": offset}
+ 
+@@ -188,6 +285,265 @@
+     return normalized
+ 
+ 
++def positive_int(value: Any) -> int | None:
++    try:
++        parsed = int(value)
++    except (TypeError, ValueError):
++        return None
++    return parsed if parsed > 0 else None
++
++
++def accounting_state_from_header(
++    header: dict[str, Any],
++) -> tuple[dict[str, Any], list[str]]:
++    requested = str(header.get("FRR_Contabilizar") or "").strip().upper() == "S"
++    technical_id = positive_int(header.get("FRR_IdAsientoNet"))
++    warnings: list[str] = []
++    if not requested:
++        status = "not_requested"
++        created = False
++    elif technical_id is not None:
++        status = "reference_only"
++        created = False
++        warnings.append(
++            "La copia solo conserva FRR_IdAsientoNet. No contiene el diario oficial "
++            "para resolver el numero visible ni verificar Debe/Haber."
++        )
++    else:
++        status = "unavailable"
++        created = False
++        warnings.append(
++            "No hay un servicio, procedimiento o diario oficial de Netagro accesible "
++            "en la copia de pruebas; la API no fabricara el asiento por SQL."
++        )
++    return (
++        {
++            "requested": requested,
++            "created": created,
++            "status": status,
++            "technical_id": technical_id,
++            "visible_number": None,
++            "date": str(header.get("FRR_fechactb")) if header.get("FRR_fechactb") else None,
++            "concept": header.get("FRR_Concepto"),
++            "balanced": None,
++            "total_debit": None,
++            "total_credit": None,
++        },
++        warnings,
++    )
++
++
++def build_write_response(
++    *,
++    contract_version: int,
++    request_id: str | None,
++    dry_run: bool,
++    factura: dict[str, Any] | None,
++    ctb: list[dict[str, Any]],
++    punteos: list[dict[str, Any]],
++    validation_errors: list[dict[str, Any]],
++    validation_warnings: list[str],
++    duplicate: dict[str, Any] | None = None,
++    readback_confirmed: bool = False,
++    punteos_requested: list[dict[str, Any]] | None = None,
++) -> dict[str, Any]:
++    header = factura or {}
++    accounting, accounting_warnings = accounting_state_from_header(header)
++    warnings = list(dict.fromkeys([*validation_warnings, *accounting_warnings]))
++    frr_id = positive_int(header.get("FRR_id"))
++    frr_numero = positive_int(header.get("FRR_numero"))
++    technical_id = positive_int(header.get("FRR_IdAsientoNet"))
++    legacy_technical_id = technical_id or 0
++    ok = not validation_errors and (dry_run or readback_confirmed)
++    return {
++        "ok": ok,
++        "contract_version": contract_version,
++        "request_id": request_id,
++        "dry_run": dry_run,
++        "would_create": not validation_errors,
++        "factura": factura,
++        "ctb": ctb,
++        "punteos": punteos,
++        "validations": {"errors": validation_errors, "warnings": warnings},
++        "accounting": accounting,
++        "duplicate": duplicate,
++        "readback_confirmed": readback_confirmed,
++        # Compatibilidad temporal con el contrato historico.
++        "FRR_id": frr_id,
++        "FRR_numero": frr_numero,
++        "FRR_IdAsientoNet": legacy_technical_id,
++        "ids_punteos_enlazados": punteos,
++        "punteos_requested": punteos_requested or [],
++        "validation_errors": validation_errors,
++        "erp_errors": [],
++    }
++
++
++def idempotency_payload_hash(payload: FacturaRecibidaCreateRequest) -> str:
++    serialized = json.dumps(
++        payload.model_dump(mode="json", exclude={"dry_run"}),
++        ensure_ascii=False,
++        sort_keys=True,
++        separators=(",", ":"),
++    )
++    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
++
++
++def get_idempotency_connection() -> sqlite3.Connection:
++    IDEMPOTENCY_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
++    connection = sqlite3.connect(IDEMPOTENCY_DB_PATH, timeout=10)
++    connection.row_factory = sqlite3.Row
++    connection.execute(
++        """
++        CREATE TABLE IF NOT EXISTS factura_requests (
++            request_id TEXT PRIMARY KEY,
++            payload_hash TEXT NOT NULL,
++            status TEXT NOT NULL,
++            response_json TEXT,
++            error_text TEXT,
++            created_at TEXT NOT NULL,
++            updated_at TEXT NOT NULL
++        )
++        """
++    )
++    connection.commit()
++    return connection
++
++
++def idempotency_claim(request_id: str, payload_hash: str) -> dict[str, Any] | None:
++    now = datetime.now(timezone.utc).isoformat()
++    with get_idempotency_connection() as connection:
++        connection.execute("BEGIN IMMEDIATE")
++        row = connection.execute(
++            "SELECT * FROM factura_requests WHERE request_id = ?",
++            (request_id,),
++        ).fetchone()
++        if row:
++            if row["payload_hash"] != payload_hash:
++                raise HTTPException(
++                    status_code=409,
++                    detail="request_id already exists with a different payload",
++                )
++            if row["status"] == "completed" and row["response_json"]:
++                return json.loads(row["response_json"])
++            raise HTTPException(
++                status_code=409,
++                detail={
++                    "error": "request requires reconciliation before retry",
++                    "request_id": request_id,
++                    "status": row["status"],
++                },
++            )
++        connection.execute(
++            """
++            INSERT INTO factura_requests
++                (request_id, payload_hash, status, created_at, updated_at)
++            VALUES (?, ?, 'in_progress', ?, ?)
++            """,
++            (request_id, payload_hash, now, now),
++        )
++        connection.commit()
++    return None
++
++
++def idempotency_complete(request_id: str, response: dict[str, Any]) -> None:
++    now = datetime.now(timezone.utc).isoformat()
++    with get_idempotency_connection() as connection:
++        connection.execute(
++            """
++            UPDATE factura_requests
++            SET status = 'completed', response_json = ?, error_text = NULL, updated_at = ?
++            WHERE request_id = ?
++            """,
++            (json.dumps(response, ensure_ascii=False, default=str), now, request_id),
++        )
++        connection.commit()
++
++
++def idempotency_fail(request_id: str, error: Exception) -> None:
++    now = datetime.now(timezone.utc).isoformat()
++    with get_idempotency_connection() as connection:
++        connection.execute(
++            """
++            UPDATE factura_requests
++            SET status = 'needs_reconciliation', error_text = ?, updated_at = ?
++            WHERE request_id = ?
++            """,
++            (str(error)[:1000], now, request_id),
++        )
++        connection.commit()
++
++
++def validate_punteos_payload(
++    selected: str,
++    punteos: list[PunteoSeleccionado],
++) -> tuple[list[dict[str, Any]], list[str]]:
++    errors: list[dict[str, Any]] = []
++    warnings: list[str] = []
++    for index, punteo in enumerate(punteos):
++        table_name, id_column, link_column, _ = PUNTEO_CONFIG[punteo.source_table]
++        source_amount_column = "AMA_importe" if punteo.source_table == "albmaterial" else "NULL"
++        row = fetch_one(
++            f"""
++            SELECT
++                {id_column} AS source_id,
++                {link_column} AS linked_invoice,
++                {source_amount_column} AS source_amount
++            FROM {selected}.{table_name}
++            WHERE {id_column} = %(source_id)s
++            """,
++            {"source_id": punteo.source_id},
++        )
++        if not row:
++            errors.append(
++                {
++                    "field": f"punteos[{index}].source_id",
++                    "error": f"punteo not found: {punteo.source_table}:{punteo.source_id}",
++                }
++            )
++            continue
++        linked_invoice = positive_int(row.get("linked_invoice"))
++        if linked_invoice is not None:
++            errors.append(
++                {
++                    "field": f"punteos[{index}].source_id",
++                    "error": (
++                        f"punteo already linked to invoice {linked_invoice}: "
++                        f"{punteo.source_table}:{punteo.source_id}"
++                    ),
++                }
++            )
++        if punteo.source_table == "albmaterial":
++            if punteo.importe_factura is not None:
++                source_amount = Decimal(str(row.get("source_amount") or 0))
++                requested_amount = Decimal(punteo.importe_factura)
++                if (
++                    not source_amount.is_finite()
++                    or not requested_amount.is_finite()
++                    or abs(requested_amount - source_amount) > Decimal("0.01")
++                ):
++                    errors.append(
++                        {
++                            "field": f"punteos[{index}].importe_factura",
++                            "error": (
++                                "albmaterial only accepts its full AMA_importe; "
++                                "partial or different allocation is not supported"
++                            ),
++                        }
++                    )
++            if not ALBMATERIAL_WRITES_ENABLED:
++                errors.append(
++                    {
++                        "field": f"punteos[{index}].source_table",
++                        "error": (
++                            "albmaterial write is disabled until the test API writer "
++                            "receives explicit SELECT and UPDATE grants"
++                        ),
++                    }
++                )
++    return errors, warnings
++
++
+ def validate_frr_payload(cabecera: dict[str, Any]) -> list[dict[str, str]]:
+     errors: list[dict[str, str]] = []
+     unknown = sorted(set(cabecera) - FRR_COLUMN_SET)
+@@ -219,6 +575,51 @@
+     return errors
+ 
+ 
++def validate_v2_technical_fields(
++    cabecera: dict[str, Any],
++    ctb_rows: list[dict[str, Any]],
++) -> list[dict[str, str]]:
++    errors: list[dict[str, str]] = []
++    blocked_header_fields = (
++        "FRR_numero",
++        "FRR_IdUsuarioLog",
++        "FRR_FechaLog",
++        "FRR_HoraLog",
++    )
++    for field in blocked_header_fields:
++        if cabecera.get(field) not in (None, "", 0, "0"):
++            errors.append(
++                {
++                    "field": f"cabecera.{field}",
++                    "error": "technical ERP field is generated by the server",
++                }
++            )
++    if cabecera.get("FRR_IdAsientoNet") not in (None, "", 0, "0"):
++        errors.append(
++            {
++                "field": "cabecera.FRR_IdAsientoNet",
++                "error": "accounting technical ID can only be returned by the official ERP",
++            }
++        )
++    if cabecera.get("FRR_IdfacturaRec") not in (None, "", 0, "0"):
++        errors.append(
++            {
++                "field": "cabecera.FRR_IdfacturaRec",
++                "error": "technical ERP link is generated by the server",
++            }
++        )
++    for index, row in enumerate(ctb_rows):
++        for field in ("FRC_IdUsuarioLog", "FRC_FechaLog", "FRC_HoraLog"):
++            if row.get(field) not in (None, "", 0, "0"):
++                errors.append(
++                    {
++                        "field": f"ctb[{index}].{field}",
++                        "error": "technical ERP field is generated by the server",
++                    }
++                )
++    return errors
++
++
+ def insert_row(cursor: Any, table: str, values: dict[str, Any], allowed_columns: set[str]) -> None:
+     columns = [column for column in values if column in allowed_columns]
+     placeholders = [f"%({column})s" for column in columns]
+@@ -258,7 +659,8 @@
+             g.ASG_idgasto AS gasto_id,
+             gc.GCO_Nombre AS gasto_nombre,
+             COALESCE(NULLIF(gc.GCO_CuentaDebe, ''), NULLIF(gc.GCO_CuentaHaber, '')) AS cuenta_gasto,
+-            g.ASG_idalbaran AS albaran_id
++            g.ASG_idalbaran AS albaran_id,
++            0 AS line_count
+         FROM {selected}.albsalida_gastos g
+         LEFT JOIN {selected}.albsalida a ON a.ASA_idalbaran = g.ASG_idalbaran
+         LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.ASG_idacreedor
+@@ -286,7 +688,8 @@
+             g.AHG_idgasto AS gasto_id,
+             tga.TGA_Nombre AS gasto_nombre,
+             NULLIF(tga.TGA_cuenta, '') AS cuenta_gasto,
+-            g.AHG_idalbaran AS albaran_id
++            g.AHG_idalbaran AS albaran_id,
++            0 AS line_count
+         FROM {selected}.albentrada_hisgastos g
+         LEFT JOIN {selected}.albentrada e ON e.AEN_idalbaran = g.AHG_idalbaran
+         LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.AHG_idacreedor
+@@ -314,7 +717,8 @@
+             g.AGT_idgasto AS gasto_id,
+             COALESCE(tga.TGA_Nombre, gc.GCO_Nombre) AS gasto_nombre,
+             COALESCE(NULLIF(tga.TGA_cuenta, ''), NULLIF(gc.GCO_CuentaDebe, ''), NULLIF(gc.GCO_CuentaHaber, '')) AS cuenta_gasto,
+-            g.AGT_idalbaran AS albaran_id
++            g.AGT_idalbaran AS albaran_id,
++            0 AS line_count
+         FROM {selected}.albaranescompra_gastos g
+         LEFT JOIN {selected}.albmaterial m ON m.AMA_idalb = g.AGT_idalbaran
+         LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.AGT_idacreedor
+@@ -343,7 +747,8 @@
+             g.FGC_idgasto AS gasto_id,
+             gc.GCO_Nombre AS gasto_nombre,
+             COALESCE(NULLIF(gc.GCO_CuentaDebe, ''), NULLIF(gc.GCO_CuentaHaber, '')) AS cuenta_gasto,
+-            g.FGC_idfactura AS albaran_id
++            g.FGC_idfactura AS albaran_id,
++            0 AS line_count
+         FROM {selected}.facturas_gastos g
+         LEFT JOIN {selected}.facturas f ON f.FRA_idfactura = g.FGC_idfactura
+         LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.FGC_idacreedor
+@@ -371,7 +776,8 @@
+             NULL AS gasto_id,
+             'ALBARAN COSTE' AS gasto_nombre,
+             NULL AS cuenta_gasto,
+-            a.ALB_Id AS albaran_id
++            a.ALB_Id AS albaran_id,
++            0 AS line_count
+         FROM {selected}.albarancoste a
+         LEFT JOIN (
+             SELECT ALN_IdAlbaran, SUM(ALN_Importe) AS importe
+@@ -379,9 +785,104 @@
+             GROUP BY ALN_IdAlbaran
+         ) lineas ON lineas.ALN_IdAlbaran = a.ALB_Id
+         LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = a.ALB_IdAcreedor
++
++        UNION ALL
++
++        SELECT
++            CONCAT('AMA:', m.AMA_idalb) AS id_interno_estable,
++            'albmaterial' AS source_table,
++            m.AMA_idalb AS source_id,
++            m.AMA_idfactura AS factura_recibida_id,
++            'MA' AS Origen,
++            m.AMA_serie AS Serie,
++            m.AMA_numero AS Albaran,
++            m.AMA_referencia AS Ref,
++            m.AMA_fecha AS Fecha,
++            CAST(0 AS DECIMAL(12,2)) AS `Importe P`,
++            m.AMA_importe AS Importe,
++            CASE WHEN m.AMA_idfactura <> 0 THEN 'S' ELSE 'N' END AS S,
++            CASE WHEN m.AMA_idfactura <> 0 THEN 'S' ELSE 'N' END AS Ver,
++            m.AMA_IdEmpresa AS empresa,
++            m.AMA_idacreedor AS acreedor_id,
++            acr.ACR_Nombre AS acreedor_nombre,
++            NULL AS gasto_id,
++            'MATERIAL' AS gasto_nombre,
++            NULL AS cuenta_gasto,
++            m.AMA_idalb AS albaran_id,
++            (
++                SELECT COUNT(*)
++                FROM {selected}.albmateriallineas ml
++                WHERE ml.AML_idalb = m.AMA_idalb
++            ) AS line_count
++        FROM {selected}.albmaterial m
++        LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = m.AMA_idacreedor
+     """
+ 
+ 
++def attach_material_lines(
++    selected: str,
++    punteos: list[dict[str, Any]],
++) -> list[dict[str, Any]]:
++    material_ids = [
++        positive_int(item.get("source_id"))
++        for item in punteos
++        if item.get("source_table") == "albmaterial"
++    ]
++    material_ids = [value for value in material_ids if value is not None]
++    for item in punteos:
++        item["lines"] = []
++    if not material_ids:
++        return punteos
++
++    params = {f"material_id_{index}": value for index, value in enumerate(material_ids)}
++    placeholders = ", ".join(f"%({key})s" for key in params)
++    line_rows = fetch_all(
++        f"""
++        SELECT
++            l.AML_idlinea AS line_id,
++            l.AML_idalb AS source_id,
++            l.AML_idmaterial AS article_id,
++            COALESCE(
++                NULLIF(e.ENV_nombre, ''),
++                NULLIF(l.AML_Observaciones, ''),
++                CONCAT('Material ', l.AML_idmaterial)
++            ) AS description,
++            NULLIF(l.AML_referencia, '') AS reference,
++            l.AML_cantidad AS quantity,
++            l.AML_precio AS unit_price,
++            l.AML_preciocompra AS purchase_price,
++            l.AML_descuento AS discount_pct,
++            l.AML_ImportePlastico AS plastic_amount,
++            ROUND(
++                (l.AML_cantidad * l.AML_precio) * (1 - l.AML_descuento / 100)
++                + l.AML_ImportePlastico,
++                2
++            ) AS amount,
++            NULLIF(l.AML_Observaciones, '') AS observations,
++            l.AML_umedida AS unit_id
++        FROM {selected}.albmateriallineas l
++        LEFT JOIN {selected}.envases e ON e.ENV_idenvase = l.AML_idmaterial
++        WHERE l.AML_idalb IN ({placeholders})
++        ORDER BY l.AML_idalb, l.AML_idlinea
++        """,
++        params,
++    )
++    grouped: dict[int, list[dict[str, Any]]] = {}
++    for row in line_rows:
++        source_id = positive_int(row.pop("source_id", None))
++        if source_id is None:
++            continue
++        bucket = grouped.setdefault(source_id, [])
++        row["position"] = len(bucket) + 1
++        bucket.append(row)
++    for item in punteos:
++        source_id = positive_int(item.get("source_id"))
++        if item.get("source_table") == "albmaterial" and source_id is not None:
++            item["lines"] = grouped.get(source_id, [])
++            item["line_count"] = len(item["lines"])
++    return punteos
++
++
+ def count_from(selected: str, table_and_joins: str, where: str, params: dict[str, Any]) -> int:
+     row = fetch_one(
+         f"""
+@@ -398,8 +899,12 @@
+ def root() -> dict[str, Any]:
+     return {
+         "service": "netagro-test-api",
++        "version": app.version,
++        "write_contract_version": 2,
+         "default_schema": DB_DEFAULT_SCHEMA,
+         "allowed_schemas": sorted(DB_ALLOWED_SCHEMAS),
++        "accounting_mechanism": ACCOUNTING_MECHANISM,
++        "albmaterial_writes_enabled": ALBMATERIAL_WRITES_ENABLED,
+     }
+ 
+ 
+@@ -1008,6 +1513,49 @@
+     return ensure_found(row, "factura recibida")
+ 
+ 
++@app.get(
++    "/facturasrecibidas/{factura_id}/asiento",
++    response_model=FacturaRecibidaAsientoResponse,
++)
++def get_factura_recibida_asiento(
++    factura_id: int,
++    schema: Annotated[str | None, schema_query()] = None,
++) -> dict[str, Any]:
++    selected_name = resolve_schema(schema)
++    selected = quote_identifier(selected_name)
++    row = fetch_one(
++        f"""
++        SELECT
++            FRR_id,
++            FRR_Contabilizar,
++            FRR_IdAsientoNet,
++            FRR_fechactb,
++            FRR_Concepto
++        FROM {selected}.facturasrecibidas
++        WHERE FRR_id = %(factura_id)s
++        """,
++        {"factura_id": factura_id},
++    )
++    header = ensure_found(row, "factura recibida")
++    accounting, warnings = accounting_state_from_header(header)
++    return {
++        "factura_id": factura_id,
++        "accounting": accounting,
++        "entries": [],
++        "source": {
++            "schema": selected_name,
++            "mechanism": None,
++            "ledger_available": False,
++            "available_accounting_tables": ["cuentas"],
++            "missing_capability": (
++                "Servicio/procedimiento oficial de Netagro y diario de asientos con "
++                "mapeo entre FRR_IdAsientoNet y el numero visible"
++            ),
++        },
++        "warnings": warnings,
++    }
++
++
+ @app.get("/facturasrecibidas/{factura_id}/ctb")
+ def get_factura_recibida_ctb(
+     factura_id: int,
+@@ -1051,9 +1599,18 @@
+     schema: Annotated[str | None, schema_query()] = None,
+     limit: Limit = 200,
+     offset: Offset = 0,
++    include_lines: bool = False,
+ ) -> dict[str, Any]:
+     selected = quote_identifier(resolve_schema(schema))
+     params = {"factura_id": factura_id, **paging(limit, offset)}
++    total_row = fetch_one(
++        f"""
++        SELECT COUNT(*) AS total
++        FROM ({punteos_union_sql(selected)}) punteos
++        WHERE factura_recibida_id = %(factura_id)s
++        """,
++        {"factura_id": factura_id},
++    )
+     rows = fetch_all(
+         f"""
+         SELECT *
+@@ -1064,7 +1621,15 @@
+         """,
+         params,
+     )
+-    return {"items": rows, "limit": limit, "offset": offset}
++    if include_lines:
++        rows = attach_material_lines(selected, rows)
++    return {
++        "items": rows,
++        "limit": limit,
++        "offset": offset,
++        "total": int(total_row["total"]) if total_row else 0,
++        "include_lines": include_lines,
++    }
+ 
+ 
+ @app.get("/albaranes-gastos/punteables")
+@@ -1078,6 +1643,7 @@
+         "albaranescompra_gastos",
+         "facturas_gastos",
+         "albarancoste",
++        "albmaterial",
+     ]
+     | None = None,
+     proveedor_id: int | None = None,
+@@ -1129,22 +1695,79 @@
+     return {"items": rows, "limit": limit, "offset": offset, "total": int(total_row["total"]) if total_row else 0}
+ 
+ 
+-@app.post("/facturasrecibidas")
++@app.post("/facturasrecibidas", response_model=FacturaRecibidaWriteResponse)
+ def create_factura_recibida(
+     payload: FacturaRecibidaCreateRequest,
+     schema: Annotated[str | None, schema_query()] = None,
+-    dry_run: bool = True,
++    dry_run: bool | None = Query(
++        default=None,
++        description=(
++            "Compatibilidad v1. En contrato v2 se recomienda enviar dry_run en el cuerpo; "
++            "el valor del cuerpo tiene prioridad."
++        ),
++    ),
+ ) -> dict[str, Any]:
+     selected_name = resolve_write_schema(schema)
+     selected = quote_identifier(selected_name)
++    effective_dry_run = (
++        payload.dry_run
++        if payload.dry_run is not None
++        else (dry_run if dry_run is not None else True)
++    )
++    contract_version = payload.contract_version
++    request_id = str(payload.request_id) if payload.request_id else None
+     cabecera = normalize_payload_values(payload.cabecera)
+     ctb_rows = [normalize_payload_values(row) for row in payload.ctb]
+-    validation_errors = [
++    validation_warnings: list[str] = []
++    validation_errors: list[dict[str, Any]] = [
+         *validate_frr_payload(cabecera),
+         *validate_frc_payload(ctb_rows),
+     ]
++    if contract_version == 2:
++        validation_errors.extend(validate_v2_technical_fields(cabecera, ctb_rows))
++        for field in (
++            "FRR_id",
++            "FRR_numero",
++            "FRR_IdAsientoNet",
++            "FRR_IdUsuarioLog",
++            "FRR_FechaLog",
++            "FRR_HoraLog",
++            "FRR_IdfacturaRec",
++        ):
++            cabecera.pop(field, None)
++        for row in ctb_rows:
++            for field in (
++                "FRC_id",
++                "FRC_idfacturarecibida",
++                "FRC_IdUsuarioLog",
++                "FRC_FechaLog",
++                "FRC_HoraLog",
++            ):
++                row.pop(field, None)
++    if payload.dry_run is not None and dry_run is not None and payload.dry_run != dry_run:
++        validation_warnings.append(
++            "dry_run del cuerpo tiene prioridad sobre el parametro query por compatibilidad."
++        )
++    if contract_version == 2 and request_id is None:
++        validation_errors.append(
++            {"field": "request_id", "error": "request_id UUID is required for contract_version 2"}
++        )
+     if cabecera.get("FRR_tipofactura") in (None, ""):
+         validation_errors.append({"field": "FRR_tipofactura", "error": "required for FRR_numero generation"})
++    punteo_errors, punteo_warnings = validate_punteos_payload(selected, payload.punteos)
++    validation_errors.extend(punteo_errors)
++    validation_warnings.extend(punteo_warnings)
++    accounting_requested = str(cabecera.get("FRR_Contabilizar") or "").strip().upper() == "S"
++    if contract_version == 2 and accounting_requested and ACCOUNTING_MECHANISM == "unavailable":
++        validation_errors.append(
++            {
++                "field": "cabecera.FRR_Contabilizar",
++                "error": (
++                    "official Netagro accounting mechanism is unavailable in the test copy; "
++                    "invoice and journal entry were not created"
++                ),
++            }
++        )
+ 
+     duplicate = None
+     duplicate_fields = ("FRR_Idempresa", "FRR_ejercicio", "FRR_idproveedor", "FRR_numerofactura")
+@@ -1188,33 +1811,43 @@
+         )
+         generated_numero = int(number_row["next_numero"]) if number_row else None
+ 
+-    if dry_run or validation_errors:
+-        return {
+-            "ok": not validation_errors,
+-            "dry_run": dry_run,
+-            "would_create": not validation_errors,
+-            "FRR_id": generated_frr_id,
+-            "FRR_numero": generated_numero,
+-            "FRR_IdAsientoNet": cabecera.get("FRR_IdAsientoNet", 0),
+-            "punteos_requested": [p.model_dump() for p in payload.punteos],
+-            "ids_punteos_enlazados": [],
+-            "validation_errors": validation_errors,
+-            "duplicate": duplicate,
+-        }
++    proposed_factura = {
++        **cabecera,
++        "FRR_id": generated_frr_id,
++        "FRR_numero": generated_numero,
++    }
++    punteos_requested = [
++        normalize_payload_values(punteo.model_dump()) for punteo in payload.punteos
++    ]
++    if effective_dry_run or validation_errors:
++        return build_write_response(
++            contract_version=contract_version,
++            request_id=request_id,
++            dry_run=effective_dry_run,
++            factura=proposed_factura,
++            ctb=ctb_rows,
++            punteos=punteos_requested,
++            validation_errors=validation_errors,
++            validation_warnings=validation_warnings,
++            duplicate=duplicate,
++            punteos_requested=punteos_requested,
++        )
+ 
+     linked_punteos: list[dict[str, Any]] = []
+-    punteo_config = {
+-        "albsalida_gastos": ("albsalida_gastos", "ASG_id", "ASG_idfactura", "ASG_importefactura"),
+-        "albentrada_hisgastos": ("albentrada_hisgastos", "AHG_id", "AHG_idfacturaproveedor", None),
+-        "albaranescompra_gastos": ("albaranescompra_gastos", "AGT_id", "AGT_IdFactura", None),
+-        "facturas_gastos": ("facturas_gastos", "FGC_id", "FGC_idfacturaReci", "FGC_importefacturaReci"),
+-        "albarancoste": ("albarancoste", "ALB_Id", "ALB_IdFactura", None),
+-    }
++    idempotency_key_claimed = False
++    if contract_version == 2 and request_id:
++        cached_response = idempotency_claim(request_id, idempotency_payload_hash(payload))
++        if cached_response is not None:
++            return cached_response
++        idempotency_key_claimed = True
+ 
+-    with get_write_connection() as connection:
+-        try:
++    try:
++        with get_write_connection() as connection:
+             with connection.cursor() as cursor:
+-                cursor.execute("SELECT GET_LOCK(%(lock_name)s, 10) AS got_lock", {"lock_name": f"{selected_name}:facturasrecibidas:create"})
++                cursor.execute(
++                    "SELECT GET_LOCK(%(lock_name)s, 10) AS got_lock",
++                    {"lock_name": f"{selected_name}:facturasrecibidas:create"},
++                )
+                 lock_row = cursor.fetchone()
+                 if not lock_row or int(lock_row["got_lock"]) != 1:
+                     raise HTTPException(status_code=409, detail="could not acquire invoice creation lock")
+@@ -1231,22 +1864,16 @@
+                 duplicate_row = cursor.fetchone()
+                 if duplicate_row:
+                     connection.rollback()
+-                    return {
+-                        "ok": False,
+-                        "dry_run": dry_run,
+-                        "would_create": False,
+-                        "FRR_id": None,
+-                        "FRR_numero": None,
+-                        "FRR_IdAsientoNet": None,
+-                        "ids_punteos_enlazados": [],
+-                        "validation_errors": [
+-                            {
+-                                "field": "FRR_numerofactura",
+-                                "error": "duplicate invoice for empresa + ejercicio + proveedor + numero_factura",
+-                            }
+-                        ],
+-                        "duplicate": normalize_row(duplicate_row),
+-                    }
++                    raise HTTPException(
++                        status_code=409,
++                        detail={
++                            "error": (
++                                "duplicate invoice for empresa + ejercicio + proveedor "
++                                "+ numero_factura"
++                            ),
++                            "duplicate": normalize_row(duplicate_row),
++                        },
++                    )
+ 
+                 cursor.execute(f"SELECT COALESCE(MAX(FRR_id), 0) + 1 AS next_id FROM {selected}.facturasrecibidas")
+                 generated_frr_id = int(cursor.fetchone()["next_id"])
+@@ -1284,7 +1911,7 @@
+                     next_frc_id += 1
+ 
+                 for punteo in payload.punteos:
+-                    table_name, id_column, link_column, amount_column = punteo_config[punteo.source_table]
++                    table_name, id_column, link_column, amount_column = PUNTEO_CONFIG[punteo.source_table]
+                     cursor.execute(
+                         f"""
+                         SELECT {id_column} AS source_id, {link_column} AS linked_invoice
+@@ -1340,25 +1967,45 @@
+                         }
+                     )
+ 
+-                cursor.execute("SELECT RELEASE_LOCK(%(lock_name)s)", {"lock_name": f"{selected_name}:facturasrecibidas:create"})
++                cursor.execute(
++                    "SELECT RELEASE_LOCK(%(lock_name)s)",
++                    {"lock_name": f"{selected_name}:facturasrecibidas:create"},
++                )
+             connection.commit()
+-        except HTTPException:
+-            connection.rollback()
+-            raise
+-        except Exception:
+-            connection.rollback()
+-            raise
+ 
+-    return {
+-        "ok": True,
+-        "dry_run": dry_run,
+-        "FRR_id": generated_frr_id,
+-        "FRR_numero": generated_numero,
+-        "FRR_IdAsientoNet": insert_values.get("FRR_IdAsientoNet", 0),
+-        "ids_punteos_enlazados": linked_punteos,
+-        "validation_errors": [],
+-        "erp_errors": [],
+-    }
++        created_factura = fetch_one(
++            f"SELECT * FROM {selected}.facturasrecibidas WHERE FRR_id = %(factura_id)s",
++            {"factura_id": generated_frr_id},
++        )
++        created_ctb = fetch_all(
++            f"""
++            SELECT *
++            FROM {selected}.facturasrecibidas_ctb
++            WHERE FRC_idfacturarecibida = %(factura_id)s
++            ORDER BY FRC_id
++            """,
++            {"factura_id": generated_frr_id},
++        )
++        readback_confirmed = created_factura is not None
++        response = build_write_response(
++            contract_version=contract_version,
++            request_id=request_id,
++            dry_run=False,
++            factura=created_factura,
++            ctb=created_ctb,
++            punteos=linked_punteos,
++            validation_errors=[],
++            validation_warnings=validation_warnings,
++            readback_confirmed=readback_confirmed,
++            punteos_requested=punteos_requested,
++        )
++        if idempotency_key_claimed and request_id:
++            idempotency_complete(request_id, response)
++        return response
++    except Exception as error:
++        if idempotency_key_claimed and request_id:
++            idempotency_fail(request_id, error)
++        raise
+ 
+ 
+ @app.get("/facturas")

@@ -165,7 +165,6 @@ export const PdfGroup = ({
     
     try {
       console.log(`[PdfGroup] Abriendo PDF desde UI. archivo_pdf_id=${archivoPdfId}`);
-      // @ts-expect-error - Evitar error de tipo de Supabase
       const { data, error } = await supabase
         .from('archivos_pdf')
         .select('b64_contenido')

@@ -20,7 +20,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { getFirstAllowedPath, type UserRole } from '@/config/accessControl';
 import type { Database } from '@/integrations/supabase/types';
 import { ClientCombobox } from '@/components/ClientCombobox';
@@ -143,7 +143,7 @@ const CONTROL_ENTRADA_GROUP_ROUTES: string[] = [];
 const CORREOS_GROUP_ROUTES: string[] = [];
 const USER_ROUTE_OPTIONS = [
   { path: '/dashboard', label: 'Dashboard' },
-  { path: '/facturas-recibidas', label: 'Facturas de compra' },
+  { path: '/facturas-recibidas', label: 'Facturas recibidas' },
 ];
 const DEFAULT_USER_ROUTES = [...DASHBOARD_GROUP_ROUTES, ...FACTURAS_GROUP_ROUTES];
 const ACTIVE_ROUTE_PATHS = new Set(USER_ROUTE_OPTIONS.map((route) => route.path));
@@ -372,7 +372,7 @@ const AdminSettings = () => {
         supabase.from('clientes_visibles_cuentaventa').select('clienteid'),
         supabase
           .from('cliente_behavior_rules')
-          .select(CLIENT_BEHAVIOR_SELECT),
+          .select(CLIENT_BEHAVIOR_SELECT as '*'),
       ]);
 
       if (clienteIdsPedidosRes.error) throw clienteIdsPedidosRes.error;
@@ -737,7 +737,7 @@ const AdminSettings = () => {
       const { data, error } = await supabase
         .from('cliente_behavior_rules')
         .upsert(payload, { onConflict: 'clienteid' })
-        .select(CLIENT_BEHAVIOR_SELECT)
+        .select(CLIENT_BEHAVIOR_SELECT as '*')
         .single();
 
       if (error) throw error;
@@ -868,7 +868,7 @@ const AdminSettings = () => {
       const { data, error } = await supabase
         .from('cliente_behavior_rules')
         .upsert(payload, { onConflict: 'clienteid' })
-        .select(CLIENT_BEHAVIOR_SELECT)
+        .select(CLIENT_BEHAVIOR_SELECT as '*')
         .single();
 
       if (error) throw error;

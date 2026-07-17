@@ -434,7 +434,7 @@ const DashboardResumenModule = () => {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-1">
                         <p className="text-sm font-semibold text-foreground">Documentos</p>
-                        <p className="text-xs text-muted-foreground">Facturas de compra</p>
+                        <p className="text-xs text-muted-foreground">Facturas recibidas</p>
                       </div>
                       <p className="shrink-0 text-right text-sm font-semibold leading-tight text-foreground">
                         {formatNumber(summary.totalCount)}

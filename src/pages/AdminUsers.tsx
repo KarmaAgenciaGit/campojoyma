@@ -54,7 +54,7 @@ const CONTROL_ENTRADA_GROUP_ROUTES: string[] = [];
 const CORREOS_GROUP_ROUTES: string[] = [];
 const USER_ROUTE_OPTIONS = [
   { path: '/dashboard', label: 'Dashboard' },
-  { path: '/facturas-recibidas', label: 'Facturas de compra' },
+  { path: '/facturas-recibidas', label: 'Facturas recibidas' },
 ];
 const DEFAULT_USER_ROUTES = [...DASHBOARD_GROUP_ROUTES, ...FACTURAS_GROUP_ROUTES];
 const ACTIVE_ROUTE_PATHS = new Set(USER_ROUTE_OPTIONS.map((route) => route.path));
@@ -76,8 +76,8 @@ const ROLE_FILTER_OPTIONS: Array<{ value: RoleFilter; label: string }> = [
 
 const MODULE_FILTER_OPTIONS: Array<{ value: ModuleFilter; label: string }> = [
   { value: 'all', label: 'Todos' },
-  { value: 'facturas', label: 'Facturas de compra' },
-  ...USER_ROUTE_OPTIONS,
+  { value: 'facturas', label: 'Facturas recibidas' },
+  ...(USER_ROUTE_OPTIONS as unknown as Array<{ value: ModuleFilter; label: string }>),
 ];
 
 const normalizeAllowedRoutes = (routes: string[] | null | undefined): string[] => {
@@ -991,7 +991,7 @@ const AdminUsers = () => {
       {editorOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/52 p-0 md:items-center md:p-6"
-          onClick={closeEditor}
+          onClick={() => closeEditor()}
         >
           <section
             role="dialog"
@@ -1021,7 +1021,7 @@ const AdminUsers = () => {
                   </div>
                 </div>
               </div>
-              <Button type="button" variant="outline" className="h-10 w-10 p-0" onClick={closeEditor} disabled={saving || Boolean(deletingId)}>
+              <Button type="button" variant="outline" className="h-10 w-10 p-0" onClick={() => closeEditor()} disabled={saving || Boolean(deletingId)}>
                 <X className="h-4 w-4" />
               </Button>
             </div>
@@ -1085,7 +1085,7 @@ const AdminUsers = () => {
                 Eliminar cuenta
               </Button>
               <div className="flex flex-col-reverse gap-3 sm:flex-row">
-                <Button type="button" variant="outline" onClick={closeEditor} disabled={saving || Boolean(deletingId)}>
+                <Button type="button" variant="outline" onClick={() => closeEditor()} disabled={saving || Boolean(deletingId)}>
                   Cerrar
                 </Button>
                 <Button type="button" onClick={handleSaveEditor} disabled={saving || Boolean(deletingId)} className="gap-2 bg-[#2f7df1] hover:bg-[#276ee0]">

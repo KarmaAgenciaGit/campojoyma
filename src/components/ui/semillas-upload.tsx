@@ -88,7 +88,7 @@ export function SemillasUpload({ open, onOpenChange, onSuccess }: SemillasUpload
       }
 
       // Get user token and session for webhook
-      const { supabase } = await import('@/integrations/supabase/client');
+      const { legacySupabase: supabase } = await import('@/integrations/supabase/legacyClient');
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token || !session?.user?.id) {
         toast.error('No se pudo obtener el token de autenticación');

@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 
 export const createAdminUser = async () => {
   try {

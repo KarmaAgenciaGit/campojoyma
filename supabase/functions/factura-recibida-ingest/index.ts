@@ -1,18 +1,22 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
+  FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   cleanBase64,
   corsHeaders,
   createServiceClient,
-  dateValue,
   ensureArchivoPdf,
   getValidationErrorsForFactura,
   integerValue,
   jsonResponse,
+  applyGastosToFrr,
   normalizeFrcPayload,
+  normalizePunteoPayload,
   normalizeFrrPayload,
   numberValue,
   pick,
+  requestIdValue,
   requireAgentToken,
+  rpcErrorStatus,
   text,
   timestampValue,
   type JsonObject,
@@ -25,25 +29,19 @@ const asArray = (value: unknown): JsonObject[] =>
   Array.isArray(value) ? value.filter((item): item is JsonObject => item && typeof item === "object" && !Array.isArray(item)) : [];
 
 const normalizeOnePayload = (raw: JsonObject) => {
-  const extraction = asObject(raw.extraction ?? raw.factura ?? raw.invoice ?? raw);
+  const extraction = asObject(raw.extraction ?? raw.cabecera ?? raw.factura ?? raw.invoice ?? raw);
   const fileName = text(pick(raw, ["file_name", "filename", "source_pdf_name", "nombre_archivo", "pdf_nombre"]), "factura-recibida.pdf");
   const pdfBase64 = cleanBase64(pick(raw, ["file_base64", "pdf_base64", "b64_pdf", "B64_PDF", "pdf", "data"]));
   const email = asObject(raw.email);
   const rawMetadata = asObject(raw.metadata);
   const source = text(
     pick(raw, ["source", "workflow", "origin"]),
-    text(pick(rawMetadata, ["source", "workflow", "origin"]), null),
+    text(
+      pick(rawMetadata, ["source", "workflow", "origin"]),
+      text(pick(extraction, ["source", "workflow", "origin"]), null),
+    ),
   );
-  const strictExplicitCtb =
-    raw.skip_default_ctb === true ||
-    raw.strict_ctb === true ||
-    rawMetadata.skip_default_ctb === true ||
-    rawMetadata.strict_ctb === true ||
-    source === "campojoyma-factura-extraer" ||
-    source === "campojoyma-front" ||
-    source === "campojoyma-email" ||
-    source === "xfuego-front";
-  const frr = normalizeFrrPayload(extraction);
+  const frr = applyGastosToFrr(normalizeFrrPayload(extraction), extraction.gastos ?? raw.gastos);
 
   const proveedorNombre = text(pick(extraction, ["proveedor_nombre", "nombre_proveedor", "acreedor_nombre", "FRR_proveedor_nombre"]), null);
   const proveedorNif = text(pick(extraction, ["proveedor_nif", "nif_proveedor", "acreedor_nif", "cif"]), null);
@@ -52,23 +50,14 @@ const normalizeOnePayload = (raw: JsonObject) => {
       ? asArray(extraction.ctb)
       : asArray(extraction.lineas_ctb).length > 0
         ? asArray(extraction.lineas_ctb)
-        : asArray(extraction.lineas).length > 0
-          ? asArray(extraction.lineas)
-          : [];
+        : asArray(raw.ctb);
 
-  const ctb = lineasRaw.length > 0
-    ? lineasRaw.map((linea, index) => normalizeFrcPayload(linea, index + 1))
-    : strictExplicitCtb
-      ? []
-      : [
-        normalizeFrcPayload(
-          {
-            FRC_Importe: numberValue(frr.FRR_base1, 0),
-            FRC_Cuenta: frr.FRR_idcuenta,
-          },
-          1,
-        ),
-      ];
+  const ctb = lineasRaw.map((linea, index) =>
+    normalizeFrcPayload(linea, index + 1, { preserveRemoteIds: source === "apiCampojoyma-read-sample" })
+  );
+  const punteos = asArray(extraction.punteos ?? raw.punteos).map((punteo, index) =>
+    normalizePunteoPayload(punteo, index + 1),
+  );
 
   const sourcePageNumber = integerValue(pick(raw, ["source_page_number", "page_number"]), null);
   const sourcePageCount = integerValue(pick(raw, ["source_page_count", "page_count"]), null);
@@ -85,7 +74,7 @@ const normalizeOnePayload = (raw: JsonObject) => {
     confidence: numberValue(pick(extraction, ["confidence", "confianza"]), null),
   };
 
-  return { frr, ctb, extraction, pdfBase64, fileName, metadata };
+  return { frr, ctb, punteos, extraction, pdfBase64, fileName, metadata, source };
 };
 
 Deno.serve(async (req) => {
@@ -97,6 +86,11 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
+    const envelope = asObject(body);
+    const contractVersion = integerValue(envelope.contract_version, FACTURAS_RECIBIDAS_CONTRACT_VERSION);
+    if (contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
+      return jsonResponse({ error: "contract_version=2 es requerido" }, 422);
+    }
     const inputs: JsonObject[] = Array.isArray(body)
       ? body
       : Array.isArray(body?.facturas)
@@ -109,6 +103,7 @@ Deno.serve(async (req) => {
 
     for (const input of inputs) {
       try {
+        const requestId = requestIdValue(input.request_id ?? (inputs.length === 1 ? envelope.request_id : null));
         const normalized = normalizeOnePayload(input);
         const pdfResult = await ensureArchivoPdf(supabase, normalized.pdfBase64, normalized.fileName);
 
@@ -141,47 +136,53 @@ Deno.serve(async (req) => {
             ? "pendiente_revision"
             : "validada";
 
-        const { data: factura, error: insertError } = await supabase
-          .from("facturasrecibidas")
-          .insert({
+        const { data: saved, error: insertError } = await supabase.rpc("create_factura_recibida_v2", {
+          p_factura: {
             ...normalized.metadata,
             ...normalized.frr,
             archivo_pdf_id: pdfResult.archivoPdfId,
             duplicada_de: duplicateOf,
             estado: nextEstado,
+            source_kind: normalized.source === "apiCampojoyma-read-sample" ? "erp_reference" : "n8n_draft",
+            remote_frr_id: integerValue((normalized.extraction as JsonObject).remote_id, null),
+            is_readonly_reference: normalized.source === "apiCampojoyma-read-sample",
+            match_status: normalized.source === "apiCampojoyma-read-sample" ? "reference" : "matched",
+            match_evidence: asObject((normalized.extraction as JsonObject).match_evidence ?? (normalized.extraction as JsonObject).matching),
             extraction: normalized.extraction,
             validation_errors: validationErrors,
-          })
-          .select("id, estado, archivo_pdf_id")
-          .single();
+          },
+          p_ctb: normalized.ctb,
+          p_punteos: normalized.punteos,
+          p_actor: null,
+          p_request_id: requestId,
+          p_change_source: normalized.source === "apiCampojoyma-read-sample" ? "erp_import" : "ingest",
+          p_reason: "Ingesta autenticada desde agente/n8n",
+        });
 
-        if (insertError || !factura) throw insertError ?? new Error("No se pudo insertar factura recibida.");
-
-        if (normalized.ctb.length > 0) {
-          const { error: linesError } = await supabase.from("facturasrecibidas_ctb").insert(
-            normalized.ctb.map((linea) => ({
-              ...linea,
-              factura_id: factura.id,
-            })),
-          );
-          if (linesError) throw linesError;
-        }
+        if (insertError || !saved) throw insertError ?? new Error("No se pudo insertar factura recibida.");
+        const result = asObject(saved);
+        const factura = asObject(result.factura);
 
         results.push({
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
           factura_id: factura.id,
           estado: factura.estado,
           archivo_pdf_id: factura.archivo_pdf_id,
+          version: result.version,
           pdf_reutilizado: pdfResult.reused,
           duplicada_de: duplicateOf,
           validation_errors: validationErrors,
         });
       } catch (error) {
-        errors.push({ error: error instanceof Error ? error.message : String(error), payload: input });
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({ error: message, status: rpcErrorStatus(message), payload: input });
       }
     }
 
     return jsonResponse(
       {
+        contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
         success: errors.length === 0,
         facturas_created: results.length,
         results,

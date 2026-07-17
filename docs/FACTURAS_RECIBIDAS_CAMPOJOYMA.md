@@ -1,12 +1,23 @@
-# Facturas recibidas / facturas de compra - Campojoyma
+# Facturas recibidas - Campojoyma
 
-Ultima actualizacion: 2026-07-03
+Última actualización: 2026-07-16
 
-Este documento resume decisiones y contexto operativo para futuras conversaciones sobre el modulo de facturas de compra de Campojoyma.
+La referencia vigente es el contrato v2 de
+[`FACTURAS_RECIBIDAS_API_CONTRACT.md`](FACTURAS_RECIBIDAS_API_CONTRACT.md). El
+estado de staging, backups, hashes, workflow n8n desactivado y bloqueos externos
+se encuentra en
+[`FACTURAS_RECIBIDAS_API_V2_STAGING.md`](FACTURAS_RECIBIDAS_API_V2_STAGING.md).
+
+La homologación no está cerrada: la copia Netagro no incluye el mecanismo oficial
+que crea el asiento ni permite leer su número visible y sus apuntes Debe/Haber.
+Hasta que el proveedor lo habilite, cualquier alta con contabilización solicitada
+queda bloqueada en dry-run y producción permanece intacta.
+
+Este documento resume decisiones y contexto operativo para futuras conversaciones sobre el modulo de facturas recibidas de Campojoyma.
 
 ## Idea principal
 
-La pantalla de `Facturas de compra` no debe mostrar el historico completo de facturas reales de ERP.
+La pantalla de `Facturas recibidas` no debe mostrar el historico completo de facturas reales de ERP.
 
 El flujo esperado es:
 
@@ -142,10 +153,10 @@ Ruta principal:
 Copy visible acordado:
 
 ```text
-Facturas de compra
+Facturas recibidas
 ```
 
-No usar "facturas recibidas" como etiqueta principal de negocio si el usuario pidio "facturas de compra".
+Usar los mismos terminos visibles que el ERP para evitar confusiones con el cliente.
 
 La UI debe listar las facturas de Supabase staging. Las facturas reales de ERP solo deben entrar por acciones concretas: validacion, busqueda, duplicados, detalle puntual o ejemplos seleccionados.
 

@@ -1,5 +1,27 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+type EdgeRecord = Record<string, unknown>;
+type EdgeDatabase = {
+  public: {
+    Tables: Record<string, {
+      Row: EdgeRecord;
+      Insert: EdgeRecord;
+      Update: EdgeRecord;
+      Relationships: [];
+    }>;
+    Views: Record<string, {
+      Row: EdgeRecord;
+      Relationships: [];
+    }>;
+    Functions: Record<string, {
+      Args: EdgeRecord;
+      Returns: unknown;
+    }>;
+    Enums: Record<string, string>;
+    CompositeTypes: Record<string, EdgeRecord>;
+  };
+};
+
 export type JsonValue =
   | string
   | number
@@ -9,6 +31,9 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 export type JsonObject = Record<string, unknown>;
+
+export const FACTURAS_RECIBIDAS_CONTRACT_VERSION = 2;
+export const FACTURAS_RECIBIDAS_PDF_BUCKET = "facturas-recibidas-pdf";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -28,7 +53,7 @@ export const createServiceClient = () => {
   if (!supabaseUrl || !serviceRoleKey) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
-  return createClient(supabaseUrl, serviceRoleKey);
+  return createClient<EdgeDatabase>(supabaseUrl, serviceRoleKey);
 };
 
 export const createAuthClient = (authHeader: string) => {
@@ -37,7 +62,7 @@ export const createAuthClient = (authHeader: string) => {
   if (!supabaseUrl || !anonKey) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
   }
-  return createClient(supabaseUrl, anonKey, {
+  return createClient<EdgeDatabase>(supabaseUrl, anonKey, {
     global: { headers: { Authorization: authHeader } },
   });
 };
@@ -46,15 +71,20 @@ export const requireAgentToken = (req: Request) => {
   const expected =
     Deno.env.get("N8N_FACTURAS_RECIBIDAS_INGEST_TOKEN")?.trim() ||
     Deno.env.get("N8N_AGENT_TOKEN")?.trim();
-  if (!expected) return { ok: false, response: jsonResponse({ error: "Token de ingesta no configurado." }, 500) };
+  if (!expected) {
+    return {
+      ok: false as const,
+      response: jsonResponse({ error: "Token de ingesta no configurado." }, 500),
+    };
+  }
 
   const headerToken = req.headers.get("x-agent-token")?.trim();
   const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   const received = headerToken || bearer;
   if (!received || received !== expected) {
-    return { ok: false, response: jsonResponse({ error: "Unauthorized" }, 401) };
+    return { ok: false as const, response: jsonResponse({ error: "Unauthorized" }, 401) };
   }
-  return { ok: true };
+  return { ok: true as const };
 };
 
 export const requireRouteUser = async (req: Request, route = "/facturas-recibidas") => {
@@ -118,6 +148,48 @@ export const integerValue = (value: unknown, fallback: number | null = null) => 
   return parsed === null ? null : Math.trunc(parsed);
 };
 
+export const booleanValue = (value: unknown, fallback = false) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "s", "si", "sí", "yes"].includes(normalized)) return true;
+    if (["false", "0", "n", "no"].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
+export const snValue = (value: unknown, fallback: "S" | "N" | null = null) => {
+  if (value === null || value === undefined || value === "") return fallback;
+  return booleanValue(value, String(value).trim().toUpperCase() === "S") ? "S" : "N";
+};
+
+export const requestIdValue = (value: unknown) => {
+  const parsed = text(value, null);
+  if (!parsed) return crypto.randomUUID();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parsed)) {
+    throw new Error("request_id debe ser un UUID valido.");
+  }
+  return parsed;
+};
+
+export const rpcErrorStatus = (message: string) => {
+  if (message.includes("VERSION_CONFLICT")) return 409;
+  if (
+    message.includes("FACTURA_LOCKED") ||
+    message.includes("IDEMPOTENCY_CONFLICT") ||
+    message.includes("SYNC_RECONCILIATION_REQUIRED") ||
+    message.includes("REMOTE_ID_CONFLICT")
+  ) return 409;
+  if (message.includes("NOT_FOUND")) return 404;
+  if (
+    message.includes("INVALID_PAYLOAD") ||
+    message.includes("INVALID_WRITE_RESPONSE") ||
+    message.includes("INVALID_READBACK")
+  ) return 422;
+  return 500;
+};
+
 export const dateValue = (value: unknown, fallback: string | null = null) => {
   const raw = text(value, null);
   if (!raw) return fallback;
@@ -146,56 +218,145 @@ export const pick = (source: JsonObject, keys: string[], fallback: unknown = nul
   return fallback;
 };
 
+const hasOwn = (source: JsonObject, key: string) => Object.prototype.hasOwnProperty.call(source, key);
+
+const hasUsableValue = (value: unknown) =>
+  value !== undefined && value !== null && (typeof value !== "string" || value.trim() !== "");
+
+const pickDefined = (source: JsonObject, keys: string[]) => {
+  for (const key of keys) {
+    if (hasOwn(source, key) && hasUsableValue(source[key])) return source[key];
+  }
+  return undefined;
+};
+
+const assignIfPresent = (
+  target: JsonObject,
+  key: string,
+  source: JsonObject,
+  parser: (value: unknown, fallback?: any) => unknown,
+) => {
+  if (hasOwn(source, key)) target[key] = parser(source[key], null);
+};
+
 export const cleanBase64 = (value: unknown) => {
   const raw = text(value, null);
   if (!raw) return null;
   return raw.replace(/^data:.*;base64,/i, "").replace(/\s/g, "");
 };
 
-export const sha256Base64 = async (base64: string) => {
-  const buffer = new TextEncoder().encode(base64);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+export const base64ToBytes = (base64: string) => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+export const sha256Bytes = async (bytes: Uint8Array) => {
+  const hashBuffer = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
   return Array.from(new Uint8Array(hashBuffer))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 };
 
+export const sha256Base64 = async (base64: string) => sha256Bytes(base64ToBytes(base64));
+
 export const ensureArchivoPdf = async (
-  supabase: ReturnType<typeof createClient>,
+  supabase: ReturnType<typeof createServiceClient>,
   base64: string | null,
   fileName: string | null,
+  createdBy: string | null = null,
 ) => {
   if (!base64) return { archivoPdfId: null as number | null, reused: false, hash: null as string | null };
 
-  const hash = await sha256Base64(base64);
+  const bytes = base64ToBytes(base64);
+  const hash = await sha256Bytes(bytes);
+  const storagePath = `${hash.slice(0, 2)}/${hash}.pdf`;
   const { data: existingPdf, error: searchError } = await supabase
     .from("archivos_pdf")
-    .select("id")
+    .select("id, storage_bucket, storage_path")
     .eq("hash_sha256", hash)
     .maybeSingle();
 
   if (searchError) throw searchError;
   if (existingPdf?.id) {
+    if (!existingPdf.storage_bucket || !existingPdf.storage_path) {
+      const { error: storageError } = await supabase.storage
+        .from(FACTURAS_RECIBIDAS_PDF_BUCKET)
+        .upload(storagePath, bytes, {
+          contentType: "application/pdf",
+          upsert: false,
+        });
+      if (storageError && !/already exists|duplicate/i.test(storageError.message)) throw storageError;
+
+      const { error: metadataError } = await supabase
+        .from("archivos_pdf")
+        .update({
+          b64_contenido: null,
+          storage_bucket: FACTURAS_RECIBIDAS_PDF_BUCKET,
+          storage_path: storagePath,
+          storage_uploaded_at: new Date().toISOString(),
+          tamanio_bytes: bytes.byteLength,
+        })
+        .eq("id", existingPdf.id);
+      if (metadataError) throw metadataError;
+    }
     return { archivoPdfId: Number(existingPdf.id), reused: true, hash };
   }
+
+  const { error: storageError } = await supabase.storage
+    .from(FACTURAS_RECIBIDAS_PDF_BUCKET)
+    .upload(storagePath, bytes, {
+      contentType: "application/pdf",
+      upsert: false,
+    });
+  if (storageError && !/already exists|duplicate/i.test(storageError.message)) throw storageError;
 
   const { data: inserted, error: insertError } = await supabase
     .from("archivos_pdf")
     .insert({
       hash_sha256: hash,
-      b64_contenido: base64,
-      storage_bucket: null,
-      storage_path: null,
-      storage_uploaded_at: null,
+      b64_contenido: null,
+      storage_bucket: FACTURAS_RECIBIDAS_PDF_BUCKET,
+      storage_path: storagePath,
+      storage_uploaded_at: new Date().toISOString(),
       nombre_archivo: fileName,
-      tamanio_bytes: Math.floor((base64.length * 3) / 4),
+      tamanio_bytes: bytes.byteLength,
       mime_type: "application/pdf",
+      created_by: createdBy,
     })
     .select("id")
     .single();
 
+  if (insertError && insertError.code === "23505") {
+    const { data: raced, error: racedError } = await supabase
+      .from("archivos_pdf")
+      .select("id")
+      .eq("hash_sha256", hash)
+      .single();
+    if (racedError || !raced) throw racedError ?? insertError;
+    return { archivoPdfId: Number(raced.id), reused: true, hash };
+  }
   if (insertError || !inserted) throw insertError ?? new Error("No se pudo guardar el PDF.");
   return { archivoPdfId: Number(inserted.id), reused: false, hash };
+};
+
+export const loadArchivoPdfBase64 = async (
+  supabase: ReturnType<typeof createServiceClient>,
+  archivo: JsonObject,
+) => {
+  const fallback = cleanBase64(archivo.b64_contenido);
+  if (fallback) return fallback;
+
+  const bucket = text(archivo.storage_bucket, null);
+  const path = text(archivo.storage_path, null);
+  if (!bucket || !path) return null;
+
+  const { data, error } = await supabase.storage.from(bucket).download(path);
+  if (error || !data) throw error ?? new Error("No se pudo descargar el PDF privado.");
+  return bytesToBase64(new Uint8Array(await data.arrayBuffer()));
 };
 
 const frrNumericKeys = [
@@ -295,42 +456,66 @@ const frcIntegerKeys = [
 const frcDateKeys = ["FRC_FechaLog"] as const;
 const frcTextKeys = ["FRC_Cuenta", "FRC_HoraLog"] as const;
 
-export const normalizeFrrPayload = (input: JsonObject) => {
+export const normalizeFrrPayload = (input: JsonObject, options: { partial?: boolean } = {}) => {
+  const partial = options.partial === true;
   const out: JsonObject = {};
-  for (const key of frrNumericKeys) out[key] = numberValue(input[key], null);
-  for (const key of frrIntegerKeys) out[key] = integerValue(input[key], null);
-  for (const key of frrDateKeys) out[key] = dateValue(input[key], null);
-  for (const key of frrTextKeys) out[key] = text(input[key], null);
 
-  const fechaFactura = dateValue(pick(input, ["FRR_fechafactura", "fecha_factura", "fecha"]), null);
-  const ejercicio = integerValue(input.FRR_ejercicio, fechaFactura ? Number(fechaFactura.slice(0, 4)) : new Date().getFullYear());
+  for (const key of frrNumericKeys) assignIfPresent(out, key, input, numberValue);
+  for (const key of frrIntegerKeys) assignIfPresent(out, key, input, integerValue);
+  for (const key of frrDateKeys) assignIfPresent(out, key, input, dateValue);
+  for (const key of frrTextKeys) assignIfPresent(out, key, input, text);
+  for (const key of ["FRR_Modificable", "FRR_GeneraCartera", "FRR_CancelarporCtb", "FRR_Contabilizar"]) {
+    if (hasOwn(input, key)) out[key] = snValue(input[key], null);
+  }
 
-  out.FRR_numerofactura = text(pick(input, ["FRR_numerofactura", "numero_factura", "numero_factura_proveedor", "invoice_number"]), out.FRR_numerofactura as string | null);
-  out.FRR_fechafactura = fechaFactura ?? out.FRR_fechafactura;
-  out.FRR_fechactb = dateValue(pick(input, ["FRR_fechactb", "fecha_contable", "fecha_registro_contable"]), out.FRR_fechafactura as string | null);
-  out.FRR_ejercicio = ejercicio;
-  out.FRR_idproveedor = integerValue(pick(input, ["FRR_idproveedor", "proveedor_id", "acreedor_id", "id_proveedor"]), out.FRR_idproveedor as number | null);
-  out.FRR_idcuenta = text(pick(input, ["FRR_idcuenta", "cuenta_proveedor", "cuenta_contable"]), out.FRR_idcuenta as string | null);
-  out.FRR_Idempresa = integerValue(pick(input, ["FRR_Idempresa", "empresa_id"]), (out.FRR_Idempresa as number | null) ?? 1);
-  out.FRR_totalfac = numberValue(pick(input, ["FRR_totalfac", "total", "total_factura", "importe_total"]), out.FRR_totalfac as number | null);
-  out.FRR_base1 = numberValue(pick(input, ["FRR_base1", "base_imponible", "base"]), (out.FRR_base1 as number | null) ?? 0);
-  out.FRR_iva1 = numberValue(pick(input, ["FRR_iva1", "iva_porcentaje", "tipo_iva"]), (out.FRR_iva1 as number | null) ?? 0);
-  out.FRR_cuota1 = numberValue(pick(input, ["FRR_cuota1", "iva_importe", "cuota_iva"]), (out.FRR_cuota1 as number | null) ?? 0);
-  out.FRR_baseret = numberValue(pick(input, ["FRR_baseret", "retencion_base"]), (out.FRR_baseret as number | null) ?? 0);
-  out.FRR_ret = numberValue(pick(input, ["FRR_ret", "retencion_porcentaje"]), (out.FRR_ret as number | null) ?? 0);
-  out.FRR_cuotaret = numberValue(pick(input, ["FRR_cuotaret", "retencion_importe"]), (out.FRR_cuotaret as number | null) ?? 0);
-  out.FRR_Concepto = text(pick(input, ["FRR_Concepto", "concepto", "descripcion"]), out.FRR_Concepto as string | null);
-  out.FRR_tipofactura = text(pick(input, ["FRR_tipofactura", "tipo_factura"]), out.FRR_tipofactura as string | null);
-  out.FRR_Modificable = text(input.FRR_Modificable, "S");
-  out.FRR_GeneraCartera = text(input.FRR_GeneraCartera, "N");
-  out.FRR_Contabilizar = text(input.FRR_Contabilizar, "S");
-  out.FRR_FechaLog = dateValue(input.FRR_FechaLog, new Date().toISOString().slice(0, 10));
-  out.FRR_HoraLog = text(input.FRR_HoraLog, new Date().toISOString().slice(11, 19));
+  const aliasParsers: Array<[string, string[], (value: unknown, fallback?: any) => unknown]> = [
+    ["FRR_numerofactura", ["FRR_numerofactura", "numero_factura", "numero_factura_proveedor", "invoice_number"], text],
+    ["FRR_fechafactura", ["FRR_fechafactura", "fecha_factura", "fecha"], dateValue],
+    ["FRR_fechactb", ["FRR_fechactb", "fecha_contable", "fecha_registro_contable"], dateValue],
+    ["FRR_idproveedor", ["FRR_idproveedor", "proveedor_id", "acreedor_id", "id_proveedor"], integerValue],
+    ["FRR_idregimen", ["FRR_idregimen", "regimen_id", "tipo_iva_id"], integerValue],
+    ["FRR_idcuenta", ["FRR_idcuenta", "cuenta_proveedor", "cuenta_contable"], text],
+    ["FRR_Idempresa", ["FRR_Idempresa", "empresa_id"], integerValue],
+    ["FRR_totalfac", ["FRR_totalfac", "total", "total_factura", "importe_total"], numberValue],
+    ["FRR_base1", ["FRR_base1", "base_imponible", "base"], numberValue],
+    ["FRR_iva1", ["FRR_iva1", "iva_porcentaje", "tipo_iva"], numberValue],
+    ["FRR_cuota1", ["FRR_cuota1", "iva_importe", "cuota_iva"], numberValue],
+    ["FRR_baseret", ["FRR_baseret", "retencion_base"], numberValue],
+    ["FRR_ret", ["FRR_ret", "retencion_porcentaje"], numberValue],
+    ["FRR_cuotaret", ["FRR_cuotaret", "retencion_importe"], numberValue],
+    ["FRR_Concepto", ["FRR_Concepto", "concepto", "descripcion"], text],
+    ["FRR_ObservacionesAEAT", ["FRR_ObservacionesAEAT", "observaciones_aeat"], text],
+    ["FRR_tipofactura", ["FRR_tipofactura", "tipo_factura"], text],
+  ];
+
+  for (const [targetKey, aliases, parser] of aliasParsers) {
+    const value = pickDefined(input, aliases);
+    if (value !== undefined) out[targetKey] = parser(value, null);
+  }
+
+  if (!partial) {
+    if (out.FRR_fechactb === undefined && out.FRR_fechafactura !== undefined) {
+      out.FRR_fechactb = out.FRR_fechafactura;
+    }
+    if (out.FRR_Idempresa === undefined && hasUsableValue(input.FRR_Idempresa)) {
+      out.FRR_Idempresa = integerValue(input.FRR_Idempresa, null);
+    }
+    out.FRR_Modificable = snValue(input.FRR_Modificable, "S");
+    out.FRR_GeneraCartera = snValue(input.FRR_GeneraCartera, "N");
+    out.FRR_CancelarporCtb = snValue(input.FRR_CancelarporCtb, "N");
+    out.FRR_Contabilizar = snValue(input.FRR_Contabilizar, "S");
+    out.FRR_FechaLog = dateValue(input.FRR_FechaLog, new Date().toISOString().slice(0, 10));
+    out.FRR_HoraLog = text(input.FRR_HoraLog, new Date().toISOString().slice(11, 19));
+  }
 
   return Object.fromEntries(Object.entries(out).filter(([, value]) => value !== undefined));
 };
 
-export const normalizeFrcPayload = (input: JsonObject, position: number) => {
+export const normalizeFrcPayload = (
+  input: JsonObject,
+  position: number,
+  options: { preserveRemoteIds?: boolean } = {},
+) => {
   const out: JsonObject = { posicion: position };
   for (const key of frcNumericKeys) out[key] = numberValue(input[key], null);
   for (const key of frcIntegerKeys) out[key] = integerValue(input[key], null);
@@ -341,9 +526,61 @@ export const normalizeFrcPayload = (input: JsonObject, position: number) => {
   out.FRC_Cuenta = text(pick(input, ["FRC_Cuenta", "cuenta", "cuenta_contable"]), out.FRC_Cuenta as string | null);
   out.FRC_FechaLog = dateValue(input.FRC_FechaLog, new Date().toISOString().slice(0, 10));
   out.FRC_HoraLog = text(input.FRC_HoraLog, new Date().toISOString().slice(11, 19));
-  out.FRC_id = null;
-  out.FRC_idfacturarecibida = null;
+  out.FRC_id = options.preserveRemoteIds
+    ? integerValue(pick(input, ["FRC_id", "frc_id", "id"]), null)
+    : null;
+  out.FRC_idfacturarecibida = options.preserveRemoteIds
+    ? integerValue(pick(input, ["FRC_idfacturarecibida", "FRR_id", "factura_erp_id"]), null)
+    : null;
   return Object.fromEntries(Object.entries(out).filter(([, value]) => value !== undefined));
+};
+
+export const normalizePunteoPayload = (input: JsonObject, position: number) => {
+  const sourceLinesValue = pick(input, ["source_lines", "lines", "lineas"], []);
+  const sourceLines = Array.isArray(sourceLinesValue) ? sourceLinesValue : [];
+  const rawSourceTable = text(pick(input, ["source_table", "tabla_origen", "tabla"]), null);
+  return {
+    posicion: integerValue(pick(input, ["posicion", "position"]), position) ?? position,
+    remote_id: text(pick(input, ["remote_id", "id", "ID", "ALB_id", "GTO_id", "AMA_id"]), null),
+    source_table: rawSourceTable?.toLowerCase() ?? null,
+    source_id: integerValue(pick(input, ["source_id", "id_origen", "AMA_id"]), null),
+    importe_factura: numberValue(
+      pick(input, ["importe_factura", "importe_a_facturar", "importe_punteado", "Importe P"]),
+      null,
+    ),
+    "Origen": text(pick(input, ["Origen", "origen"]), rawSourceTable === "albmaterial" ? "MA" : null),
+    "Serie": text(pick(input, ["Serie", "serie"]), null),
+    "Albaran": integerValue(pick(input, ["Albaran", "albaran", "numero_albaran"]), null),
+    "Ref": text(pick(input, ["Ref", "ref", "referencia"]), null),
+    "Fecha": dateValue(pick(input, ["Fecha", "fecha"]), null),
+    "Importe P": numberValue(pick(input, ["Importe P", "importe_p", "importe_punteado"]), 0),
+    "Importe": numberValue(pick(input, ["Importe", "importe"]), 0),
+    "S": booleanValue(pick(input, ["S", "seleccionado"], true), true),
+    "Ver": booleanValue(pick(input, ["Ver", "ver"], false), false),
+    empresa_id: integerValue(pick(input, ["empresa_id", "FRR_Idempresa"]), null),
+    proveedor_id: integerValue(pick(input, ["proveedor_id", "FRR_idproveedor"]), null),
+    cuenta_gasto: text(pick(input, ["cuenta_gasto", "FRR_ctagasto", "FRC_Cuenta"]), null),
+    line_count: integerValue(pick(input, ["line_count", "numero_lineas"]), sourceLines.length) ?? sourceLines.length,
+    source_lines: sourceLines,
+    raw: input,
+  };
+};
+
+export const applyGastosToFrr = (frr: JsonObject, gastos: unknown) => {
+  if (!Array.isArray(gastos)) return frr;
+
+  gastos
+    .filter((item): item is JsonObject => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .slice(0, 4)
+    .forEach((gasto, index) => {
+      const slot = index + 1;
+      const importe = numberValue(pick(gasto, [`FRR_igasto${slot}`, "importe_gasto", "importe", "amount"]), null);
+      const cuenta = text(pick(gasto, [`FRR_ctagasto${slot}`, "cuenta_gasto", "cuenta", "account"]), null);
+      if (importe !== null) frr[`FRR_igasto${slot}`] = importe;
+      if (cuenta !== null) frr[`FRR_ctagasto${slot}`] = cuenta;
+    });
+
+  return frr;
 };
 
 export const toERPFacturaPayload = (factura: JsonObject) =>
@@ -358,12 +595,281 @@ export const toERPCtbPayload = (linea: JsonObject, position: number) =>
     Object.entries(normalizeFrcPayload(linea, position)).filter(([key]) => key.startsWith("FRC_")),
   );
 
+export const toERPPunteoPayload = (punteo: JsonObject, position: number) =>
+  Object.fromEntries(
+    Object.entries(normalizePunteoPayload(punteo, position)).filter(([key]) =>
+      [
+        "remote_id",
+        "source_table",
+        "source_id",
+        "importe_factura",
+        "Origen",
+        "Serie",
+        "Albaran",
+        "Ref",
+        "Fecha",
+        "Importe P",
+        "Importe",
+        "S",
+        "Ver",
+        "empresa_id",
+        "proveedor_id",
+        "cuenta_gasto",
+      ].includes(key),
+    ),
+  );
+
+export const buildERPContractV2 = ({
+  requestId,
+  dryRun,
+  cabecera,
+  ctb,
+  punteos,
+}: {
+  requestId: string;
+  dryRun: boolean;
+  cabecera: JsonObject;
+  ctb: JsonObject[];
+  punteos: JsonObject[];
+}) => ({
+  contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+  operation: "factura_recibida.create",
+  request_id: requestId,
+  dry_run: dryRun,
+  cabecera,
+  ctb,
+  punteos,
+  // Temporary v1 compatibility while n8n and FastAPI are promoted together.
+  factura: cabecera,
+});
+
+export const parseJsonResponse = async (response: Response) => {
+  const raw = await response.text();
+  if (!raw.trim()) return { raw, payload: {} as unknown };
+  try {
+    return { raw, payload: JSON.parse(raw) as unknown };
+  } catch {
+    return { raw, payload: raw as unknown };
+  }
+};
+
+export const upstreamResult = (response: Response, payload: unknown) => {
+  const object = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as JsonObject
+    : {};
+  const ok = response.ok && object.ok !== false && object.success !== false;
+  const message = text(
+    pick(object, ["message", "error", "detail"]),
+    typeof payload === "string" ? payload : `HTTP ${response.status}`,
+  );
+  return { ok, object, message };
+};
+
+export const extractRemoteFacturaId = (payload: unknown) => {
+  const object = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as JsonObject
+    : {};
+  const factura = object.factura && typeof object.factura === "object" && !Array.isArray(object.factura)
+    ? object.factura as JsonObject
+    : {};
+  const data = object.data && typeof object.data === "object" && !Array.isArray(object.data)
+    ? object.data as JsonObject
+    : {};
+  const result = object.result && typeof object.result === "object" && !Array.isArray(object.result)
+    ? object.result as JsonObject
+    : {};
+  const parsed = integerValue(
+    pick(object, ["FRR_id", "frr_id", "factura_id"], pick(factura, ["FRR_id"], pick(data, ["FRR_id"], result.FRR_id))),
+    null,
+  );
+  return parsed && parsed > 0 ? parsed : null;
+};
+
+export const unwrapERPObject = (payload: unknown): JsonObject => {
+  if (Array.isArray(payload)) {
+    const first = payload[0];
+    return first && typeof first === "object" && !Array.isArray(first) ? first as JsonObject : {};
+  }
+  if (!payload || typeof payload !== "object") return {};
+  const object = payload as JsonObject;
+  for (const key of ["factura", "data", "result", "item"]) {
+    const candidate = object[key];
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate as JsonObject;
+  }
+  return object;
+};
+
+export const unwrapERPArray = (payload: unknown): JsonObject[] => {
+  if (Array.isArray(payload)) {
+    return payload.filter((item): item is JsonObject =>
+      Boolean(item) && typeof item === "object" && !Array.isArray(item)
+    );
+  }
+  if (!payload || typeof payload !== "object") return [];
+  const object = payload as JsonObject;
+  for (const key of ["items", "data", "results", "ctb", "punteos", "lines", "entries", "apuntes"]) {
+    const candidate = object[key];
+    if (Array.isArray(candidate)) {
+      return candidate.filter((item): item is JsonObject =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item)
+      );
+    }
+  }
+  return [];
+};
+
+export const normalizeAccountingReadback = (payload: unknown): JsonObject => {
+  const envelope = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as JsonObject
+    : {};
+  const accounting = envelope.accounting && typeof envelope.accounting === "object" &&
+      !Array.isArray(envelope.accounting)
+    ? envelope.accounting as JsonObject
+    : unwrapERPObject(payload);
+  const lines = unwrapERPArray(
+    envelope.entries ??
+      accounting.lines ??
+      accounting.apuntes ??
+      [],
+  );
+  return { ...accounting, lines };
+};
+
+export const validateAccountingReadback = (accounting: JsonObject) => {
+  const technicalId = integerValue(
+    accounting.technical_id ?? accounting.FRR_IdAsientoNet ?? accounting.id,
+    null,
+  );
+  const visibleNumber = text(
+    accounting.visible_number ?? accounting.numero ?? accounting.asiento,
+    null,
+  );
+  const lines = Array.isArray(accounting.lines)
+    ? accounting.lines.filter((line): line is JsonObject =>
+      Boolean(line) && typeof line === "object" && !Array.isArray(line)
+    )
+    : [];
+  let debit = 0;
+  let credit = 0;
+  for (const line of lines) {
+    const side = text(line.side ?? line.lado, "")?.toLowerCase();
+    const amount = numberValue(line.amount ?? line.importe, 0) ?? 0;
+    debit += numberValue(line.debe ?? line.debit, side === "debe" ? amount : 0) ?? 0;
+    credit += numberValue(line.haber ?? line.credit, side === "haber" ? amount : 0) ?? 0;
+  }
+  const status = text(accounting.status, "")?.toLowerCase();
+  const created = status === "created" || accounting.created === true;
+  return {
+    ok:
+      created &&
+      Boolean(technicalId && technicalId > 0) &&
+      Boolean(visibleNumber) &&
+      lines.length > 0 &&
+      debit > 0 &&
+      Math.abs(debit - credit) <= 0.01,
+    technical_id: technicalId,
+    visible_number: visibleNumber,
+    lines,
+    total_debit: Number(debit.toFixed(2)),
+    total_credit: Number(credit.toFixed(2)),
+  };
+};
+
+const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
+  {
+    path: /^acreedores$/,
+    keys: new Set(["schema", "limit", "offset", "q", "nombre", "nif", "codigo", "activo"]),
+  },
+  { path: /^acreedores\/\d+$/, keys: new Set(["schema"]) },
+  {
+    path: /^cuentas-contables$/,
+    keys: new Set(["account_schema", "limit", "offset", "q", "cuenta", "nif"]),
+  },
+  {
+    path: /^cuentas(?:\/[^/]+)?$/,
+    keys: new Set(["schema", "limit", "offset", "q"]),
+  },
+  { path: /^empresas$/, keys: new Set(["schema", "limit", "offset"]) },
+  {
+    path: /^facturasrecibidas$/,
+    keys: new Set([
+      "schema",
+      "limit",
+      "offset",
+      "fecha_desde",
+      "fecha_hasta",
+      "proveedor_id",
+      "proveedor_nif",
+      "numero_factura",
+      "ejercicio",
+      "tipo_factura",
+    ]),
+  },
+  {
+    path: /^facturasrecibidas\/buscar$/,
+    keys: new Set(["empresa_id", "ejercicio", "proveedor_id", "numero_factura", "schema", "limit", "offset"]),
+  },
+  { path: /^facturasrecibidas\/\d+$/, keys: new Set(["schema"]) },
+  { path: /^facturasrecibidas\/\d+\/ctb$/, keys: new Set(["schema"]) },
+  {
+    path: /^facturasrecibidas\/\d+\/punteos$/,
+    keys: new Set(["schema", "limit", "offset", "include_lines"]),
+  },
+  { path: /^facturasrecibidas\/\d+\/asiento$/, keys: new Set(["schema"]) },
+  { path: /^facturasrecibidas\/tipos$/, keys: new Set(["schema"]) },
+  { path: /^facturasrecibidas_ctb$/, keys: new Set(["schema", "limit", "offset"]) },
+  { path: /^(?:tipos-iva|tipos_iva|regimenes|regimenes-iva|regimenes_iva)$/, keys: new Set(["schema"]) },
+  {
+    path: /^albaranes-gastos\/punteables$/,
+    keys: new Set([
+      "schema",
+      "limit",
+      "offset",
+      "source_table",
+      "proveedor_id",
+      "empresa_id",
+      "fecha_desde",
+      "fecha_hasta",
+      "solo_pendientes",
+      "include_lines",
+    ]),
+  },
+];
+
+export const isAllowedERPConsulta = (consulta: string) => {
+  if (
+    !consulta ||
+    consulta.length > 2048 ||
+    consulta.startsWith("/") ||
+    /^https?:\/\//i.test(consulta) ||
+    consulta.includes("..")
+  ) {
+    return false;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(consulta, "https://erp.invalid/");
+  } catch {
+    return false;
+  }
+  if (parsed.origin !== "https://erp.invalid" || parsed.hash || parsed.username || parsed.password) return false;
+
+  const path = parsed.pathname.replace(/^\/+|\/+$/g, "");
+  const rule = erpReadRouteRules.find((candidate) => candidate.path.test(path));
+  if (!rule) return false;
+  return [...parsed.searchParams.keys()].every((key) => rule.keys.has(key));
+};
+
 export const getValidationErrors = (factura: JsonObject) => {
   const errors: Array<{ field: string; message: string; severity: "error" | "warning" }> = [];
   const required = [
     ["FRR_idproveedor", "Falta proveedor/acreedor resuelto."],
     ["FRR_numerofactura", "Falta numero de factura del proveedor."],
     ["FRR_fechafactura", "Falta fecha de factura."],
+    ["FRR_fechactb", "Falta fecha CTB."],
+    ["FRR_ejercicio", "Falta ejercicio ERP."],
+    ["FRR_idregimen", "Falta Tipo IVA/regimen ERP."],
     ["FRR_totalfac", "Falta total de factura."],
     ["FRR_Idempresa", "Falta empresa ERP."],
   ] as const;
@@ -400,7 +906,7 @@ export const getValidationErrors = (factura: JsonObject) => {
 };
 
 export const getValidationErrorsForFactura = async (
-  supabase: ReturnType<typeof createClient>,
+  supabase: ReturnType<typeof createServiceClient>,
   factura: JsonObject,
 ) => {
   const errors = getValidationErrors(factura);

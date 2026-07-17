@@ -1,5 +1,18 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, jsonResponse, requireRouteUser } from "../_shared/facturas-recibidas-erp.ts";
+import {
+  FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+  corsHeaders,
+  integerValue,
+  jsonResponse,
+  requestIdValue,
+  requireRouteUser,
+  rpcErrorStatus,
+  text,
+  type JsonObject,
+} from "../_shared/facturas-recibidas-erp.ts";
+
+const asObject = (value: unknown): JsonObject =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -9,40 +22,52 @@ Deno.serve(async (req) => {
   if (!auth.ok) return auth.response;
 
   try {
-    const body = await req.json();
-    const facturaId = String(body.factura_id ?? body.id ?? "").trim();
+    const body = asObject(await req.json());
+    const requestId = requestIdValue(body.request_id);
+    const facturaId = text(body.factura_id ?? body.id, null);
+    const expectedVersion = integerValue(
+      body.expected_version ?? body.row_version ?? body.version,
+      null,
+    );
     if (!facturaId) return jsonResponse({ error: "factura_id es requerido" }, 422);
+    if (!expectedVersion || expectedVersion < 1) {
+      return jsonResponse({ error: "expected_version es requerido" }, 422);
+    }
 
     const { data: factura, error: getError } = await auth.serviceClient
       .from("facturasrecibidas")
-      .select("id, estado, archivo_pdf_id")
+      .select("id")
       .eq("id", facturaId)
       .single();
-    if (getError || !factura) throw getError ?? new Error("Factura no encontrada.");
-    if (factura.estado === "enviada_erp") {
-      return jsonResponse({ error: "No se puede borrar una factura enviada a ERP." }, 409);
+    if (getError || !factura) {
+      return jsonResponse({ error: getError?.message ?? "Factura no encontrada" }, getError ? 500 : 404);
     }
 
-    const archivoPdfId = factura.archivo_pdf_id as number | null;
-    const { error: deleteError } = await auth.serviceClient
-      .from("facturasrecibidas")
-      .delete()
-      .eq("id", facturaId);
-    if (deleteError) throw deleteError;
-
-    if (archivoPdfId) {
-      const { count: facturas } = await auth.serviceClient
-        .from("facturasrecibidas")
-        .select("*", { count: "exact", head: true })
-        .eq("archivo_pdf_id", archivoPdfId);
-
-      if ((facturas ?? 0) === 0) {
-        await auth.serviceClient.from("archivos_pdf").delete().eq("id", archivoPdfId);
-      }
+    const { data, error } = await auth.serviceClient.rpc("delete_factura_recibida_v2", {
+      p_factura_id: facturaId,
+      p_expected_version: expectedVersion,
+      p_actor: auth.user.id,
+      p_request_id: requestId,
+      p_reason: text(body.reason, "Eliminacion solicitada desde la aplicacion"),
+    });
+    if (error) {
+      return jsonResponse(
+        {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
+          error: error.message,
+        },
+        rpcErrorStatus(error.message),
+      );
     }
 
-    return jsonResponse({ deleted: true, factura_id: facturaId });
+    return jsonResponse({
+      contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      request_id: requestId,
+      ...asObject(data),
+    });
   } catch (error) {
-    return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
+    const message = error instanceof Error ? error.message : "Unexpected error";
+    return jsonResponse({ error: message }, rpcErrorStatus(message));
   }
 });

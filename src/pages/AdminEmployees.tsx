@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/chart';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient';
 import { agroirisClients, type AgroIrisClient } from '@/services/agroirisClients';
 import { RefreshCw } from 'lucide-react';
 import {
