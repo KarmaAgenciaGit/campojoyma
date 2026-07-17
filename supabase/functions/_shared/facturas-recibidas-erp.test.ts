@@ -8,9 +8,98 @@ import {
   normalizeFrcPayload,
   normalizeFrrPayload,
   normalizePunteoPayload,
+  requireAgentToken,
   sha256Base64,
+  sha256Text,
   validateAccountingReadback,
 } from "./facturas-recibidas-erp.ts";
+
+const requestWithToken = (token?: string, header = "x-agent-token") =>
+  new Request("https://edge.invalid/factura-recibida-ingest", {
+    headers: token ? { [header]: token } : undefined,
+  });
+
+const responsePayload = (response: Response) => response.json() as Promise<{ error?: string }>;
+
+Deno.test("token de ingesta ausente devuelve 401 sin consultar el backend", async () => {
+  let verifierCalls = 0;
+  const result = await requireAgentToken(requestWithToken(), {
+    getConfiguredToken: () => null,
+    verifyTokenHash: async () => {
+      verifierCalls += 1;
+      return true;
+    },
+  });
+
+  assert(!result.ok);
+  assertEquals(result.response.status, 401);
+  assertEquals(verifierCalls, 0);
+});
+
+Deno.test("Edge secret tiene prioridad y no cae al verificador de hashes", async () => {
+  let verifierCalls = 0;
+  const accepted = await requireAgentToken(requestWithToken("token-prueba-configurado"), {
+    getConfiguredToken: () => "token-prueba-configurado",
+    verifyTokenHash: async () => {
+      verifierCalls += 1;
+      return true;
+    },
+  });
+  const rejected = await requireAgentToken(requestWithToken("token-prueba-distinto"), {
+    getConfiguredToken: () => "token-prueba-configurado",
+    verifyTokenHash: async () => {
+      verifierCalls += 1;
+      return true;
+    },
+  });
+
+  assert(accepted.ok);
+  assert(!rejected.ok);
+  assertEquals(rejected.response.status, 401);
+  assertEquals(verifierCalls, 0);
+});
+
+Deno.test("fallback envía solo SHA-256 al verificador inyectado", async () => {
+  const captured = { hash: "" };
+  const result = await requireAgentToken(requestWithToken("token-prueba-fallback", "authorization"), {
+    getConfiguredToken: () => null,
+    verifyTokenHash: async (tokenHash) => {
+      captured.hash = tokenHash;
+      return true;
+    },
+  });
+
+  assert(result.ok);
+  assertEquals(captured.hash, await sha256Text("token-prueba-fallback"));
+  assertEquals(captured.hash.length, 64);
+});
+
+Deno.test("hash no reconocido devuelve 401", async () => {
+  const result = await requireAgentToken(requestWithToken("token-prueba-no-valido"), {
+    getConfiguredToken: () => null,
+    verifyTokenHash: async () => false,
+  });
+
+  assert(!result.ok);
+  assertEquals(result.response.status, 401);
+  assertEquals((await responsePayload(result.response)).error, "Unauthorized");
+});
+
+Deno.test("error del backend de hashes falla cerrado con 500", async () => {
+  const result = await requireAgentToken(requestWithToken("token-prueba-backend"), {
+    getConfiguredToken: () => null,
+    verifyTokenHash: async () => {
+      throw new Error("backend no disponible");
+    },
+  });
+
+  assert(!result.ok);
+  assertEquals(result.response.status, 500);
+  assertEquals(
+    (await responsePayload(result.response)).error,
+    "No se pudo verificar el token de ingesta.",
+  );
+});
 
 Deno.test("SHA-256 se calcula sobre los bytes decodificados, no sobre el texto base64", async () => {
   const helloBase64 = btoa("hello");

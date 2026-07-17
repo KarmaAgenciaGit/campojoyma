@@ -1011,6 +1011,10 @@ export type Database = {
         }
         Returns: Json
       }
+      verify_factura_ingest_token_hash: {
+        Args: { p_token_hash: string }
+        Returns: boolean
+      }
       admin_delete_user: {
         Args: {
           p_user_id: string

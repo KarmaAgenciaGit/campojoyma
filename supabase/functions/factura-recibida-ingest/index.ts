@@ -81,7 +81,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
-  const tokenResult = requireAgentToken(req);
+  const tokenResult = await requireAgentToken(req);
   if (!tokenResult.ok) return tokenResult.response;
 
   try {

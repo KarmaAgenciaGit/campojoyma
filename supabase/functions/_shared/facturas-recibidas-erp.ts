@@ -67,24 +67,82 @@ export const createAuthClient = (authHeader: string) => {
   });
 };
 
-export const requireAgentToken = (req: Request) => {
-  const expected =
-    Deno.env.get("N8N_FACTURAS_RECIBIDAS_INGEST_TOKEN")?.trim() ||
-    Deno.env.get("N8N_AGENT_TOKEN")?.trim();
-  if (!expected) {
-    return {
-      ok: false as const,
-      response: jsonResponse({ error: "Token de ingesta no configurado." }, 500),
-    };
-  }
+export type AgentTokenHashVerifier = (tokenHash: string) => Promise<boolean>;
 
+export type AgentTokenAuthDependencies = {
+  getConfiguredToken?: () => string | null;
+  verifyTokenHash?: AgentTokenHashVerifier;
+};
+
+const getConfiguredAgentToken = () =>
+  Deno.env.get("N8N_FACTURAS_RECIBIDAS_INGEST_TOKEN")?.trim() ||
+  Deno.env.get("N8N_AGENT_TOKEN")?.trim() ||
+  null;
+
+export const sha256Text = async (value: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+const constantTimeTokenEquals = async (received: string, expected: string) => {
+  const [receivedHash, expectedHash] = await Promise.all([
+    sha256Text(received),
+    sha256Text(expected),
+  ]);
+  let difference = 0;
+  for (let index = 0; index < receivedHash.length; index += 1) {
+    difference |= receivedHash.charCodeAt(index) ^ expectedHash.charCodeAt(index);
+  }
+  return difference === 0;
+};
+
+const verifyAgentTokenHashWithServiceRole: AgentTokenHashVerifier = async (tokenHash) => {
+  const supabase = createServiceClient();
+  const { data, error } = await supabase.rpc("verify_factura_ingest_token_hash", {
+    p_token_hash: tokenHash,
+  });
+  if (error) throw error;
+  return data === true;
+};
+
+export const requireAgentToken = async (
+  req: Request,
+  dependencies: AgentTokenAuthDependencies = {},
+) => {
   const headerToken = req.headers.get("x-agent-token")?.trim();
   const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   const received = headerToken || bearer;
-  if (!received || received !== expected) {
+  if (!received) {
     return { ok: false as const, response: jsonResponse({ error: "Unauthorized" }, 401) };
   }
-  return { ok: true as const };
+
+  const expected = (dependencies.getConfiguredToken ?? getConfiguredAgentToken)();
+  if (expected) {
+    const matches = await constantTimeTokenEquals(received, expected);
+    return matches
+      ? { ok: true as const }
+      : { ok: false as const, response: jsonResponse({ error: "Unauthorized" }, 401) };
+  }
+
+  try {
+    const receivedHash = await sha256Text(received);
+    const verifyTokenHash = dependencies.verifyTokenHash ?? verifyAgentTokenHashWithServiceRole;
+    const matches = await verifyTokenHash(receivedHash);
+    return matches
+      ? { ok: true as const }
+      : { ok: false as const, response: jsonResponse({ error: "Unauthorized" }, 401) };
+  } catch (error) {
+    console.error(
+      "No se pudo verificar el hash del token de ingesta.",
+      error instanceof Error ? error.message : "Error desconocido",
+    );
+    return {
+      ok: false as const,
+      response: jsonResponse({ error: "No se pudo verificar el token de ingesta." }, 500),
+    };
+  }
 };
 
 export const requireRouteUser = async (req: Request, route = "/facturas-recibidas") => {
