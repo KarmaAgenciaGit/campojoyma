@@ -17,6 +17,7 @@ import {
   buildFacturaPayload,
   buildPunteosPayload,
   isERPReadOnlyFactura,
+  mapFacturaToUi,
   mapRemoteFacturaToUi,
 } from '@/services/facturas';
 import type { FacturaRecibidaLinea } from '@/services/apiContracts';
@@ -83,6 +84,23 @@ const onduSpanPunteos = Array.from({ length: 17 }, (_, index) => {
       amount: amount / lineCount,
     })),
   };
+});
+
+describe('reintentos ERP', () => {
+  it('mantiene un error ERP historico visible sin convertirlo en un bloqueo de validacion', () => {
+    const factura = mapFacturaToUi({
+      id: 'factura-reintentable',
+      estado: 'error_erp',
+      validation_errors: [],
+      erp_error: 'El intento anterior devolvio HTTP 422',
+      asientos: [],
+      ctb: [],
+      punteos: [],
+    } as never);
+
+    expect(factura.validation_errors).toEqual([]);
+    expect(factura.erp_error).toBe('El intento anterior devolvio HTTP 422');
+  });
 });
 
 describe('modelo reversible de facturas recibidas', () => {

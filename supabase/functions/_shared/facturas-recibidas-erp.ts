@@ -641,16 +641,38 @@ export const applyGastosToFrr = (frr: JsonObject, gastos: unknown) => {
   return frr;
 };
 
+// Campos tecnicos que genera el servidor ERP; la API v0.2 rechaza recibirlos con valor.
+const ERP_SERVER_GENERATED_FRR_KEYS = new Set([
+  "FRR_id",
+  "FRR_numero",
+  "FRR_IdUsuarioLog",
+  "FRR_FechaLog",
+  "FRR_HoraLog",
+  "FRR_IdAsientoNet",
+  "FRR_IdfacturaRec",
+]);
+const ERP_SERVER_GENERATED_FRC_KEYS = new Set([
+  "FRC_id",
+  "FRC_idfacturarecibida",
+  "FRC_IdUsuarioLog",
+  "FRC_FechaLog",
+  "FRC_HoraLog",
+]);
+
 export const toERPFacturaPayload = (factura: JsonObject) =>
   Object.fromEntries(
     Object.entries(normalizeFrrPayload(factura)).filter(
-      ([key]) => key.startsWith("FRR_") || key === "FechaVto" || key === "ImporteVto",
+      ([key]) =>
+        (key.startsWith("FRR_") || key === "FechaVto" || key === "ImporteVto") &&
+        !ERP_SERVER_GENERATED_FRR_KEYS.has(key),
     ),
   );
 
 export const toERPCtbPayload = (linea: JsonObject, position: number) =>
   Object.fromEntries(
-    Object.entries(normalizeFrcPayload(linea, position)).filter(([key]) => key.startsWith("FRC_")),
+    Object.entries(normalizeFrcPayload(linea, position)).filter(
+      ([key]) => key.startsWith("FRC_") && !ERP_SERVER_GENERATED_FRC_KEYS.has(key),
+    ),
   );
 
 export const toERPPunteoPayload = (punteo: JsonObject, position: number) =>
@@ -691,14 +713,11 @@ export const buildERPContractV2 = ({
   punteos: JsonObject[];
 }) => ({
   contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-  operation: "factura_recibida.create",
   request_id: requestId,
   dry_run: dryRun,
   cabecera,
   ctb,
   punteos,
-  // Temporary v1 compatibility while n8n and FastAPI are promoted together.
-  factura: cabecera,
 });
 
 export const parseJsonResponse = async (response: Response) => {

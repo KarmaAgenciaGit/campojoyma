@@ -331,10 +331,9 @@ const pdfIdFromPath = (pdfPath?: string | null) => {
 };
 
 const validationMessages = (factura: ERPFacturaRecibida) =>
-  [
-    ...(factura.validation_errors ?? []).map((item) => item.message),
-    factura.erp_error,
-  ].filter((value): value is string => Boolean(cleanText(value)));
+  (factura.validation_errors ?? [])
+    .map((item) => item.message)
+    .filter((value): value is string => Boolean(cleanText(value)));
 
 const erpFacturaPayloadKeys = [
   'FRR_id',

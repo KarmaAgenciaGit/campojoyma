@@ -11,6 +11,8 @@ import {
   requireAgentToken,
   sha256Base64,
   sha256Text,
+  toERPCtbPayload,
+  toERPFacturaPayload,
   validateAccountingReadback,
 } from "./facturas-recibidas-erp.ts";
 
@@ -175,7 +177,7 @@ Deno.test("normaliza albmaterial con claves estables y lineas de solo lectura", 
   assertEquals(punteo.source_lines, [{ id: 1 }, { id: 2 }]);
 });
 
-Deno.test("construye el contrato v2 con dry-run y compatibilidad temporal", () => {
+Deno.test("construye el contrato v2 estricto sin campos de compatibilidad v1", () => {
   const payload = buildERPContractV2({
     requestId: "11111111-1111-4111-8111-111111111111",
     dryRun: true,
@@ -186,7 +188,58 @@ Deno.test("construye el contrato v2 con dry-run y compatibilidad temporal", () =
 
   assertEquals(payload.contract_version, FACTURAS_RECIBIDAS_CONTRACT_VERSION);
   assertEquals(payload.dry_run, true);
-  assertEquals(payload.cabecera, payload.factura);
+  assertEquals(payload.cabecera, { FRR_numerofactura: "A-1" });
+  assertEquals("factura" in payload, false);
+  assertEquals("operation" in payload, false);
+});
+
+Deno.test("excluye IDs y campos de log generados por el ERP del payload de alta", () => {
+  const cabecera = toERPFacturaPayload({
+    FRR_id: 49305,
+    FRR_numero: 5052,
+    FRR_IdUsuarioLog: 7,
+    FRR_FechaLog: "2026-07-20",
+    FRR_HoraLog: "12:00:00",
+    FRR_IdAsientoNet: 390305,
+    FRR_IdfacturaRec: 123,
+    FRR_numerofactura: "E2E-20260720-50CA89",
+    FRR_Contabilizar: "N",
+  });
+  const ctb = toERPCtbPayload({
+    FRC_id: 99,
+    FRC_idfacturarecibida: 49305,
+    FRC_IdUsuarioLog: 7,
+    FRC_FechaLog: "2026-07-20",
+    FRC_HoraLog: "12:00:00",
+    FRC_Cuenta: "60000000000",
+    FRC_Importe: 1,
+  }, 1);
+
+  assertEquals(cabecera.FRR_numerofactura, "E2E-20260720-50CA89");
+  assertEquals(cabecera.FRR_Contabilizar, "N");
+  for (const key of [
+    "FRR_id",
+    "FRR_numero",
+    "FRR_IdUsuarioLog",
+    "FRR_FechaLog",
+    "FRR_HoraLog",
+    "FRR_IdAsientoNet",
+    "FRR_IdfacturaRec",
+  ]) {
+    assertEquals(key in cabecera, false);
+  }
+
+  assertEquals(ctb.FRC_Cuenta, "60000000000");
+  assertEquals(ctb.FRC_Importe, 1);
+  for (const key of [
+    "FRC_id",
+    "FRC_idfacturarecibida",
+    "FRC_IdUsuarioLog",
+    "FRC_FechaLog",
+    "FRC_HoraLog",
+  ]) {
+    assertEquals(key in ctb, false);
+  }
 });
 
 Deno.test("desenvuelve /asiento v2 y exige Debe/Haber cuadrado", () => {

@@ -28,6 +28,10 @@ import {
 
 const DEFAULT_EXP_SECONDS = 300;
 const UPSTREAM_TIMEOUT_MS = 30_000;
+// URL canonica del webhook v2 de escritura (no es un secreto: exige JWT firmado).
+// Se usa solo si el secreto N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL apunta por error al webhook de lectura.
+const DEFAULT_WRITE_WEBHOOK_URL_V2 =
+  "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma-facturas-write-v2";
 
 const asObject = (value: unknown): JsonObject =>
   value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
@@ -79,8 +83,14 @@ Deno.serve(async (req) => {
     }
 
     const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET")?.trim();
-    const writeWebhookUrl = Deno.env.get("N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL")?.trim();
+    let writeWebhookUrl = Deno.env.get("N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL")?.trim();
     const readWebhookUrl = Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim();
+    if (writeWebhookUrl && readWebhookUrl && writeWebhookUrl === readWebhookUrl) {
+      console.warn(
+        "N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL apunta al webhook de lectura; se usa el webhook v2 documentado.",
+      );
+      writeWebhookUrl = DEFAULT_WRITE_WEBHOOK_URL_V2;
+    }
     if (!jwtSecret || !writeWebhookUrl || !readWebhookUrl) {
       return jsonResponse(
         {
