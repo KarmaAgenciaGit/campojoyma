@@ -10,6 +10,7 @@ import {
   jsonResponse,
   applyGastosToFrr,
   normalizeFrcPayload,
+  normalizeConfidence,
   normalizePunteoPayload,
   normalizeFrrPayload,
   numberValue,
@@ -17,6 +18,7 @@ import {
   requestIdValue,
   requireAgentToken,
   rpcErrorStatus,
+  sanitizeAuditValue,
   text,
   timestampValue,
   type JsonObject,
@@ -27,6 +29,11 @@ const asObject = (value: unknown): JsonObject =>
 
 const asArray = (value: unknown): JsonObject[] =>
   Array.isArray(value) ? value.filter((item): item is JsonObject => item && typeof item === "object" && !Array.isArray(item)) : [];
+
+const asStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.map((item) => text(item, null)).filter((item): item is string => Boolean(item)).slice(0, 25)
+    : [];
 
 const normalizeOnePayload = (raw: JsonObject) => {
   const extraction = asObject(raw.extraction ?? raw.cabecera ?? raw.factura ?? raw.invoice ?? raw);
@@ -71,10 +78,38 @@ const normalizeOnePayload = (raw: JsonObject) => {
     email_from: text(pick(email, ["from", "from_email", "sender"]), null),
     email_subject: text(pick(email, ["subject", "asunto"]), null),
     email_received_at: timestampValue(pick(email, ["date", "received_at", "fecha"]), null),
-    confidence: numberValue(pick(extraction, ["confidence", "confianza"]), null),
+    confidence: normalizeConfidence(
+      pick(rawMetadata, ["confidence", "confianza"]) ??
+        pick(extraction, ["confidence", "confianza"]),
+    ),
   };
 
-  return { frr, ctb, punteos, extraction, pdfBase64, fileName, metadata, source };
+  const auditMetadata = {
+    confidence: metadata.confidence,
+    warnings: asStringArray(rawMetadata.warnings ?? extraction.warnings),
+    raw_text_summary: text(rawMetadata.raw_text_summary ?? extraction.raw_text_summary, null),
+  };
+
+  const matchEvidence = asObject(
+    sanitizeAuditValue(
+      rawMetadata.match_evidence ??
+        (extraction as JsonObject).match_evidence ??
+        (extraction as JsonObject).matching,
+    ),
+  );
+
+  return {
+    frr,
+    ctb,
+    punteos,
+    extraction,
+    pdfBase64,
+    fileName,
+    metadata,
+    auditMetadata,
+    matchEvidence,
+    source,
+  };
 };
 
 Deno.serve(async (req) => {
@@ -101,7 +136,7 @@ Deno.serve(async (req) => {
     const results: unknown[] = [];
     const errors: unknown[] = [];
 
-    for (const input of inputs) {
+    for (const [index, input] of inputs.entries()) {
       try {
         const requestId = requestIdValue(input.request_id ?? (inputs.length === 1 ? envelope.request_id : null));
         const normalized = normalizeOnePayload(input);
@@ -128,7 +163,18 @@ Deno.serve(async (req) => {
           if (supplierDup?.[0]?.id) duplicateCandidates.push(supplierDup[0].id);
         }
 
-        const validationErrors = await getValidationErrorsForFactura(supabase, normalized.frr);
+        const baseValidationErrors = await getValidationErrorsForFactura(supabase, normalized.frr);
+        const warningErrors = normalized.auditMetadata.warnings.map((message) => ({
+          field: "metadata.warnings",
+          message,
+          severity: "warning" as const,
+        }));
+        const validationErrors = [
+          ...baseValidationErrors,
+          ...warningErrors.filter(
+            (warning) => !baseValidationErrors.some((issue) => issue.message === warning.message),
+          ),
+        ];
         const duplicateOf = duplicateCandidates[0] ?? null;
         const nextEstado = duplicateOf
           ? "duplicada"
@@ -147,8 +193,11 @@ Deno.serve(async (req) => {
             remote_frr_id: integerValue((normalized.extraction as JsonObject).remote_id, null),
             is_readonly_reference: normalized.source === "apiCampojoyma-read-sample",
             match_status: normalized.source === "apiCampojoyma-read-sample" ? "reference" : "matched",
-            match_evidence: asObject((normalized.extraction as JsonObject).match_evidence ?? (normalized.extraction as JsonObject).matching),
-            extraction: normalized.extraction,
+            match_evidence: normalized.matchEvidence,
+            extraction: {
+              ...normalized.extraction,
+              metadata: normalized.auditMetadata,
+            },
             validation_errors: validationErrors,
           },
           p_ctb: normalized.ctb,
@@ -176,7 +225,7 @@ Deno.serve(async (req) => {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        errors.push({ error: message, status: rpcErrorStatus(message), payload: input });
+        errors.push({ index, error: message, status: rpcErrorStatus(message) });
       }
     }
 

@@ -16,10 +16,12 @@ import {
   buildCtbPayload,
   buildFacturaPayload,
   buildPunteosPayload,
+  isERPReferenceFactura,
   isERPReadOnlyFactura,
   mapFacturaToUi,
   mapRemoteFacturaToUi,
 } from '@/services/facturas';
+import { isFacturaRecibidaInboxSourceKind } from '@/types/facturasRecibidas';
 import type { FacturaRecibidaLinea } from '@/services/apiContracts';
 
 const onduSpanHeader = {
@@ -243,5 +245,19 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(isERPReadOnlyFactura({ sync_status: 'unknown' })).toBe(true);
     expect(isERPReadOnlyFactura({ sync_status: 'reconciling' })).toBe(true);
     expect(isERPReadOnlyFactura({ sync_status: 'error', erp_factura_id: null })).toBe(false);
+  });
+
+  it('distingue una referencia ERP de una factura entrante real ya enviada', () => {
+    expect(isERPReferenceFactura({ source_kind: 'erp_reference', is_readonly_reference: true })).toBe(true);
+    expect(isERPReferenceFactura({ source_kind: 'n8n_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(false);
+    expect(isERPReadOnlyFactura({ source_kind: 'n8n_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(true);
+  });
+
+  it('limita la bandeja a PDFs procesados y excluye referencias o fixtures manuales', () => {
+    expect(isFacturaRecibidaInboxSourceKind('n8n_draft')).toBe(true);
+    expect(isFacturaRecibidaInboxSourceKind('email_draft')).toBe(true);
+    expect(isFacturaRecibidaInboxSourceKind('front_draft')).toBe(true);
+    expect(isFacturaRecibidaInboxSourceKind('erp_reference')).toBe(false);
+    expect(isFacturaRecibidaInboxSourceKind('manual_draft')).toBe(false);
   });
 });

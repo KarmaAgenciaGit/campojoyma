@@ -281,6 +281,12 @@ export const isERPReadOnlyFactura = (factura: Partial<UiFacturaRecibida> | null 
   ['sending', 'unknown', 'reconciling', 'sent'].includes(factura?.sync_status ?? '') ||
   Boolean(erpIdFromUiId(factura?.id ?? null));
 
+export const isERPReferenceFactura = (factura: Partial<UiFacturaRecibida> | null | undefined) =>
+  factura?.erp_payload?.source === ERP_READ_SOURCE ||
+  factura?.is_readonly_reference === true ||
+  factura?.source_kind === 'erp_reference' ||
+  Boolean(erpIdFromUiId(factura?.id ?? null));
+
 const erpRead = async <T>(consulta: string): Promise<T> => {
   const { data, error } = await supabase.functions.invoke(ERP_READ_FUNCTION, {
     body: {

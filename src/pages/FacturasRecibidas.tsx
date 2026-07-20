@@ -13,7 +13,6 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Search,
   Trash2,
   Upload,
   X,
@@ -36,15 +35,11 @@ import { AsientoContableTable } from '../components/facturas/AsientoContableTabl
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { PdfViewer } from '../components/PdfViewer';
-import {
-  facturaEstadoLabels,
-  isFacturaUnprocessedUploadDraft,
-} from '../lib/facturasSummary';
+import { facturaEstadoLabels } from '../lib/facturasSummary';
 import {
   type LocalizarProveedorResponse,
   type FacturaEmpresaOption,
   type FacturaCuentaOption,
-  type FacturaERPMatch,
   type FacturaRegimenOption,
   type FacturaTipoOption,
   fetchFacturaCuentas,
@@ -57,10 +52,10 @@ import {
   fetchFacturasRecibidasPage,
   getFacturaPdfSignedUrl,
   extractFacturaWithN8n,
+  isERPReferenceFactura,
   isERPReadOnlyFactura,
   localizarProveedorERP,
   saveFacturaRecibida,
-  searchFacturasERP,
   sendFacturaRecibidaToERP,
 } from '../services/facturas';
 import type {
@@ -433,7 +428,7 @@ const erpStateForInvoice = (
   factura: FacturaRecibida,
   externalState?: FacturaERPListState,
 ): FacturaERPListState => {
-  if (isERPReadOnlyFactura(factura)) return 'reference';
+  if (isERPReferenceFactura(factura)) return 'reference';
   if (externalState) return externalState;
   if (factura.estado === 'enviada_erp' || factura.erp_sent_at) return 'registered';
   if (factura.estado === 'error_erp') return 'unregistered';
@@ -937,11 +932,6 @@ const Facturas = () => {
   const [regimenes, setRegimenes] = useState<FacturaRegimenOption[]>([]);
   const [cuentas, setCuentas] = useState<FacturaCuentaOption[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [showERPSearch, setShowERPSearch] = useState(false);
-  const [erpSearch, setERPSearch] = useState('');
-  const [erpSearchResults, setERPSearchResults] = useState<FacturaERPMatch[]>([]);
-  const [erpSearching, setERPSearching] = useState(false);
-  const [erpSearchError, setERPSearchError] = useState<string | null>(null);
   const [punteosLoading, setPunteosLoading] = useState(false);
   const [punteosLoadError, setPunteosLoadError] = useState<string | null>(null);
   const [lastSavedEditorSnapshot, setLastSavedEditorSnapshot] = useState<string | null>(null);
@@ -1323,11 +1313,10 @@ const Facturas = () => {
     filters.estado !== 'todos' ? filters.estado : '',
   ].filter(Boolean).length;
 
-  const visibleFacturas = facturas.filter((factura) => !isFacturaUnprocessedUploadDraft(factura));
   const totalPages = Math.max(1, Math.ceil(facturasTotal / pageSize));
-  const paginatedFacturas = visibleFacturas;
+  const paginatedFacturas = facturas;
   const visibleStart = facturasTotal === 0 ? 0 : (page - 1) * pageSize + 1;
-  const visibleEnd = Math.min(facturasTotal, (page - 1) * pageSize + visibleFacturas.length);
+  const visibleEnd = Math.min(facturasTotal, (page - 1) * pageSize + facturas.length);
   const headerLabel =
     activeFiltersCount > 0
       ? `${formatInteger(facturasTotal)} facturas filtradas`
@@ -1363,35 +1352,6 @@ const Facturas = () => {
     setFilters(emptyFilters);
     setSortOrder('created_desc');
     setPage(1);
-  };
-
-  const openERPDirectReference = (value: string) => {
-    const match = value.trim().match(/^erp:(\d+)$/i);
-    if (!match) return false;
-    navigate(`/facturas-recibidas/${encodeURIComponent(`erp:${match[1]}`)}`);
-    return true;
-  };
-
-  const handleERPSearch = async () => {
-    if (openERPDirectReference(erpSearch)) return;
-    if (!erpSearch.trim()) {
-      setERPSearchError('Indica un ID, número o referencia para buscar en el ERP.');
-      return;
-    }
-    setERPSearching(true);
-    setERPSearchError(null);
-    try {
-      const results = await searchFacturasERP(erpSearch);
-      setERPSearchResults(results);
-      if (results.length === 0) {
-        setERPSearchError('No hay facturas ERP que coincidan con la búsqueda.');
-      }
-    } catch (error) {
-      setERPSearchResults([]);
-      setERPSearchError(getErrorMessage(error, 'No se pudo buscar en el ERP.'));
-    } finally {
-      setERPSearching(false);
-    }
   };
 
   const openNewFactura = () => {
@@ -2021,17 +1981,6 @@ const Facturas = () => {
               </span>
             ) : null}
           </button>
-          <button
-            type="button"
-            className={toolbarFilterButtonClass(showERPSearch)}
-            onClick={() => {
-              setShowERPSearch((visible) => !visible);
-              setERPSearchError(null);
-            }}
-          >
-            <Search className="h-4 w-4" />
-            Buscar en ERP
-          </button>
         </div>
         <div className="flex items-center justify-end">
           <button
@@ -2040,114 +1989,10 @@ const Facturas = () => {
             onClick={openNewFactura}
           >
             <Plus className="h-4 w-4" />
-            Nueva factura
+            Subir PDF
           </button>
         </div>
       </div>
-
-      {showERPSearch ? (
-        <section className="rounded-lg border border-blue-200 bg-blue-50/70 p-5 shadow-sm dark:border-blue-900/60 dark:bg-blue-950/25">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-bold uppercase tracking-wide text-blue-700 dark:text-blue-300">
-                Fuente: ERP Netagro
-              </p>
-              <h2 className="mt-1 text-base font-semibold text-slate-950 dark:text-slate-50">
-                Buscar una factura directamente en ERP
-              </h2>
-              <p className="mt-1 text-sm font-medium text-slate-600 dark:text-slate-300">
-                Esta búsqueda no mezcla resultados con la bandeja local. Las facturas ERP se abren en modo solo lectura.
-              </p>
-            </div>
-            <div className="flex w-full flex-col gap-2 sm:flex-row lg:max-w-2xl">
-              <Input
-                className={inputClass}
-                value={erpSearch}
-                onChange={(event) => {
-                  setERPSearch(event.target.value);
-                  setERPSearchError(null);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void handleERPSearch();
-                  }
-                }}
-                placeholder="ID, número, factura o erp:49305"
-                aria-label="Buscar factura en ERP"
-              />
-              <button
-                type="button"
-                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-blue-700 bg-blue-700 px-4 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60 dark:border-blue-500 dark:bg-blue-600 dark:hover:bg-blue-500"
-                disabled={erpSearching}
-                onClick={() => void handleERPSearch()}
-              >
-                {erpSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                {erpSearching ? 'Buscando...' : 'Buscar'}
-              </button>
-            </div>
-          </div>
-
-          {erpSearchError ? (
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-white px-3 py-2 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-slate-950 dark:text-amber-200">
-              <span>{erpSearchError}</span>
-              {erpSearch.trim() ? (
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 px-3 text-xs font-bold transition-colors hover:bg-amber-50 dark:border-amber-900/60 dark:hover:bg-amber-950/40"
-                  disabled={erpSearching}
-                  onClick={() => void handleERPSearch()}
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Reintentar
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-
-          {erpSearchResults.length > 0 ? (
-            <div className="mt-4 overflow-x-auto rounded-md border border-blue-200 bg-white dark:border-blue-900/60 dark:bg-slate-950">
-              <table className="w-full min-w-[720px] text-left text-sm">
-                <thead>
-                  <tr className="bg-blue-50 text-xs font-bold uppercase text-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
-                    <th className="px-3 py-3">ID ERP</th>
-                    <th className="px-3 py-3">N.º factura</th>
-                    <th className="px-3 py-3">Proveedor</th>
-                    <th className="px-3 py-3">Fecha</th>
-                    <th className="px-3 py-3 text-right">Total</th>
-                    <th className="px-3 py-3 text-right">Acción</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-blue-100 dark:divide-blue-950">
-                  {erpSearchResults.map((result) => (
-                    <tr key={result.frrId}>
-                      <td className="px-3 py-3 font-mono text-xs font-bold">{result.frrId}</td>
-                      <td className="px-3 py-3">{result.numeroFactura ?? result.numero ?? '-'}</td>
-                      <td className="px-3 py-3">{result.proveedor ?? '-'}</td>
-                      <td className="px-3 py-3">{formatDate(result.fecha)}</td>
-                      <td className="px-3 py-3 text-right">{formatMoney(result.total)}</td>
-                      <td className="px-3 py-3 text-right">
-                        <button
-                          type="button"
-                          className="inline-flex h-8 items-center gap-2 rounded-md border border-blue-200 px-3 text-xs font-bold text-blue-800 transition-colors hover:bg-blue-50 dark:border-blue-900/60 dark:text-blue-200 dark:hover:bg-blue-950/40"
-                          onClick={() =>
-                            navigate(
-                              `/facturas-recibidas/${encodeURIComponent(`erp:${result.frrId}`)}`,
-                            )
-                          }
-                        >
-                          Abrir en ERP
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
 
       {showFilters ? (
         <section className="purchase-invoices-filter-panel relative z-20 overflow-visible rounded-lg border border-border bg-card shadow-sm">
@@ -2182,12 +2027,7 @@ const Facturas = () => {
                 className={inputClass}
                 value={filters.numero}
                 onChange={(event) => updateFilter('numero', event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && openERPDirectReference(filters.numero)) {
-                    event.preventDefault();
-                  }
-                }}
-                placeholder="Número, referencia o erp:49305"
+                placeholder="Número o referencia"
               />
             </div>
 
@@ -2252,7 +2092,7 @@ const Facturas = () => {
         <header className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1 text-sm font-semibold text-muted-foreground">
           <div>
             <p className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-              Fuente: Bandeja local
+              Bandeja de entrada
             </p>
             <span>
               Mostrando {visibleStart}-{visibleEnd} de {facturasTotal}
@@ -2275,7 +2115,7 @@ const Facturas = () => {
                 {activeFiltersCount > 0 ? 'No hay facturas con estos filtros' : 'No hay facturas pendientes.'}
               </h3>
               <p className="mt-2 text-sm font-medium text-muted-foreground">
-                {activeFiltersCount > 0 ? 'Ajusta los filtros activos para ampliar el resultado.' : 'Cuando haya facturas registradas apareceran aqui.'}
+                {activeFiltersCount > 0 ? 'Ajusta los filtros activos para ampliar el resultado.' : 'Cuando llegue un PDF y termine su análisis, la factura aparecerá aquí.'}
               </p>
             </div>
           </div>

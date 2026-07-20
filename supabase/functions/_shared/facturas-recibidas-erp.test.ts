@@ -5,10 +5,12 @@ import {
   buildERPContractV2,
   isAllowedERPConsulta,
   normalizeAccountingReadback,
+  normalizeConfidence,
   normalizeFrcPayload,
   normalizeFrrPayload,
   normalizePunteoPayload,
   requireAgentToken,
+  sanitizeAuditValue,
   sha256Base64,
   sha256Text,
   toERPCtbPayload,
@@ -22,6 +24,32 @@ const requestWithToken = (token?: string, header = "x-agent-token") =>
   });
 
 const responsePayload = (response: Response) => response.json() as Promise<{ error?: string }>;
+
+Deno.test("normaliza la confianza de porcentaje a fraccion y rechaza valores imposibles", () => {
+  assertEquals(normalizeConfidence(0.85), 0.85);
+  assertEquals(normalizeConfidence(85), 0.85);
+  assertEquals(normalizeConfidence("100"), 1);
+  assertEquals(normalizeConfidence(101), null);
+  assertEquals(normalizeConfidence(-1), null);
+});
+
+Deno.test("la evidencia de auditoria elimina respuestas y secretos antes de persistir", () => {
+  assertEquals(
+    sanitizeAuditValue({
+      source: "api:/acreedores",
+      raw: { nif: "B123" },
+      payload: { rows: [1, 2] },
+      token: "secreto",
+      nested: { pdf_base64: "JVBERi0", count: 1 },
+      attempts: [{ path: "/acreedores", ok: true }],
+    }),
+    {
+      source: "api:/acreedores",
+      nested: { count: 1 },
+      attempts: [{ path: "/acreedores", ok: true }],
+    },
+  );
+});
 
 Deno.test("token de ingesta ausente devuelve 401 sin consultar el backend", async () => {
   let verifierCalls = 0;

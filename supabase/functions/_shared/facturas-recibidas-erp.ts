@@ -201,6 +201,52 @@ export const numberValue = (value: unknown, fallback: number | null = null) => {
   return fallback;
 };
 
+export const normalizeConfidence = (value: unknown) => {
+  const parsed = numberValue(value, null);
+  if (parsed === null || parsed < 0) return null;
+  if (parsed <= 1) return parsed;
+  return parsed <= 100 ? parsed / 100 : null;
+};
+
+const blockedAuditKeys = new Set([
+  "authorization",
+  "body",
+  "data",
+  "items",
+  "password",
+  "payload",
+  "raw",
+  "response",
+  "secret",
+  "token",
+]);
+
+export const sanitizeAuditValue = (value: unknown, depth = 0): JsonValue | null => {
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") return value.slice(0, 1000);
+  if (depth >= 5) return null;
+  if (Array.isArray(value)) {
+    return value.slice(0, 25).map((item) => sanitizeAuditValue(item, depth + 1));
+  }
+  if (!value || typeof value !== "object") return null;
+
+  const sanitized: Record<string, JsonValue> = {};
+  for (const [key, nested] of Object.entries(value as JsonObject).slice(0, 50)) {
+    const normalizedKey = key.toLowerCase();
+    if (
+      blockedAuditKeys.has(normalizedKey) ||
+      normalizedKey.includes("base64") ||
+      normalizedKey.includes("password") ||
+      normalizedKey.includes("secret") ||
+      normalizedKey.includes("token")
+    ) {
+      continue;
+    }
+    sanitized[key] = sanitizeAuditValue(nested, depth + 1);
+  }
+  return sanitized;
+};
+
 export const integerValue = (value: unknown, fallback: number | null = null) => {
   const parsed = numberValue(value, fallback);
   return parsed === null ? null : Math.trunc(parsed);

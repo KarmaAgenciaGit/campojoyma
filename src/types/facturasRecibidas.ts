@@ -232,6 +232,18 @@ export type FacturaRecibidaPage = {
   total: number;
 };
 
+export const FACTURA_RECIBIDA_INBOX_SOURCE_KINDS = [
+  'ocr_draft',
+  'email_draft',
+  'front_draft',
+  'n8n_draft',
+] as const;
+
+export const isFacturaRecibidaInboxSourceKind = (value?: string | null) =>
+  FACTURA_RECIBIDA_INBOX_SOURCE_KINDS.includes(
+    value as (typeof FACTURA_RECIBIDA_INBOX_SOURCE_KINDS)[number],
+  );
+
 export const FACTURA_RECIBIDA_ESTADOS: FacturaRecibidaEstado[] = [
   'pendiente_revision',
   'error_ocr',

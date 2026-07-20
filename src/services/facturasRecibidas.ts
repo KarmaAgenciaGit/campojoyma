@@ -1,5 +1,6 @@
 import { supabase } from '@/integrations/supabase/client';
 import type { Tables } from '@/integrations/supabase/types';
+import { FACTURA_RECIBIDA_INBOX_SOURCE_KINDS } from '@/types/facturasRecibidas';
 import type {
   FacturaRecibida,
   FacturaRecibidaAsiento,
@@ -274,7 +275,8 @@ class FacturasRecibidasService {
 
     let query = supabase
       .from('facturasrecibidas')
-      .select('*, facturasrecibidas_ctb(*), facturasrecibidas_punteos(*)', { count: 'exact' });
+      .select('*, facturasrecibidas_ctb(*), facturasrecibidas_punteos(*)', { count: 'exact' })
+      .in('source_kind', [...FACTURA_RECIBIDA_INBOX_SOURCE_KINDS]);
 
     if (filters.estado && filters.estado !== 'all') {
       query = query.eq('estado', filters.estado);
