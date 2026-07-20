@@ -1,26 +1,346 @@
---- fastapi-netagro-v0.1-disk/app/main.py
-+++ fastapi-netagro-v0.2.0/app/main.py
-@@ -1,9 +1,14 @@
+diff --git app/db.py app/db.py
+index 6d586f1..f7c46ef 100644
+--- app/db.py
++++ app/db.py
+@@ -11,6 +11,12 @@ from fastapi import HTTPException, Query
+ from pymysql.connections import Connection
+ from pymysql.cursors import DictCursor
+ 
++from .mariadb_permissions import (
++    READ_ONLY_MARIADB_PRIVILEGES,
++    WRITE_MARIADB_PRIVILEGES,
++    unsafe_mariadb_grants,
++)
++
+ 
+ DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+ DB_PORT = int(os.getenv("DB_PORT", "3306"))
+@@ -24,8 +30,8 @@ DB_ALLOWED_SCHEMAS = {
+     ).split(",")
+     if value.strip()
+ }
+-DB_WRITE_USER = os.getenv("DB_WRITE_USER", DB_USER)
+-DB_WRITE_PASSWORD = os.getenv("DB_WRITE_PASSWORD", DB_PASSWORD)
++DB_WRITE_USER = os.getenv("DB_WRITE_USER", "").strip()
++DB_WRITE_PASSWORD = os.getenv("DB_WRITE_PASSWORD", "")
+ DB_WRITES_ENABLED = os.getenv("DB_WRITES_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+ DB_WRITE_ALLOWED_SCHEMAS = {
+     value.strip()
+@@ -42,7 +48,7 @@ DB_ALLOWED_ACCOUNT_SCHEMAS = {
+     ).split(",")
+     if value.strip()
+ }
+-
++DB_READ_ALLOWED_SCHEMAS = DB_ALLOWED_SCHEMAS | DB_ALLOWED_ACCOUNT_SCHEMAS
+ 
+ def normalize_value(value: Any) -> Any:
+     if isinstance(value, Decimal):
+@@ -92,6 +98,32 @@ def schema_query() -> Any:
+     return Query(description="Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au")
+ 
+ 
++def verify_runtime_database_permissions(
++    connection: Connection,
++    user: str,
++    allowed_privileges: frozenset[str],
++    allowed_schemas: set[str],
++) -> None:
++    with connection.cursor() as cursor:
++        cursor.execute("SHOW GRANTS")
++        rows = cursor.fetchall()
++    statements = [str(value) for row in rows for value in row.values()]
++    unsafe = unsafe_mariadb_grants(
++        statements,
++        allowed_privileges,
++        frozenset(allowed_schemas),
++    )
++    if unsafe:
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "unsafe_database_permissions",
++                "message": "the MariaDB API user has privileges outside the runtime allowlist",
++                "unsafe_privileges": list(unsafe),
++            },
++        )
++
++
+ @contextmanager
+ def get_connection() -> Iterator[Connection]:
+     connection = pymysql.connect(
+@@ -107,6 +139,12 @@ def get_connection() -> Iterator[Connection]:
+         connect_timeout=5,
+     )
+     try:
++        verify_runtime_database_permissions(
++            connection,
++            DB_USER,
++            READ_ONLY_MARIADB_PRIVILEGES,
++            DB_READ_ALLOWED_SCHEMAS,
++        )
+         yield connection
+     finally:
+         connection.close()
+@@ -116,6 +154,16 @@ def get_connection() -> Iterator[Connection]:
+ def get_write_connection() -> Iterator[Connection]:
+     if not DB_WRITES_ENABLED:
+         raise HTTPException(status_code=403, detail="writes disabled for this API")
++    if not DB_WRITE_USER:
++        raise HTTPException(
++            status_code=503,
++            detail="DB_WRITE_USER must be configured explicitly when writes are enabled",
++        )
++    if DB_WRITE_USER == DB_USER:
++        raise HTTPException(
++            status_code=503,
++            detail="DB_WRITE_USER must be separate from the read-only DB_USER",
++        )
+     connection = pymysql.connect(
+         host=DB_HOST,
+         port=DB_PORT,
+@@ -129,6 +177,12 @@ def get_write_connection() -> Iterator[Connection]:
+         connect_timeout=5,
+     )
+     try:
++        verify_runtime_database_permissions(
++            connection,
++            DB_WRITE_USER,
++            WRITE_MARIADB_PRIVILEGES,
++            DB_WRITE_ALLOWED_SCHEMAS,
++        )
+         yield connection
+     finally:
+         connection.close()
+diff --git app/idempotency_store.py app/idempotency_store.py
+new file mode 100644
+index 0000000..fa9d36c
+--- /dev/null
++++ app/idempotency_store.py
+@@ -0,0 +1,165 @@
++from __future__ import annotations
++
++import hashlib
++import os
++import sqlite3
++from pathlib import Path
++from typing import Any
++
++
++IDEMPOTENCY_ENV_VAR = "FACTURAS_IDEMPOTENCY_DB"
++IDEMPOTENCY_SCHEMA_VERSION = 1
++IDEMPOTENCY_TABLE = "factura_requests"
++IDEMPOTENCY_COLUMN_SPEC = (
++    ("request_id", "TEXT", 0, None, 1),
++    ("payload_hash", "TEXT", 1, None, 0),
++    ("status", "TEXT", 1, None, 0),
++    ("response_json", "TEXT", 0, None, 0),
++    ("error_text", "TEXT", 0, None, 0),
++    ("created_at", "TEXT", 1, None, 0),
++    ("updated_at", "TEXT", 1, None, 0),
++)
++IDEMPOTENCY_SCHEMA_FINGERPRINT = (
++    "f31e595b464ee28d238d7bc9f36a43eebe681e65cfb7964b381a839ca9b63c23"
++)
++
++
++class IdempotencyStoreUnavailable(RuntimeError):
++    """The preprovisioned idempotency store is missing or incompatible."""
++
++
++def configured_idempotency_path() -> Path:
++    raw_path = os.getenv(IDEMPOTENCY_ENV_VAR, "").strip()
++    if not raw_path:
++        raise IdempotencyStoreUnavailable(
++            f"{IDEMPOTENCY_ENV_VAR} is required when ERP writes are enabled"
++        )
++    path = Path(raw_path).expanduser()
++    if not path.is_absolute():
++        raise IdempotencyStoreUnavailable(
++            f"{IDEMPOTENCY_ENV_VAR} must contain an absolute path"
++        )
++    return path
++
++
++def open_idempotency_store(path: Path | None = None) -> sqlite3.Connection:
++    selected_path = path or configured_idempotency_path()
++    if not selected_path.is_file():
++        raise IdempotencyStoreUnavailable(
++            "the configured idempotency store does not exist; provision it during deployment"
++        )
++
++    uri = f"{selected_path.resolve().as_uri()}?mode=rw"
++    try:
++        connection = sqlite3.connect(uri, uri=True, timeout=10)
++    except sqlite3.Error as error:
++        raise IdempotencyStoreUnavailable(
++            "the configured idempotency store cannot be opened in read/write mode"
++        ) from error
++
++    connection.row_factory = sqlite3.Row
++    try:
++        version_row = connection.execute("PRAGMA user_version").fetchone()
++        version = int(version_row[0]) if version_row else 0
++        if version != IDEMPOTENCY_SCHEMA_VERSION:
++            raise IdempotencyStoreUnavailable(
++                "the idempotency store schema version is not supported"
++            )
++
++        table = connection.execute(
++            "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name = ?",
++            (IDEMPOTENCY_TABLE,),
++        ).fetchone()
++        if table is None:
++            raise IdempotencyStoreUnavailable(
++                "the idempotency store is missing its required table"
++            )
++
++        columns = tuple(
++            (
++                row["name"],
++                str(row["type"]).upper(),
++                int(row["notnull"]),
++                row["dflt_value"],
++                int(row["pk"]),
++            )
++            for row in connection.execute(
++                f'PRAGMA table_info("{IDEMPOTENCY_TABLE}")'
++            ).fetchall()
++        )
++        if columns != IDEMPOTENCY_COLUMN_SPEC:
++            raise IdempotencyStoreUnavailable(
++                "the idempotency store has an unexpected schema"
++            )
++
++        primary_indexes = [
++            row
++            for row in connection.execute(
++                f'PRAGMA index_list("{IDEMPOTENCY_TABLE}")'
++            ).fetchall()
++            if int(row["unique"]) == 1 and row["origin"] == "pk"
++        ]
++        if len(primary_indexes) != 1:
++            raise IdempotencyStoreUnavailable(
++                "the idempotency store is missing its primary key index"
++            )
++        primary_columns = tuple(
++            row["name"]
++            for row in connection.execute(
++                f'PRAGMA index_info("{primary_indexes[0]["name"]}")'
++            ).fetchall()
++        )
++        if primary_columns != ("request_id",):
++            raise IdempotencyStoreUnavailable(
++                "the idempotency store has an unexpected primary key"
++            )
++
++        normalized_sql = " ".join(str(table["sql"]).split()).upper()
++        fingerprint = hashlib.sha256(normalized_sql.encode("utf-8")).hexdigest()
++        if fingerprint != IDEMPOTENCY_SCHEMA_FINGERPRINT:
++            raise IdempotencyStoreUnavailable(
++                "the idempotency store schema fingerprint does not match"
++            )
++    except IdempotencyStoreUnavailable:
++        connection.close()
++        raise
++    except sqlite3.Error as error:
++        connection.close()
++        raise IdempotencyStoreUnavailable(
++            "the idempotency store schema could not be validated"
++        ) from error
++
++    return connection
++
++
++def assert_idempotency_store_ready(path: Path | None = None) -> None:
++    connection: sqlite3.Connection | None = None
++    try:
++        connection = open_idempotency_store(path)
++        connection.execute("BEGIN IMMEDIATE")
++        connection.rollback()
++    except IdempotencyStoreUnavailable:
++        raise
++    except sqlite3.Error as error:
++        raise IdempotencyStoreUnavailable(
++            "the idempotency store is not writable"
++        ) from error
++    finally:
++        if connection is not None:
++            connection.close()
++
++
++def idempotency_store_status() -> dict[str, Any]:
++    try:
++        assert_idempotency_store_ready()
++    except IdempotencyStoreUnavailable as error:
++        return {
++            "ready": False,
++            "schema_version": None,
++            "error": str(error),
++        }
++    return {
++        "ready": True,
++        "schema_version": IDEMPOTENCY_SCHEMA_VERSION,
++        "error": None,
++    }
+diff --git app/main.py app/main.py
+index 3676c6c..212b504 100644
+--- app/main.py
++++ app/main.py
+@@ -1,9 +1,15 @@
  from __future__ import annotations
  
 +import hashlib
 +import json
++import logging
  import os
 -from datetime import date
 +import sqlite3
++from contextlib import asynccontextmanager, closing
 +from datetime import date, datetime, timezone
  from decimal import Decimal
-+from pathlib import Path
  from typing import Annotated, Any, Literal
 +from uuid import UUID
  
  from fastapi import FastAPI, HTTPException, Query
  from pydantic import BaseModel, ConfigDict, Field
-@@ -26,12 +31,34 @@
+@@ -12,6 +18,7 @@ from .db import (
+     DB_ALLOWED_ACCOUNT_SCHEMAS,
+     DB_ALLOWED_SCHEMAS,
+     DB_DEFAULT_SCHEMA,
++    DB_WRITES_ENABLED,
+     ensure_found,
+     fetch_all,
+     fetch_one,
+@@ -24,15 +31,53 @@ from .db import (
+     resolve_write_schema,
+     schema_query,
  )
++from .idempotency_store import (
++    IdempotencyStoreUnavailable,
++    assert_idempotency_store_ready,
++    idempotency_store_status,
++    open_idempotency_store,
++)
++from .write_policy import real_write_contract_error
++
  
++LOGGER = logging.getLogger(__name__)
  
 -app = FastAPI(title=os.getenv("API_TITLE", "Netagro Test API"))
++
++@asynccontextmanager
++async def lifespan(_: FastAPI):
++    if DB_WRITES_ENABLED:
++        try:
++            assert_idempotency_store_ready()
++        except IdempotencyStoreUnavailable as error:
++            LOGGER.critical("idempotency store is not ready: %s", error)
++            raise RuntimeError(
++                "writes are enabled but the idempotency store is not ready"
++            ) from error
++    yield
++
++
 +app = FastAPI(
 +    title=os.getenv("API_TITLE", "Netagro Test API"),
 +    version="0.2.0",
@@ -29,12 +349,14 @@
 +        "la contabilizacion queda bloqueada mientras no exista un mecanismo oficial "
 +        "de Netagro accesible desde esta copia."
 +    ),
++    lifespan=lifespan,
 +)
  
  Limit = Annotated[int, Query(ge=1, le=200)]
  Offset = Annotated[int, Query(ge=0)]
  
  ACCOUNT_SCHEMA_DESCRIPTIONS = ", ".join(sorted(DB_ALLOWED_ACCOUNT_SCHEMAS))
+-
 +ACCOUNTING_MECHANISM = "unavailable"
 +ALBMATERIAL_WRITES_ENABLED = os.getenv("ALBMATERIAL_WRITES_ENABLED", "false").lower() in {
 +    "1",
@@ -42,17 +364,10 @@
 +    "yes",
 +    "on",
 +}
-+APP_ROOT = Path(__file__).resolve().parents[1]
-+IDEMPOTENCY_DB_PATH = Path(
-+    os.getenv(
-+        "FACTURAS_IDEMPOTENCY_DB",
-+        str(APP_ROOT / "data" / "facturas-idempotency.sqlite3"),
-+    )
-+)
- 
  FRR_COLUMNS = [
      "FRR_id",
-@@ -130,6 +157,15 @@
+     "FRR_numero",
+@@ -130,6 +175,15 @@ PUNTEO_SOURCES = {
      "albaranescompra_gastos",
      "facturas_gastos",
      "albarancoste",
@@ -68,7 +383,7 @@
  }
  
  
-@@ -142,6 +178,7 @@
+@@ -142,6 +196,7 @@ class PunteoSeleccionado(BaseModel):
          "albaranescompra_gastos",
          "facturas_gastos",
          "albarancoste",
@@ -76,7 +391,7 @@
      ]
      source_id: int = Field(gt=0)
      importe_factura: Decimal | None = None
-@@ -150,11 +187,71 @@
+@@ -150,11 +205,71 @@ class PunteoSeleccionado(BaseModel):
  class FacturaRecibidaCreateRequest(BaseModel):
      model_config = ConfigDict(extra="forbid")
  
@@ -148,10 +463,150 @@
  def paging(limit: int, offset: int) -> dict[str, int]:
      return {"limit": limit, "offset": offset}
  
-@@ -188,6 +285,265 @@
+@@ -188,6 +303,606 @@ def normalize_payload_values(values: dict[str, Any]) -> dict[str, Any]:
      return normalized
  
  
++def _readback_value_matches(expected: Any, actual: Any) -> bool:
++    if expected is None or actual is None:
++        return expected is actual
++    if isinstance(expected, bool) or isinstance(actual, bool):
++        return expected == actual
++    numeric_types = (int, float, Decimal)
++    if isinstance(expected, numeric_types) or isinstance(actual, numeric_types):
++        try:
++            return Decimal(str(expected)) == Decimal(str(actual))
++        except (ArithmeticError, ValueError):
++            return False
++    return str(expected) == str(actual)
++
++
++def _readback_row_contains(
++    actual: dict[str, Any],
++    expected: dict[str, Any],
++) -> bool:
++    return all(
++        field in actual and _readback_value_matches(value, actual[field])
++        for field, value in expected.items()
++        if value is not None
++    )
++
++
++def readback_factura_write(
++    *,
++    selected: str,
++    generated_frr_id: int,
++    generated_numero: int,
++    cabecera: dict[str, Any],
++    ctb_rows: list[dict[str, Any]],
++    punteos: list[PunteoSeleccionado],
++    request_id: str,
++) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
++    """Read a committed write back through the read-only account or fail closed."""
++
++    created_factura = fetch_one(
++        f"SELECT * FROM {selected}.facturasrecibidas WHERE FRR_id = %(factura_id)s",
++        {"factura_id": generated_frr_id},
++    )
++    created_ctb = fetch_all(
++        f"""
++        SELECT *
++        FROM {selected}.facturasrecibidas_ctb
++        WHERE FRC_idfacturarecibida = %(factura_id)s
++        ORDER BY FRC_id
++        """,
++        {"factura_id": generated_frr_id},
++    )
++
++    issues: list[str] = []
++    expected_factura = {
++        **cabecera,
++        "FRR_id": generated_frr_id,
++        "FRR_numero": generated_numero,
++    }
++    if created_factura is None:
++        issues.append("factura_missing")
++    elif not _readback_row_contains(created_factura, expected_factura):
++        issues.append("factura_payload_mismatch")
++
++    if len(created_ctb) != len(ctb_rows):
++        issues.append("ctb_count_mismatch")
++    else:
++        for index, (actual, expected) in enumerate(zip(created_ctb, ctb_rows)):
++            if not _readback_row_contains(actual, expected):
++                issues.append(f"ctb_payload_mismatch:{index}")
++
++    readback_punteos: list[dict[str, Any]] = []
++    for punteo in punteos:
++        table_name, id_column, link_column, amount_column = PUNTEO_CONFIG[
++            punteo.source_table
++        ]
++        amount_matches = (
++            f"COALESCE(SUM(CASE WHEN {amount_column} = %(importe_factura)s "
++            "THEN 1 ELSE 0 END), 0)"
++            if amount_column is not None and punteo.importe_factura is not None
++            else "COUNT(*)"
++        )
++        actual = fetch_one(
++            f"""
++            SELECT
++                COUNT(*) AS source_count,
++                COALESCE(SUM(CASE WHEN {link_column} = %(factura_id)s
++                    THEN 1 ELSE 0 END), 0) AS linked_count,
++                {amount_matches} AS amount_match_count
++            FROM {selected}.{table_name}
++            WHERE {id_column} = %(source_id)s
++            """,
++            {
++                "source_id": punteo.source_id,
++                "factura_id": generated_frr_id,
++                "importe_factura": (
++                    str(punteo.importe_factura)
++                    if punteo.importe_factura is not None
++                    else None
++                ),
++            },
++        )
++        source_count = int(actual.get("source_count") or 0) if actual else 0
++        linked_count = int(actual.get("linked_count") or 0) if actual else 0
++        amount_match_count = (
++            int(actual.get("amount_match_count") or 0) if actual else 0
++        )
++        if (
++            actual is None
++            or source_count == 0
++            or linked_count != source_count
++            or amount_match_count != source_count
++        ):
++            issues.append(
++                f"punteo_mismatch:{punteo.source_table}:{punteo.source_id}"
++            )
++            continue
++        readback_punteos.append(
++            {
++                "source_table": punteo.source_table,
++                "source_id": punteo.source_id,
++                "factura_recibida_id": generated_frr_id,
++            }
++        )
++
++    if issues or created_factura is None:
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "readback_unconfirmed",
++                "message": (
++                    "the Netagro write may have committed but its readback did not "
++                    "match; manual reconciliation is required"
++                ),
++                "request_id": request_id,
++                "issues": issues,
++                "retry_safe": False,
++            },
++        )
++    return created_factura, created_ctb, readback_punteos
++
++
 +def positive_int(value: Any) -> int | None:
 +    try:
 +        parsed = int(value)
@@ -246,9 +701,19 @@
 +    }
 +
 +
-+def idempotency_payload_hash(payload: FacturaRecibidaCreateRequest) -> str:
++def idempotency_payload_hash(
++    payload: FacturaRecibidaCreateRequest,
++    schema: str,
++) -> str:
 +    serialized = json.dumps(
-+        payload.model_dump(mode="json", exclude={"dry_run"}),
++        {
++            "operation": "POST /facturasrecibidas",
++            "schema": schema,
++            "payload": payload.model_dump(
++                mode="json",
++                exclude={"dry_run", "request_id"},
++            ),
++        },
 +        ensure_ascii=False,
 +        sort_keys=True,
 +        separators=(",", ":"),
@@ -257,50 +722,97 @@
 +
 +
 +def get_idempotency_connection() -> sqlite3.Connection:
-+    IDEMPOTENCY_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-+    connection = sqlite3.connect(IDEMPOTENCY_DB_PATH, timeout=10)
-+    connection.row_factory = sqlite3.Row
-+    connection.execute(
-+        """
-+        CREATE TABLE IF NOT EXISTS factura_requests (
-+            request_id TEXT PRIMARY KEY,
-+            payload_hash TEXT NOT NULL,
-+            status TEXT NOT NULL,
-+            response_json TEXT,
-+            error_text TEXT,
-+            created_at TEXT NOT NULL,
-+            updated_at TEXT NOT NULL
++    try:
++        return open_idempotency_store()
++    except IdempotencyStoreUnavailable as error:
++        LOGGER.error("idempotency store unavailable: %s", error)
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "idempotency_store_unavailable",
++                "message": str(error),
++            },
++        ) from error
++
++
++def _idempotency_row_response(
++    row: sqlite3.Row,
++    request_id: str,
++    payload_hash: str,
++) -> dict[str, Any]:
++    if row["payload_hash"] != payload_hash:
++        raise HTTPException(
++            status_code=409,
++            detail="request_id already exists with a different payload",
 +        )
-+        """
++    if row["status"] == "completed" and row["response_json"]:
++        return json.loads(row["response_json"])
++    state = str(row["status"])
++    error_code = (
++        "idempotency_in_progress"
++        if state == "in_progress"
++        else "idempotency_reconciliation_required"
 +    )
-+    connection.commit()
-+    return connection
++    message = (
++        "request is already in progress; automatic retry is blocked"
++        if state == "in_progress"
++        else "request requires manual reconciliation before any retry"
++    )
++    raise HTTPException(
++        status_code=409,
++        detail={
++            "error": error_code,
++            "message": message,
++            "request_id": request_id,
++            "status": state,
++            "retry_safe": False,
++        },
++    )
 +
 +
-+def idempotency_claim(request_id: str, payload_hash: str) -> dict[str, Any] | None:
++def _idempotency_lookup(
++    request_id: str,
++    payload_hash: str,
++) -> dict[str, Any] | None:
++    with closing(get_idempotency_connection()) as connection:
++        row = connection.execute(
++            "SELECT * FROM factura_requests WHERE request_id = ?",
++            (request_id,),
++        ).fetchone()
++        if row is None:
++            return None
++        return _idempotency_row_response(row, request_id, payload_hash)
++
++
++def idempotency_lookup(
++    request_id: str,
++    payload_hash: str,
++) -> dict[str, Any] | None:
++    try:
++        return _idempotency_lookup(request_id, payload_hash)
++    except HTTPException:
++        raise
++    except (sqlite3.Error, json.JSONDecodeError) as error:
++        LOGGER.error("idempotency lookup failed", exc_info=True)
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "idempotency_store_unavailable",
++                "message": "the idempotency request could not be inspected safely",
++            },
++        ) from error
++
++
++def _idempotency_claim(request_id: str, payload_hash: str) -> dict[str, Any] | None:
 +    now = datetime.now(timezone.utc).isoformat()
-+    with get_idempotency_connection() as connection:
++    with closing(get_idempotency_connection()) as connection:
 +        connection.execute("BEGIN IMMEDIATE")
 +        row = connection.execute(
 +            "SELECT * FROM factura_requests WHERE request_id = ?",
 +            (request_id,),
 +        ).fetchone()
 +        if row:
-+            if row["payload_hash"] != payload_hash:
-+                raise HTTPException(
-+                    status_code=409,
-+                    detail="request_id already exists with a different payload",
-+                )
-+            if row["status"] == "completed" and row["response_json"]:
-+                return json.loads(row["response_json"])
-+            raise HTTPException(
-+                status_code=409,
-+                detail={
-+                    "error": "request requires reconciliation before retry",
-+                    "request_id": request_id,
-+                    "status": row["status"],
-+                },
-+            )
++            return _idempotency_row_response(row, request_id, payload_hash)
 +        connection.execute(
 +            """
 +            INSERT INTO factura_requests
@@ -313,32 +825,162 @@
 +    return None
 +
 +
-+def idempotency_complete(request_id: str, response: dict[str, Any]) -> None:
++def idempotency_claim(request_id: str, payload_hash: str) -> dict[str, Any] | None:
++    try:
++        return _idempotency_claim(request_id, payload_hash)
++    except HTTPException:
++        raise
++    except (sqlite3.Error, json.JSONDecodeError) as error:
++        LOGGER.error("idempotency claim failed", exc_info=True)
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "idempotency_store_unavailable",
++                "message": "the idempotency request could not be reserved safely",
++            },
++        ) from error
++
++
++def _idempotency_complete(request_id: str, response: dict[str, Any]) -> None:
 +    now = datetime.now(timezone.utc).isoformat()
-+    with get_idempotency_connection() as connection:
-+        connection.execute(
++    with closing(get_idempotency_connection()) as connection:
++        cursor = connection.execute(
 +            """
 +            UPDATE factura_requests
 +            SET status = 'completed', response_json = ?, error_text = NULL, updated_at = ?
-+            WHERE request_id = ?
++            WHERE request_id = ? AND status = 'in_progress'
 +            """,
 +            (json.dumps(response, ensure_ascii=False, default=str), now, request_id),
 +        )
++        if cursor.rowcount != 1:
++            raise sqlite3.IntegrityError(
++                "idempotency completion did not update exactly one in-progress request"
++            )
++        connection.commit()
++
++
++def idempotency_complete(request_id: str, response: dict[str, Any]) -> None:
++    try:
++        _idempotency_complete(request_id, response)
++    except HTTPException:
++        raise
++    except sqlite3.Error as error:
++        LOGGER.error("idempotency completion failed", exc_info=True)
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "idempotency_store_unavailable",
++                "message": "the completed request could not be persisted safely",
++            },
++        ) from error
++
++
++def _idempotency_reconcile_complete(
++    request_id: str,
++    payload_hash: str,
++    response: dict[str, Any],
++) -> dict[str, Any]:
++    now = datetime.now(timezone.utc).isoformat()
++    with closing(get_idempotency_connection()) as connection:
++        connection.execute("BEGIN IMMEDIATE")
++        row = connection.execute(
++            "SELECT * FROM factura_requests WHERE request_id = ?",
++            (request_id,),
++        ).fetchone()
++        if row is None:
++            raise HTTPException(
++                status_code=404,
++                detail="request_id does not exist in the idempotency store",
++            )
++        if row["payload_hash"] != payload_hash:
++            raise HTTPException(
++                status_code=409,
++                detail="request_id already exists with a different payload",
++            )
++        if row["status"] == "completed" and row["response_json"]:
++            return json.loads(row["response_json"])
++        if row["status"] != "needs_reconciliation":
++            raise HTTPException(
++                status_code=409,
++                detail={
++                    "error": "idempotency_reconciliation_not_allowed",
++                    "request_id": request_id,
++                    "status": row["status"],
++                },
++            )
++        cursor = connection.execute(
++            """
++            UPDATE factura_requests
++            SET status = 'completed', response_json = ?, error_text = NULL, updated_at = ?
++            WHERE request_id = ? AND payload_hash = ? AND status = 'needs_reconciliation'
++            """,
++            (
++                json.dumps(response, ensure_ascii=False, default=str),
++                now,
++                request_id,
++                payload_hash,
++            ),
++        )
++        if cursor.rowcount != 1:
++            raise sqlite3.IntegrityError(
++                "idempotency reconciliation did not update exactly one request"
++            )
++        connection.commit()
++    return response
++
++
++def idempotency_reconcile_complete(
++    request_id: str,
++    payload_hash: str,
++    response: dict[str, Any],
++) -> dict[str, Any]:
++    try:
++        return _idempotency_reconcile_complete(request_id, payload_hash, response)
++    except HTTPException:
++        raise
++    except (sqlite3.Error, json.JSONDecodeError) as error:
++        LOGGER.error("idempotency reconciliation completion failed", exc_info=True)
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "idempotency_store_unavailable",
++                "message": "the reconciled request could not be persisted safely",
++            },
++        ) from error
++
++
++def _idempotency_fail(request_id: str, error: Exception) -> None:
++    now = datetime.now(timezone.utc).isoformat()
++    with closing(get_idempotency_connection()) as connection:
++        cursor = connection.execute(
++            """
++            UPDATE factura_requests
++            SET status = 'needs_reconciliation', error_text = ?, updated_at = ?
++            WHERE request_id = ? AND status = 'in_progress'
++            """,
++            (str(error)[:1000], now, request_id),
++        )
++        if cursor.rowcount != 1:
++            raise sqlite3.IntegrityError(
++                "idempotency failure did not update exactly one in-progress request"
++            )
 +        connection.commit()
 +
 +
 +def idempotency_fail(request_id: str, error: Exception) -> None:
-+    now = datetime.now(timezone.utc).isoformat()
-+    with get_idempotency_connection() as connection:
-+        connection.execute(
-+            """
-+            UPDATE factura_requests
-+            SET status = 'needs_reconciliation', error_text = ?, updated_at = ?
-+            WHERE request_id = ?
-+            """,
-+            (str(error)[:1000], now, request_id),
-+        )
-+        connection.commit()
++    try:
++        _idempotency_fail(request_id, error)
++    except HTTPException:
++        raise
++    except sqlite3.Error as store_error:
++        LOGGER.error("idempotency reconciliation marker failed", exc_info=True)
++        raise HTTPException(
++            status_code=503,
++            detail={
++                "error": "idempotency_store_unavailable",
++                "message": "the request could not be marked for reconciliation safely",
++            },
++        ) from store_error
 +
 +
 +def validate_punteos_payload(
@@ -347,7 +989,21 @@
 +) -> tuple[list[dict[str, Any]], list[str]]:
 +    errors: list[dict[str, Any]] = []
 +    warnings: list[str] = []
++    seen_sources: set[tuple[str, int]] = set()
 +    for index, punteo in enumerate(punteos):
++        source_key = (punteo.source_table, punteo.source_id)
++        if source_key in seen_sources:
++            errors.append(
++                {
++                    "field": f"punteos[{index}].source_id",
++                    "error": (
++                        "duplicate punteo in request: "
++                        f"{punteo.source_table}:{punteo.source_id}"
++                    ),
++                }
++            )
++            continue
++        seen_sources.add(source_key)
 +        table_name, id_column, link_column, _ = PUNTEO_CONFIG[punteo.source_table]
 +        source_amount_column = "AMA_importe" if punteo.source_table == "albmaterial" else "NULL"
 +        row = fetch_one(
@@ -414,7 +1070,7 @@
  def validate_frr_payload(cabecera: dict[str, Any]) -> list[dict[str, str]]:
      errors: list[dict[str, str]] = []
      unknown = sorted(set(cabecera) - FRR_COLUMN_SET)
-@@ -219,6 +575,51 @@
+@@ -219,8 +934,60 @@ def validate_frc_payload(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
      return errors
  
  
@@ -464,9 +1120,19 @@
 +
 +
  def insert_row(cursor: Any, table: str, values: dict[str, Any], allowed_columns: set[str]) -> None:
-     columns = [column for column in values if column in allowed_columns]
+-    columns = [column for column in values if column in allowed_columns]
++    # MariaDB define defaults para las columnas NOT NULL del ERP. Un valor
++    # ausente debe usar ese default; enviar NULL de forma explicita lo anula y
++    # convierte un payload opcional valido en un error durante el commit.
++    columns = [
++        column
++        for column, value in values.items()
++        if column in allowed_columns and value is not None
++    ]
      placeholders = [f"%({column})s" for column in columns]
-@@ -258,7 +659,8 @@
+     quoted_columns = ", ".join(quote_column(column, allowed_columns) for column in columns)
+     sql = f"INSERT INTO {table} ({quoted_columns}) VALUES ({', '.join(placeholders)})"
+@@ -258,7 +1025,8 @@ def punteos_union_sql(selected: str) -> str:
              g.ASG_idgasto AS gasto_id,
              gc.GCO_Nombre AS gasto_nombre,
              COALESCE(NULLIF(gc.GCO_CuentaDebe, ''), NULLIF(gc.GCO_CuentaHaber, '')) AS cuenta_gasto,
@@ -476,7 +1142,7 @@
          FROM {selected}.albsalida_gastos g
          LEFT JOIN {selected}.albsalida a ON a.ASA_idalbaran = g.ASG_idalbaran
          LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.ASG_idacreedor
-@@ -286,7 +688,8 @@
+@@ -286,7 +1054,8 @@ def punteos_union_sql(selected: str) -> str:
              g.AHG_idgasto AS gasto_id,
              tga.TGA_Nombre AS gasto_nombre,
              NULLIF(tga.TGA_cuenta, '') AS cuenta_gasto,
@@ -486,7 +1152,7 @@
          FROM {selected}.albentrada_hisgastos g
          LEFT JOIN {selected}.albentrada e ON e.AEN_idalbaran = g.AHG_idalbaran
          LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.AHG_idacreedor
-@@ -314,7 +717,8 @@
+@@ -314,7 +1083,8 @@ def punteos_union_sql(selected: str) -> str:
              g.AGT_idgasto AS gasto_id,
              COALESCE(tga.TGA_Nombre, gc.GCO_Nombre) AS gasto_nombre,
              COALESCE(NULLIF(tga.TGA_cuenta, ''), NULLIF(gc.GCO_CuentaDebe, ''), NULLIF(gc.GCO_CuentaHaber, '')) AS cuenta_gasto,
@@ -496,7 +1162,7 @@
          FROM {selected}.albaranescompra_gastos g
          LEFT JOIN {selected}.albmaterial m ON m.AMA_idalb = g.AGT_idalbaran
          LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.AGT_idacreedor
-@@ -343,7 +747,8 @@
+@@ -343,7 +1113,8 @@ def punteos_union_sql(selected: str) -> str:
              g.FGC_idgasto AS gasto_id,
              gc.GCO_Nombre AS gasto_nombre,
              COALESCE(NULLIF(gc.GCO_CuentaDebe, ''), NULLIF(gc.GCO_CuentaHaber, '')) AS cuenta_gasto,
@@ -506,7 +1172,7 @@
          FROM {selected}.facturas_gastos g
          LEFT JOIN {selected}.facturas f ON f.FRA_idfactura = g.FGC_idfactura
          LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = g.FGC_idacreedor
-@@ -371,7 +776,8 @@
+@@ -371,7 +1142,8 @@ def punteos_union_sql(selected: str) -> str:
              NULL AS gasto_id,
              'ALBARAN COSTE' AS gasto_nombre,
              NULL AS cuenta_gasto,
@@ -516,7 +1182,7 @@
          FROM {selected}.albarancoste a
          LEFT JOIN (
              SELECT ALN_IdAlbaran, SUM(ALN_Importe) AS importe
-@@ -379,9 +785,104 @@
+@@ -379,9 +1151,104 @@ def punteos_union_sql(selected: str) -> str:
              GROUP BY ALN_IdAlbaran
          ) lineas ON lineas.ALN_IdAlbaran = a.ALB_Id
          LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = a.ALB_IdAcreedor
@@ -621,7 +1287,7 @@
  def count_from(selected: str, table_and_joins: str, where: str, params: dict[str, Any]) -> int:
      row = fetch_one(
          f"""
-@@ -398,8 +899,12 @@
+@@ -398,15 +1265,26 @@ def count_from(selected: str, table_and_joins: str, where: str, params: dict[str
  def root() -> dict[str, Any]:
      return {
          "service": "netagro-test-api",
@@ -634,7 +1300,22 @@
      }
  
  
-@@ -1008,6 +1513,49 @@
+ @app.get("/health")
+ def health() -> dict[str, Any]:
+     row = fetch_one("SELECT 1 AS ok, @@hostname AS db_host, @@version AS db_version")
+-    return {"status": "ok", "database": row}
++    idempotency = idempotency_store_status()
++    status = "ok" if idempotency["ready"] or not DB_WRITES_ENABLED else "degraded"
++    return {
++        "status": status,
++        "database": row,
++        "writes_enabled": DB_WRITES_ENABLED,
++        "idempotency_store": idempotency,
++    }
+ 
+ 
+ @app.get("/meta/tables")
+@@ -1008,6 +1886,49 @@ def get_factura_recibida(
      return ensure_found(row, "factura recibida")
  
  
@@ -684,7 +1365,7 @@
  @app.get("/facturasrecibidas/{factura_id}/ctb")
  def get_factura_recibida_ctb(
      factura_id: int,
-@@ -1051,9 +1599,18 @@
+@@ -1051,9 +1972,18 @@ def get_factura_recibida_punteos(
      schema: Annotated[str | None, schema_query()] = None,
      limit: Limit = 200,
      offset: Offset = 0,
@@ -703,7 +1384,7 @@
      rows = fetch_all(
          f"""
          SELECT *
-@@ -1064,7 +1621,15 @@
+@@ -1064,7 +1994,15 @@ def get_factura_recibida_punteos(
          """,
          params,
      )
@@ -720,7 +1401,7 @@
  
  
  @app.get("/albaranes-gastos/punteables")
-@@ -1078,6 +1643,7 @@
+@@ -1078,6 +2016,7 @@ def list_albaranes_gastos_punteables(
          "albaranescompra_gastos",
          "facturas_gastos",
          "albarancoste",
@@ -728,7 +1409,7 @@
      ]
      | None = None,
      proveedor_id: int | None = None,
-@@ -1129,22 +1695,79 @@
+@@ -1129,22 +2068,90 @@ def list_albaranes_gastos_punteables(
      return {"items": rows, "limit": limit, "offset": offset, "total": int(total_row["total"]) if total_row else 0}
  
  
@@ -755,6 +1436,12 @@
 +    )
 +    contract_version = payload.contract_version
 +    request_id = str(payload.request_id) if payload.request_id else None
++    idempotency_hash: str | None = None
++    if not effective_dry_run and contract_version == 2 and request_id:
++        idempotency_hash = idempotency_payload_hash(payload, selected_name)
++        cached_response = idempotency_lookup(request_id, idempotency_hash)
++        if cached_response is not None:
++            return cached_response
      cabecera = normalize_payload_values(payload.cabecera)
      ctb_rows = [normalize_payload_values(row) for row in payload.ctb]
 -    validation_errors = [
@@ -792,6 +1479,11 @@
 +        validation_errors.append(
 +            {"field": "request_id", "error": "request_id UUID is required for contract_version 2"}
 +        )
++    write_contract_error = real_write_contract_error(contract_version, effective_dry_run)
++    if write_contract_error:
++        validation_errors.append(
++            {"field": "contract_version", "error": write_contract_error}
++        )
      if cabecera.get("FRR_tipofactura") in (None, ""):
          validation_errors.append({"field": "FRR_tipofactura", "error": "required for FRR_numero generation"})
 +    punteo_errors, punteo_warnings = validate_punteos_payload(selected, payload.punteos)
@@ -811,7 +1503,7 @@
  
      duplicate = None
      duplicate_fields = ("FRR_Idempresa", "FRR_ejercicio", "FRR_idproveedor", "FRR_numerofactura")
-@@ -1188,33 +1811,43 @@
+@@ -1188,33 +2195,42 @@ def create_factura_recibida(
          )
          generated_numero = int(number_row["next_numero"]) if number_row else None
  
@@ -828,11 +1520,19 @@
 -            "validation_errors": validation_errors,
 -            "duplicate": duplicate,
 -        }
+-
+-    linked_punteos: list[dict[str, Any]] = []
+-    punteo_config = {
+-        "albsalida_gastos": ("albsalida_gastos", "ASG_id", "ASG_idfactura", "ASG_importefactura"),
+-        "albentrada_hisgastos": ("albentrada_hisgastos", "AHG_id", "AHG_idfacturaproveedor", None),
+-        "albaranescompra_gastos": ("albaranescompra_gastos", "AGT_id", "AGT_IdFactura", None),
+-        "facturas_gastos": ("facturas_gastos", "FGC_id", "FGC_idfacturaReci", "FGC_importefacturaReci"),
+-        "albarancoste": ("albarancoste", "ALB_Id", "ALB_IdFactura", None),
 +    proposed_factura = {
 +        **cabecera,
 +        "FRR_id": generated_frr_id,
 +        "FRR_numero": generated_numero,
-+    }
+     }
 +    punteos_requested = [
 +        normalize_payload_values(punteo.model_dump()) for punteo in payload.punteos
 +    ]
@@ -850,25 +1550,17 @@
 +            punteos_requested=punteos_requested,
 +        )
  
-     linked_punteos: list[dict[str, Any]] = []
--    punteo_config = {
--        "albsalida_gastos": ("albsalida_gastos", "ASG_id", "ASG_idfactura", "ASG_importefactura"),
--        "albentrada_hisgastos": ("albentrada_hisgastos", "AHG_id", "AHG_idfacturaproveedor", None),
--        "albaranescompra_gastos": ("albaranescompra_gastos", "AGT_id", "AGT_IdFactura", None),
--        "facturas_gastos": ("facturas_gastos", "FGC_id", "FGC_idfacturaReci", "FGC_importefacturaReci"),
--        "albarancoste": ("albarancoste", "ALB_Id", "ALB_IdFactura", None),
--    }
-+    idempotency_key_claimed = False
-+    if contract_version == 2 and request_id:
-+        cached_response = idempotency_claim(request_id, idempotency_payload_hash(payload))
-+        if cached_response is not None:
-+            return cached_response
-+        idempotency_key_claimed = True
- 
 -    with get_write_connection() as connection:
 -        try:
++    linked_punteos: list[dict[str, Any]] = []
++    idempotency_key_claimed = False
 +    try:
 +        with get_write_connection() as connection:
++            if contract_version == 2 and request_id and idempotency_hash:
++                cached_response = idempotency_claim(request_id, idempotency_hash)
++                if cached_response is not None:
++                    return cached_response
++                idempotency_key_claimed = True
              with connection.cursor() as cursor:
 -                cursor.execute("SELECT GET_LOCK(%(lock_name)s, 10) AS got_lock", {"lock_name": f"{selected_name}:facturasrecibidas:create"})
 +                cursor.execute(
@@ -878,7 +1570,7 @@
                  lock_row = cursor.fetchone()
                  if not lock_row or int(lock_row["got_lock"]) != 1:
                      raise HTTPException(status_code=409, detail="could not acquire invoice creation lock")
-@@ -1231,22 +1864,16 @@
+@@ -1231,22 +2247,16 @@ def create_factura_recibida(
                  duplicate_row = cursor.fetchone()
                  if duplicate_row:
                      connection.rollback()
@@ -911,7 +1603,7 @@
  
                  cursor.execute(f"SELECT COALESCE(MAX(FRR_id), 0) + 1 AS next_id FROM {selected}.facturasrecibidas")
                  generated_frr_id = int(cursor.fetchone()["next_id"])
-@@ -1284,7 +1911,7 @@
+@@ -1284,7 +2294,7 @@ def create_factura_recibida(
                      next_frc_id += 1
  
                  for punteo in payload.punteos:
@@ -920,15 +1612,11 @@
                      cursor.execute(
                          f"""
                          SELECT {id_column} AS source_id, {link_column} AS linked_invoice
-@@ -1340,25 +1967,45 @@
+@@ -1340,25 +2350,43 @@ def create_factura_recibida(
                          }
                      )
  
 -                cursor.execute("SELECT RELEASE_LOCK(%(lock_name)s)", {"lock_name": f"{selected_name}:facturasrecibidas:create"})
-+                cursor.execute(
-+                    "SELECT RELEASE_LOCK(%(lock_name)s)",
-+                    {"lock_name": f"{selected_name}:facturasrecibidas:create"},
-+                )
              connection.commit()
 -        except HTTPException:
 -            connection.rollback()
@@ -947,30 +1635,25 @@
 -        "validation_errors": [],
 -        "erp_errors": [],
 -    }
-+        created_factura = fetch_one(
-+            f"SELECT * FROM {selected}.facturasrecibidas WHERE FRR_id = %(factura_id)s",
-+            {"factura_id": generated_frr_id},
++        created_factura, created_ctb, readback_punteos = readback_factura_write(
++            selected=selected,
++            generated_frr_id=generated_frr_id,
++            generated_numero=generated_numero,
++            cabecera=cabecera,
++            ctb_rows=ctb_rows,
++            punteos=payload.punteos,
++            request_id=request_id or "",
 +        )
-+        created_ctb = fetch_all(
-+            f"""
-+            SELECT *
-+            FROM {selected}.facturasrecibidas_ctb
-+            WHERE FRC_idfacturarecibida = %(factura_id)s
-+            ORDER BY FRC_id
-+            """,
-+            {"factura_id": generated_frr_id},
-+        )
-+        readback_confirmed = created_factura is not None
 +        response = build_write_response(
 +            contract_version=contract_version,
 +            request_id=request_id,
 +            dry_run=False,
 +            factura=created_factura,
 +            ctb=created_ctb,
-+            punteos=linked_punteos,
++            punteos=readback_punteos,
 +            validation_errors=[],
 +            validation_warnings=validation_warnings,
-+            readback_confirmed=readback_confirmed,
++            readback_confirmed=True,
 +            punteos_requested=punteos_requested,
 +        )
 +        if idempotency_key_claimed and request_id:
@@ -978,8 +1661,88 @@
 +        return response
 +    except Exception as error:
 +        if idempotency_key_claimed and request_id:
-+            idempotency_fail(request_id, error)
++            try:
++                idempotency_fail(request_id, error)
++            except Exception:
++                LOGGER.critical(
++                    "could not mark request %s for reconciliation",
++                    request_id,
++                    exc_info=True,
++                )
 +        raise
  
  
  @app.get("/facturas")
+diff --git app/mariadb_permissions.py app/mariadb_permissions.py
+new file mode 100644
+index 0000000..b61b7db
+--- /dev/null
++++ app/mariadb_permissions.py
+@@ -0,0 +1,54 @@
++from __future__ import annotations
++
++from collections.abc import Iterable
++
++
++READ_ONLY_MARIADB_PRIVILEGES = frozenset({"USAGE", "SELECT"})
++WRITE_MARIADB_PRIVILEGES = frozenset({"USAGE", "SELECT", "INSERT", "UPDATE"})
++
++
++def unsafe_mariadb_grants(
++    grant_statements: Iterable[str],
++    allowed_privileges: frozenset[str],
++    allowed_schemas: frozenset[str],
++) -> tuple[str, ...]:
++    """Return privileges or scopes that fall outside the runtime allowlist."""
++
++    issues: set[str] = set()
++    normalized_schemas = {schema.upper() for schema in allowed_schemas}
++    for statement in grant_statements:
++        normalized = " ".join(str(statement).upper().split())
++        if not normalized.startswith("GRANT "):
++            issues.add("UNRECOGNIZED_GRANT")
++            continue
++        if " WITH GRANT OPTION" in normalized:
++            issues.add("GRANT OPTION")
++
++        grant_head, separator, grant_tail = normalized.partition(" ON ")
++        if not separator:
++            issues.add("ROLE_OR_UNSCOPED_GRANT")
++            continue
++
++        scope, to_separator, _ = grant_tail.partition(" TO ")
++        if not to_separator:
++            issues.add("UNRECOGNIZED_GRANT_SCOPE")
++            continue
++        normalized_scope = scope.replace("`", "").strip()
++
++        privileges = {
++            privilege.strip()
++            for privilege in grant_head.removeprefix("GRANT ").split(",")
++        }
++        for selected in privileges:
++            if selected not in allowed_privileges:
++                issues.add(selected or "EMPTY_GRANT")
++
++        data_privileges = privileges - {"USAGE"}
++        if data_privileges:
++            if normalized_scope == "*.*":
++                issues.add("GLOBAL_DATA_SCOPE:*.*")
++            else:
++                schema = normalized_scope.split(".", 1)[0]
++                if schema not in normalized_schemas:
++                    issues.add(f"SCHEMA_SCOPE:{normalized_scope}")
++    return tuple(sorted(issues))
+diff --git app/write_policy.py app/write_policy.py
+new file mode 100644
+index 0000000..e75a565
+--- /dev/null
++++ app/write_policy.py
+@@ -0,0 +1,7 @@
++from __future__ import annotations
++
++
++def real_write_contract_error(contract_version: int, dry_run: bool) -> str | None:
++    if not dry_run and contract_version != 2:
++        return "real writes require contract_version 2 and an idempotency request_id"
++    return None

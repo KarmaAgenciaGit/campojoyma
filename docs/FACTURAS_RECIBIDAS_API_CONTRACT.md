@@ -263,7 +263,8 @@ El dry-run no reserva el UUID porque no escribe.
 
 En escritura v2:
 
-- Se calcula un hash estable del payload funcional.
+- Se calcula un hash estable del payload funcional, incluyendo operación y esquema
+  Netagro para impedir replays cruzados; se excluyen `dry_run` y el propio UUID.
 - Un UUID nuevo queda `in_progress`.
 - Si termina y se confirma la lectura, queda `completed` con la respuesta guardada.
 - Repetir el mismo UUID y payload completado devuelve exactamente la respuesta
@@ -272,17 +273,60 @@ En escritura v2:
 - Un estado `in_progress` o `needs_reconciliation` devuelve `409` y nunca dispara
   otra alta a ciegas.
 
-El diario se guarda de forma aislada en:
+El diario se guarda fuera de Netagro en un SQLite lateral provisionado
+explícitamente durante el despliegue. La ruta es obligatoria y absoluta:
 
 ```text
-<directorio-del-despliegue>/data/facturas-idempotency.sqlite3
+FACTURAS_IDEMPOTENCY_DB=/var/lib/netagro-api/idempotency.sqlite3
 ```
 
-El proceso alternativo usa expresamente:
+Reglas obligatorias del runtime:
 
-```text
-/home/karma/fastapi-netagro-v2-20260716/data/idempotency.sqlite3
+- Solo abre el fichero existente con URI SQLite `mode=rw`; nunca `mode=rwc`.
+- No crea directorios, ficheros, tablas ni migra esquemas al importar, arrancar o
+  atender una petición.
+- Valida `PRAGMA user_version=1`, columnas, tipos, nulabilidad, clave primaria,
+  restricción de estados y huella exacta de `factura_requests`.
+- Con escrituras habilitadas, un almacén ausente, vacío, incompatible, bloqueado o
+  no escribible impide el arranque.
+- Si el almacén falla al reservar una petición, responde
+  `503 idempotency_store_unavailable` antes de abrir una conexión de escritura a
+  MariaDB.
+- Una escritura real con `contract_version=1` se rechaza; toda escritura exige v2
+  y `request_id`.
+
+El único lugar autorizado para crear la tabla es la herramienta explícita de
+despliegue del working tree local de `KarmaAgenciaGit/api-campojoyma`. En Linux,
+el directorio debe crearse antes con propietario igual al usuario del servicio y
+modo `0700`; el script se ejecuta como ese usuario y crea el fichero con `0600`:
+
+```bash
+install -d -m 0700 -o netagro-api -g netagro-api /var/lib/netagro-api
+sudo -u netagro-api python scripts/provision_idempotency_store.py \
+  /var/lib/netagro-api/idempotency.sqlite3
 ```
+
+El script no crea el directorio y el servicio debe usar `UMask=0077` para proteger
+los ficheros WAL/SHM. La herramienta solo conoce SQLite y nunca se conecta a
+MariaDB. El usuario lector admite únicamente `USAGE`/`SELECT` en las allowlists de
+negocio y contabilidad; el escritor separado admite además `INSERT`/`UPDATE` solo
+en su allowlist propia. La API y el gate de despliegue verifican sus grants mediante
+`SHOW GRANTS` en cada conexión y fallan ante scopes globales/ajenos, DDL, roles, `ALL PRIVILEGES` o
+`GRANT OPTION`; no intentan corregir los permisos.
+
+Una escritura solo pasa a `completed` si el readback confirma la cabecera, todas las
+filas CTB y cada punteo (incluido el importe cuando aplica). Si la escritura pudo
+confirmarse en MariaDB pero cualquier lectura falta o difiere, responde
+`503 readback_unconfirmed`, guarda `needs_reconciliation` y declara
+`retry_safe=false`.
+
+Este backend SQLite solo es válido si existe un único writer lógico y todos los
+workers comparten el mismo fichero persistente. No puede quedar la v0.1 escribiendo
+en paralelo ni desplegarse otra réplica con store local independiente. La herramienta
+`scripts/reconcile_factura_request.py`, incorporada en `api-campojoyma@a4bdc53`,
+solo permite completar un estado `needs_reconciliation` con writes apagadas, el
+payload original, el mismo hash, una única coincidencia y readback completo. Los
+estados ambiguos nunca se desbloquean editando el SQLite a mano.
 
 Ante timeout o resultado incierto, el consumidor debe buscar por empresa, ejercicio,
 proveedor y número de factura; después debe leer el detalle y solo entonces decidir

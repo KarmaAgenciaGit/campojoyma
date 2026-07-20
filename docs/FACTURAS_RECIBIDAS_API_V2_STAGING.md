@@ -1,8 +1,39 @@
 ﻿# Facturas recibidas API v2 — homologación en pruebas
 
-Fecha de la intervención: 2026-07-16.
+Fecha de la intervención inicial: 2026-07-16.
 
-## Estado seguro del despliegue
+Última verificación controlada: 2026-07-20.
+
+> La fotografía del 16 de julio se conserva debajo como trazabilidad histórica. El
+> estado operativo actual está en
+> [INFORME_FINAL_HOMOLOGACION_FACTURAS_RECIBIDAS_2026-07-20.md](INFORME_FINAL_HOMOLOGACION_FACTURAS_RECIBIDAS_2026-07-20.md).
+
+## Cierre técnico del 20 de julio
+
+- Fuente canónica: `KarmaAgenciaGit/api-campojoyma@a4bdc53`, limpia y sincronizada
+  con `origin/main`.
+- La v0.2 permanece aislada en
+  `/home/karma/fastapi-netagro-v02-20260720`, puerto `8001`, publicada únicamente
+  por el túnel controlado `127.0.0.1:18001`; la v0.1 conserva `8000`/`18000`.
+- El SQLite de idempotencia fue provisionado fuera de Netagro con directorio `0700`
+  y fichero `0600`. El runtime no crea ficheros, tablas ni migraciones.
+- Se ejecutó una única alta ficticia sin contabilización: `FRR_id=49399`,
+  `FRR_numero=5146`, referencia `E2E-20260720-50CA89`.
+- El readback, la reconciliación, el replay idéntico y el conflicto de payload fueron
+  verificados; la búsqueda final devuelve una sola fila.
+- La API volvió a `DB_WRITES_ENABLED=false` y el workflow n8n de escritura volvió a
+  `active=false` con el guardado de ejecuciones deshabilitado.
+- Pasan 36/36 pruebas de la API. La contabilización continúa bloqueada por ausencia
+  de endpoint/readback oficial de Netagro.
+- No se ejecutó ninguna operación DDL contra MariaDB y no se modificó su estructura.
+
+El parche sincronizado tiene SHA-256
+`95f4694247b9706f56b5c8148b16f5d2e8af260dc85adb2c16e31ffdddb792a2`.
+La fuente reproducible completa, incluidos los scripts de provisión y reconciliación,
+es el commit `a4bdc53`; el parche de este repositorio conserva únicamente el delta de
+la aplicación FastAPI.
+
+## Fotografía histórica del despliegue del 16 de julio
 
 - La API activa no se ha reemplazado. Sigue atendiendo en `karma-box:8000` y en el
   túnel del VPS `127.0.0.1:18000`.
@@ -26,12 +57,48 @@ Artefactos reproducibles:
 - [Parche FastAPI v0.2.0](patches/fastapi-netagro-v0.2.0.patch)
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
 
-Hashes SHA-256: OpenAPI
+### Corrección posterior del 17 de julio
+
+Al separar la API en `KarmaAgenciaGit/api-campojoyma` se comprobó que el snapshot
+v0.2 original contenía `mkdir`, una apertura SQLite creadora y
+`CREATE TABLE IF NOT EXISTS factura_requests` dentro de la primera petición real
+v2. No afectaba a MariaDB y no llegó a ejecutarse porque no existía el fichero ni
+hubo un POST real, pero incumplía el criterio de infraestructura explícita.
+
+El árbol local del repositorio API quedó endurecido antes de subir esa corrección:
+
+- `FACTURAS_IDEMPOTENCY_DB` obligatorio y absoluto;
+- apertura exclusiva de un SQLite ya existente mediante `mode=rw`;
+- validación de versión, esquema, restricciones y huella sin DDL runtime;
+- fallo de arranque con writes habilitados y `503` en reserva insegura;
+- provisión separada mediante `scripts/provision_idempotency_store.py`;
+- bloqueo de writes reales con contrato v1;
+- cuenta lectora solo `USAGE`/`SELECT` y escritora explícita solo con
+  `USAGE`/`SELECT`/`INSERT`/`UPDATE`, comprobadas mediante `SHOW GRANTS`;
+- scopes de lectura limitados a los esquemas de negocio y contabilidad configurados,
+  y scope de escritura independiente, sin grants globales o ajenos;
+- replay antes de validaciones dependientes de MariaDB, claim atómico y lock de
+  numeración mantenido hasta el commit;
+- confirmación readback de cabecera, CTB y todos los punteos antes de marcar
+  `completed`; cualquier diferencia queda `needs_reconciliation`;
+- tests negativos que demuestran que una ruta inexistente o un SQLite vacío no
+  reciben ficheros, directorios ni tablas automáticamente.
+
+El working tree local de `api-campojoyma` pasó a ser la fuente prevista durante la
+revisión. Ese trabajo ya está publicado en `729bf1e`, `306cb5a` y `a4bdc53`. Los
+hashes que siguen describen la captura histórica del 16/17 de julio, no el cierre
+del día 20.
+
+Hashes SHA-256 de la captura histórica: OpenAPI
 `0bc9096f61033f19ad52ee907c34cf6f9c8cfa8b5091bf3a1a6062f7771e2216`;
 parche
 `72ac9ee3fa75f098a72fabd4f4a7f7f03a7703cdfc3028221db7a3fd4cdef656`;
 workflow
 `90d065e4970d917e8723139ce763f7fb713d2b566e801acfec8244b2b3ae58ae`.
+
+La copia endurecida final del parche, sincronizada desde `api-campojoyma@a4bdc53`,
+tiene SHA-256
+`95f4694247b9706f56b5c8148b16f5d2e8af260dc85adb2c16e31ffdddb792a2`.
 
 ## Backups verificados
 
@@ -89,11 +156,10 @@ con SHA-256
   `ids_punteos_enlazados`.
 - Los envíos reales v2 usan un diario SQLite persistente por `request_id`. Una
   ejecución ambigua queda en `needs_reconciliation` y no se reintenta a ciegas.
-- La ruta predeterminada del diario se calcula desde el directorio de la aplicación:
-  `<despliegue>/data/facturas-idempotency.sqlite3`. El proceso alternativo confirma
-  explícitamente
-  `/home/karma/fastapi-netagro-v2-20260716/data/idempotency.sqlite3`; no escribe en
-  el árbol de la API activa.
+- El snapshot original calculaba una ruta predeterminada y podía crear el diario en
+  la primera petición. Esa conducta está retirada del árbol endurecido: ahora la
+  ruta absoluta es obligatoria, el fichero se provisiona fuera de FastAPI y el
+  runtime solo lo abre en modo existente.
 - Antes de escribir se validan duplicados y existencia/disponibilidad de cada
   punteo. La escritura de cabecera, CTB y enlaces sigue siendo una transacción.
 - En v2 el cliente no puede fijar `FRR_id`, `FRR_numero`, `FRR_IdAsientoNet`,
@@ -191,8 +257,9 @@ Estado verificado:
 - No contiene tokens ni valores de credenciales; solo referencia la credencial JWT
   ya administrada por n8n.
 
-Su fallback `http://172.19.0.1:18001` es únicamente un artefacto de pruebas y no
-funciona mientras la clave del túnel no permita el destino `8001`. No debe activarse.
+Su fallback `http://172.19.0.1:18001` es únicamente un artefacto de pruebas. Funcionó
+durante la ventana controlada del 20 de julio y el workflow volvió a desactivarse al
+terminar; no debe mantenerse activo como writer permanente.
 
 El workflow legado activo `Campojoyma - API CLAVE` conserva `pinData` con una
 cabecera Bearer histórica. No se modificó durante esta intervención para no alterar
@@ -216,23 +283,41 @@ También se validó:
   `cabecera.FRR_Contabilizar`.
 - Un dry-run v2 sin solicitud de contabilización devuelve `ok=true` y
   `would_create=true`.
-- El diario de idempotencia devuelve la misma respuesta para el mismo
-  `request_id`/payload y rechaza con `409` reutilizarlo con otro payload.
+- La lógica aislada de idempotencia devolvía la misma respuesta para el mismo
+  `request_id`/payload y rechazaba con `409` reutilizarlo con otro payload. El 20 de
+  julio se confirmó además sobre una única alta real controlada: reconciliación,
+  replay idéntico sin writes, conflicto de payload y búsqueda sin duplicados. Las
+  36 pruebas de la API pasan.
 - Un MA con su importe completo supera la validación económica; el mismo MA con un
   importe parcial se rechaza en `punteos[0].importe_factura`. Ambos siguen bloqueados
   para escritura mientras falten los grants mínimos.
 - La inyección de IDs de factura/asiento y campos técnicos de log produce errores de
   validación, y la propuesta devuelta contiene únicamente IDs generados.
-- No se ejecutó ningún POST real.
+- El 16 de julio no se ejecutó ningún POST real. El 20 de julio se realizó la única
+  alta ficticia detallada en el informe final, siempre sobre la copia TEST y sin
+  contabilización.
 
-## Requisitos antes de activar
+## Requisitos antes de una activación permanente
 
-1. Incorporar el mecanismo contable oficial y sus pruebas de lectura posterior.
-2. Conceder únicamente `SELECT, UPDATE` sobre `netagrocomer.albmaterial` al usuario
-   de escritura y activar `ALBMATERIAL_WRITES_ENABLED=true`.
-3. Crear un servicio administrado para la v2 y ampliar de forma explícita
+1. Usar como fuente el árbol revisado de `KarmaAgenciaGit/api-campojoyma`, no la
+   captura original sin endurecer.
+2. Mantener `DB_WRITES_ENABLED=false` mientras falte el mecanismo contable oficial
+   y sus pruebas de lectura posterior.
+3. Verificar con `SHOW GRANTS` que el usuario lector carece de DML/DDL y que el
+   usuario escritor separado carece de cualquier DDL, roles y `GRANT OPTION`.
+4. Precrear como usuario del servicio un directorio `0700`, provisionar fuera de
+   FastAPI el SQLite `0600`, configurar su ruta absoluta, usar `UMask=0077` y
+   comprobar que el servicio rehúsa arrancar si se retira.
+5. Si se autoriza posteriormente el enlace MA, conceder solo los DML exactos sobre
+   las tablas necesarias; nunca DDL ni privilegios de esquema.
+6. Crear un servicio administrado para la v2 y ampliar de forma explícita
    `PermitOpen`/el túnel al puerto elegido.
-4. Configurar `CAMPOJOYMA_API_V2_BASE_URL` en n8n.
-5. Repetir dry-run, alta controlada, reconciliación e idempotencia antes de activar
+7. Configurar `CAMPOJOYMA_API_V2_BASE_URL` en n8n.
+8. Repetir dry-run, alta controlada, reconciliación e idempotencia antes de activar
    el workflow.
-6. Mantener producción fuera de alcance hasta completar esta aceptación en la copia.
+9. Garantizar un solo writer lógico: todos los workers comparten el mismo SQLite
+   persistente, la v0.1 no escribe en paralelo y no hay réplicas con stores locales.
+10. Usar exclusivamente `scripts/reconcile_factura_request.py` para una
+    reconciliación verificada; no editar el SQLite manualmente ni desbloquear
+    automáticamente estados ambiguos.
+11. Mantener producción fuera de alcance hasta completar esta aceptación en la copia.
