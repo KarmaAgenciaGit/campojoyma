@@ -1949,7 +1949,7 @@ const Facturas = () => {
         <div className="docs-page-copy">
           <div className="docs-page-copy-body">
             <p className="docs-page-eyebrow">Compras</p>
-            <h2 className="docs-page-title">Facturas recibidas</h2>
+            <h2 className="docs-page-title">Facturas</h2>
             <p className="docs-page-subtitle">{headerLabel}</p>
           </div>
         </div>

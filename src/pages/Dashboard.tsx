@@ -277,7 +277,7 @@ const DashboardResumenModule = () => {
       value: formatNumber(summary.lineCount),
       unit: 'registros',
       description:
-        summary.lineCount > 0 ? 'Apuntes contables de facturas recibidas.' : 'Sin apuntes contables registrados todavia.',
+        summary.lineCount > 0 ? 'Apuntes contables de facturas.' : 'Sin apuntes contables registrados todavia.',
     },
   ];
 
@@ -434,7 +434,7 @@ const DashboardResumenModule = () => {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-1">
                         <p className="text-sm font-semibold text-foreground">Documentos</p>
-                        <p className="text-xs text-muted-foreground">Facturas recibidas</p>
+                        <p className="text-xs text-muted-foreground">Facturas</p>
                       </div>
                       <p className="shrink-0 text-right text-sm font-semibold leading-tight text-foreground">
                         {formatNumber(summary.totalCount)}
@@ -529,7 +529,7 @@ const DashboardResumenModule = () => {
                 <div className="min-h-[292px] border-b border-border/60 p-6 md:border-b-0 md:border-r">
                   <h3 className="text-sm font-semibold text-foreground">Importes</h3>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    Lectura rapida de base, IVA y total de facturas recibidas.
+                    Lectura rapida de base, IVA y total de facturas.
                   </p>
                   <dl className="mt-6 grid gap-3">
                     {[

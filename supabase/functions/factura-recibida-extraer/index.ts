@@ -267,9 +267,6 @@ Deno.serve(async (req) => {
     }
 
     const normalized = normalizeN8nResponse(webhookJson);
-    if (typeof normalized.frr.FRR_Concepto === "string" && normalized.frr.FRR_Concepto.length > 50) {
-      normalized.frr.FRR_Concepto = normalized.frr.FRR_Concepto.slice(0, 50);
-    }
     const validationBase = await getValidationErrorsForFactura(serviceClient, normalized.frr);
     const validationErrors = appendWarningIssues(validationBase, normalized.warnings);
     const hasBlockingErrors = validationErrors.some((issue) => issue.severity !== "warning");

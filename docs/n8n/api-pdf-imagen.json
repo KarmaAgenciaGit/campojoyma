@@ -1,0 +1,255 @@
+{
+  "name": "API PDF a imagenes",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## API PDF a imagenes\n\nPOST /webhook/pdf-imagen\n\nEntrada JSON:\n{\n  \"nombreArchivo\": \"documento.pdf\",\n  \"data\": \"PDF_EN_BASE64\"\n}\n\nLa respuesta conserva las paginas en `binary`, serializadas en base64 para transportarlas entre servidores.",
+        "height": 368,
+        "width": 496
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -544,
+        -128
+      ],
+      "typeVersion": 1,
+      "id": "a93349dc-2137-4ee5-b7cf-35c704a5df71",
+      "name": "Notas API"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pdf-imagen",
+        "authentication": "jwtAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -496,
+        288
+      ],
+      "id": "03ca86e6-3e21-470d-973a-9c42e9471720",
+      "name": "Webhook PDF",
+      "webhookId": "197fe9a7-51e2-4016-93f1-128375fb2cb5",
+      "credentials": {
+        "jwtAuth": {
+          "id": "jZeFrYn5MNYdo96W",
+          "name": "jwt-front-campojoyma"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\n\nconst fail = (error) => ({ json: { valid: false, ok: false, error } });\n\nlet nombreArchivo = typeof body.nombreArchivo === 'string'\n  ? body.nombreArchivo.trim()\n  : 'documento.pdf';\n\nnombreArchivo = nombreArchivo\n  .split(/[\\\\/]/)\n  .pop()\n  .replace(/[\\r\\n\\u0000-\\u001f\\u007f\"]/g, '_')\n  .slice(0, 180);\n\nif (!nombreArchivo) nombreArchivo = 'documento.pdf';\nif (!/\\.pdf$/i.test(nombreArchivo)) nombreArchivo += '.pdf';\n\nconst rawValue = typeof body.data === 'string' ? body.data.trim() : '';\nconst cleanBase64 = rawValue\n  .replace(/^data:application\\/pdf;base64,/i, '')\n  .replace(/\\s/g, '');\n\nif (!cleanBase64) {\n  return fail('Falta el PDF en base64 dentro del campo data.');\n}\n\nif (!/^[A-Za-z0-9+/]*={0,2}$/.test(cleanBase64) || cleanBase64.length % 4 === 1) {\n  return fail('El campo data no contiene un base64 valido.');\n}\n\nconst unpadded = cleanBase64.replace(/=+$/, '');\nconst padded = unpadded + '='.repeat((4 - (unpadded.length % 4)) % 4);\nconst pdfBuffer = Buffer.from(padded, 'base64');\nconst canonicalBase64 = pdfBuffer.toString('base64');\n\nif (canonicalBase64.replace(/=+$/, '') !== unpadded) {\n  return fail('El campo data no supera la validacion base64.');\n}\n\nif (pdfBuffer.subarray(0, 5).toString('ascii') !== '%PDF-') {\n  return fail('El archivo recibido no tiene una cabecera PDF valida.');\n}\n\nconst MAX_PDF_BYTES = 20 * 1024 * 1024;\nif (pdfBuffer.length === 0 || pdfBuffer.length > MAX_PDF_BYTES) {\n  return fail('El PDF esta vacio o supera el limite de 20 MB.');\n}\n\nreturn {\n  json: {\n    valid: true,\n    nombreArchivo,\n    data: canonicalBase64,\n    pdfSize: pdfBuffer.length\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        288
+      ],
+      "id": "da53917f-7512-42de-80d2-998b36813f41",
+      "name": "Validar entrada"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "72f925a9-0b8b-423b-90ab-7ae65c938a4f",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -48,
+        288
+      ],
+      "id": "3672a2da-a4c1-4178-9f9c-a44ee3e80cd2",
+      "name": "Entrada valida"
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "data",
+        "options": {
+          "fileName": "={{ $json.nombreArchivo }}",
+          "mimeType": "application/pdf"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        176,
+        208
+      ],
+      "id": "9f66e215-c1c5-4061-87e8-9f888c666848",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Entrada: un PDF en item.binary.data.\n// Salida: un item con page_1, page_2, etc. como binarios JPG.\n\nconst items = $input.all();\nconst outputItems = [];\nconst MAX_PAGES = 100;\n\nfor (let index = 0; index < items.length; index++) {\n  const item = items[index];\n\n  if (!item.binary?.data) {\n    throw new Error('No se encontro el PDF en binary.data.');\n  }\n\n  const pdfBuffer = await this.helpers.getBinaryDataBuffer(index, 'data');\n  const binaryMeta = item.binary.data || {};\n  const pdfFileName = binaryMeta.fileName || item.json?.nombreArchivo || `document_${index + 1}.pdf`;\n  const pdfMimeType = binaryMeta.mimeType || 'application/pdf';\n  const baseName = (pdfFileName.replace(/\\.pdf$/i, '') || 'document').trim();\n  const aggregatedBinary = {};\n  let pagesConverted = 0;\n\n  for (let page = 1; page <= MAX_PAGES; page++) {\n    const boundary = '----n8nFormBoundary' + Math.random().toString(16).slice(2);\n    const CRLF = '\\r\\n';\n    const parts = [];\n\n    const addField = (name, value) => {\n      parts.push(\n        `--${boundary}${CRLF}` +\n        `Content-Disposition: form-data; name=\\\"${name}\\\"${CRLF}${CRLF}` +\n        `${value}${CRLF}`\n      );\n    };\n\n    addField('format', 'jpg');\n    addField('width', '1920');\n    addField('height', '2096');\n    addField('page', String(page));\n\n    const fileHeader =\n      `--${boundary}${CRLF}` +\n      `Content-Disposition: form-data; name=\\\"file\\\"; filename=\\\"${pdfFileName}\\\"${CRLF}` +\n      `Content-Type: ${pdfMimeType}${CRLF}${CRLF}`;\n\n    const closing = `${CRLF}--${boundary}--${CRLF}`;\n    const preBuffer = Buffer.from(parts.join('') + fileHeader, 'utf8');\n    const postBuffer = Buffer.from(closing, 'utf8');\n    const requestBody = Buffer.concat([preBuffer, pdfBuffer, postBuffer]);\n\n    let response;\n    try {\n      response = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'http://pdf2img-pdf2img-1:3000/convert',\n        headers: {\n          'Content-Type': `multipart/form-data; boundary=${boundary}`\n        },\n        body: requestBody,\n        json: false,\n        encoding: 'arraybuffer',\n        timeout: 120000\n      });\n    } catch (error) {\n      if (page === 1) throw error;\n\n      const status =\n        error.response?.status ||\n        error.httpCode ||\n        error.statusCode ||\n        error.status;\n\n      if (Number(status) === 400) break;\n      throw error;\n    }\n\n    const imageBuffer = Buffer.isBuffer(response) ? response : Buffer.from(response);\n    if (imageBuffer.length === 0) {\n      throw new Error(`La pagina ${page} se convirtio en una imagen vacia.`);\n    }\n\n    const jpgFileName = `${baseName}_page_${page}.jpg`;\n    aggregatedBinary[`page_${page}`] = {\n      data: imageBuffer.toString('base64'),\n      mimeType: 'image/jpeg',\n      fileName: jpgFileName,\n      fileExtension: 'jpg'\n    };\n\n    pagesConverted++;\n  }\n\n  if (pagesConverted === 0) {\n    throw new Error('El PDF no produjo ninguna imagen.');\n  }\n\n  outputItems.push({\n    json: {\n      sourceFileName: pdfFileName,\n      originalItemIndex: index,\n      pagesConverted,\n      binaryKeys: Object.keys(aggregatedBinary)\n    },\n    binary: aggregatedBinary\n  });\n}\n\nreturn outputItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        208
+      ],
+      "id": "243c2bce-2c01-46ea-b4f6-9e037e08a3e4",
+      "name": "obtenerImagenes"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convierte los binarios internos de n8n en un contrato JSON transportable.\nconst items = $input.all();\nconst responses = [];\n\nfor (let itemIndex = 0; itemIndex < items.length; itemIndex++) {\n  const item = items[itemIndex];\n  const keys = Array.isArray(item.json?.binaryKeys)\n    ? item.json.binaryKeys\n    : Object.keys(item.binary || {});\n\n  const binary = {};\n\n  for (const key of keys) {\n    const metadata = item.binary?.[key] || {};\n    const buffer = await this.helpers.getBinaryDataBuffer(itemIndex, key);\n\n    binary[key] = {\n      data: buffer.toString('base64'),\n      mimeType: metadata.mimeType || 'image/jpeg',\n      fileName: metadata.fileName || `${key}.jpg`,\n      fileExtension: metadata.fileExtension || 'jpg'\n    };\n  }\n\n  responses.push({\n    ok: true,\n    contractVersion: 1,\n    sourceFileName: item.json?.sourceFileName || null,\n    originalItemIndex: item.json?.originalItemIndex ?? itemIndex,\n    pagesConverted: keys.length,\n    binaryKeys: keys,\n    binary\n  });\n}\n\nif (responses.length !== 1) {\n  throw new Error('La API esperaba exactamente un PDF procesado.');\n}\n\nreturn { json: responses[0] };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        208
+      ],
+      "id": "18a6af69-4864-4a37-becc-65fc5d062a41",
+      "name": "Serializar respuesta"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        848,
+        208
+      ],
+      "id": "499bc012-0e81-405c-a5ef-14f4d51224b3",
+      "name": "Responder 200"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: $json.error } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        176,
+        400
+      ],
+      "id": "9501d0b5-9cdc-4e32-86a4-8b75eb0655d8",
+      "name": "Responder 400"
+    }
+  ],
+  "connections": {
+    "Webhook PDF": {
+      "main": [
+        [
+          {
+            "node": "Validar entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar entrada": {
+      "main": [
+        [
+          {
+            "node": "Entrada valida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entrada valida": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "obtenerImagenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "obtenerImagenes": {
+      "main": [
+        [
+          {
+            "node": "Serializar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Serializar respuesta": {
+      "main": [
+        [
+          {
+            "node": "Responder 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "b993ecc02c692f52f4919458d55f486199bfb18f7fb468dfef32344174b00f44"
+  },
+  "active": false,
+  "versionId": "0e2cd701-54c2-4d6b-9be1-92354c6c5560"
+}

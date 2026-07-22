@@ -1,3 +1,5 @@
+import { FunctionsHttpError } from '@supabase/supabase-js';
+
 import { supabase } from '@/integrations/supabase/client';
 import { facturasRecibidas } from '@/services/facturasRecibidas';
 import type {
@@ -295,7 +297,12 @@ const erpRead = async <T>(consulta: string): Promise<T> => {
       consulta,
     },
   });
-  if (error) throw error;
+  if (error) {
+    throw new Error(
+      (await getFunctionInvokeErrorMessage(error, data)) ??
+        'No se pudo consultar la informacion de facturas en el ERP.',
+    );
+  }
   const message = getFunctionErrorMessage(data);
   if (message) throw new Error(message);
   if (
@@ -1003,10 +1010,39 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
     reader.readAsDataURL(blob);
   });
 
-const getFunctionErrorMessage = (data: unknown) => {
+const getFunctionErrorMessage = (data: unknown): string | null => {
   if (!data || typeof data !== 'object') return null;
-  const error = (data as { error?: unknown }).error;
-  return typeof error === 'string' ? error : null;
+  const source = data as Record<string, unknown>;
+  for (const value of [source.error, source.message, source.detail]) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return getFunctionErrorMessage(source.details);
+};
+
+export const getFunctionInvokeErrorMessage = async (error: unknown, data?: unknown) => {
+  const dataMessage = getFunctionErrorMessage(data);
+  if (dataMessage) return dataMessage;
+
+  if (error instanceof FunctionsHttpError) {
+    const context = error.context as { clone?: () => Response; text?: () => Promise<string> } | null;
+    try {
+      const response = context && typeof context.clone === 'function' ? context.clone() : context;
+      if (response && typeof response.text === 'function') {
+        const raw = (await response.text()).trim();
+        if (raw) {
+          try {
+            return getFunctionErrorMessage(JSON.parse(raw)) ?? raw;
+          } catch {
+            return raw;
+          }
+        }
+      }
+    } catch {
+      // Si el cuerpo ya fue consumido, se conserva el error original del SDK.
+    }
+  }
+
+  return error instanceof Error && error.message.trim() ? error.message.trim() : null;
 };
 
 export const fetchFacturasRecibidas = async (): Promise<UiFacturaRecibida[]> => {
@@ -1407,7 +1443,12 @@ export const extractFacturaWithN8n = async (
     },
   });
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(
+      (await getFunctionInvokeErrorMessage(error, data)) ??
+        'No se pudo analizar la factura mediante xFuego.',
+    );
+  }
   const message = getFunctionErrorMessage(data);
   if (message) throw new Error(message);
 

@@ -54,7 +54,7 @@ const CONTROL_ENTRADA_GROUP_ROUTES: string[] = [];
 const CORREOS_GROUP_ROUTES: string[] = [];
 const USER_ROUTE_OPTIONS = [
   { path: '/dashboard', label: 'Dashboard' },
-  { path: '/facturas-recibidas', label: 'Facturas recibidas' },
+  { path: '/facturas-recibidas', label: 'Facturas' },
 ];
 const DEFAULT_USER_ROUTES = [...DASHBOARD_GROUP_ROUTES, ...FACTURAS_GROUP_ROUTES];
 const ACTIVE_ROUTE_PATHS = new Set(USER_ROUTE_OPTIONS.map((route) => route.path));
@@ -76,7 +76,7 @@ const ROLE_FILTER_OPTIONS: Array<{ value: RoleFilter; label: string }> = [
 
 const MODULE_FILTER_OPTIONS: Array<{ value: ModuleFilter; label: string }> = [
   { value: 'all', label: 'Todos' },
-  { value: 'facturas', label: 'Facturas recibidas' },
+  { value: 'facturas', label: 'Facturas' },
   ...(USER_ROUTE_OPTIONS as unknown as Array<{ value: ModuleFilter; label: string }>),
 ];
 

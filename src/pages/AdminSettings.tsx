@@ -143,7 +143,7 @@ const CONTROL_ENTRADA_GROUP_ROUTES: string[] = [];
 const CORREOS_GROUP_ROUTES: string[] = [];
 const USER_ROUTE_OPTIONS = [
   { path: '/dashboard', label: 'Dashboard' },
-  { path: '/facturas-recibidas', label: 'Facturas recibidas' },
+  { path: '/facturas-recibidas', label: 'Facturas' },
 ];
 const DEFAULT_USER_ROUTES = [...DASHBOARD_GROUP_ROUTES, ...FACTURAS_GROUP_ROUTES];
 const ACTIVE_ROUTE_PATHS = new Set(USER_ROUTE_OPTIONS.map((route) => route.path));

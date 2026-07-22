@@ -1,5 +1,11 @@
 # Documentacion tecnica: facturas y albaranes Netagro
 
+> Copia sincronizada del documento canonico en el repositorio local
+> `api-campojoyma/docs/documentacion_facturas_albaranes.md`. Sus secciones de estado
+> y despliegue son una fotografia historica del 15 de julio de 2026 y no autorizan
+> activar escrituras. Para el estado actual, consultar el informe de relevo y el
+> runbook v2 de `docs/`.
+
 Generado a partir de la copia local `netagrocomer` el `2026-06-29T16:01:26Z`.
 Actualizado el `2026-07-15` con auditoria completa de la FastAPI, sus 41 operaciones,
 los endpoints de agricultores y catalogos, el contrato de escritura y el estado real
@@ -15,8 +21,8 @@ de despliegue.
 - La API de pruebas apunta exclusivamente a la copia MariaDB del servidor intermedio
   (`karma-box`). Las lecturas usan `netagro_api`; el unico endpoint de escritura usa
   `netagro_api_write`, esta limitado a `netagrocomer` y nunca debe apuntar a produccion.
-- Este archivo es la referencia canonica. Las copias del Escritorio y del VPS son
-  artefactos sincronizados, no fuentes independientes.
+- La referencia canonica funcional vive en el repositorio local `api-campojoyma`;
+  este archivo es una copia de consumo para el frontend.
 
 ## Actualizacion de copia de pruebas 2026-07-08
 

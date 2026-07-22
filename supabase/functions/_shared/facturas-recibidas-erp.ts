@@ -549,6 +549,14 @@ const frrTextKeys = [
   "FRR_Contabilizar",
 ] as const;
 
+// Estos tres campos replican varchar(50) del ERP. El documento completo se
+// conserva por separado en extraction; solo se ajusta la proyeccion operativa.
+const frrDescriptiveTextLimits = {
+  FRR_Concepto: 50,
+  FRR_Observaciones: 50,
+  FRR_ObservacionesAEAT: 50,
+} as const;
+
 const frcNumericKeys = ["FRC_Importe"] as const;
 const frcIntegerKeys = [
   "FRC_IdActividad",
@@ -588,6 +596,7 @@ export const normalizeFrrPayload = (input: JsonObject, options: { partial?: bool
     ["FRR_ret", ["FRR_ret", "retencion_porcentaje"], numberValue],
     ["FRR_cuotaret", ["FRR_cuotaret", "retencion_importe"], numberValue],
     ["FRR_Concepto", ["FRR_Concepto", "concepto", "descripcion"], text],
+    ["FRR_Observaciones", ["FRR_Observaciones", "observaciones_visibles", "observaciones"], text],
     ["FRR_ObservacionesAEAT", ["FRR_ObservacionesAEAT", "observaciones_aeat"], text],
     ["FRR_tipofactura", ["FRR_tipofactura", "tipo_factura"], text],
   ];
@@ -595,6 +604,13 @@ export const normalizeFrrPayload = (input: JsonObject, options: { partial?: bool
   for (const [targetKey, aliases, parser] of aliasParsers) {
     const value = pickDefined(input, aliases);
     if (value !== undefined) out[targetKey] = parser(value, null);
+  }
+
+  for (const [key, maxLength] of Object.entries(frrDescriptiveTextLimits)) {
+    const value = out[key];
+    if (typeof value === "string" && value.length > maxLength) {
+      out[key] = value.slice(0, maxLength);
+    }
   }
 
   if (!partial) {

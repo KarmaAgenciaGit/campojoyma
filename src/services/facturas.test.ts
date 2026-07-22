@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 
 vi.mock('@/integrations/supabase/client', () => ({
   supabase: {
@@ -16,6 +17,7 @@ import {
   buildCtbPayload,
   buildFacturaPayload,
   buildPunteosPayload,
+  getFunctionInvokeErrorMessage,
   isERPReferenceFactura,
   isERPReadOnlyFactura,
   mapFacturaToUi,
@@ -86,6 +88,21 @@ const onduSpanPunteos = Array.from({ length: 17 }, (_, index) => {
       amount: amount / lineCount,
     })),
   };
+});
+
+describe('errores de Edge Functions', () => {
+  it('muestra el error JSON de la funcion en vez del mensaje generico del SDK', async () => {
+    const error = new FunctionsHttpError(
+      new Response(JSON.stringify({ error: 'FRR_Observaciones supera el limite de 50 caracteres.' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(getFunctionInvokeErrorMessage(error)).resolves.toBe(
+      'FRR_Observaciones supera el limite de 50 caracteres.',
+    );
+  });
 });
 
 describe('reintentos ERP', () => {

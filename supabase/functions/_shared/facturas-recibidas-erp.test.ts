@@ -174,6 +174,20 @@ Deno.test("normaliza cinco tramos de IVA y exactamente cuatro gastos", () => {
   assertEquals(frr.FRR_ctagasto5, undefined);
 });
 
+Deno.test("limita solo la proyeccion ERP de los textos descriptivos", () => {
+  const extraction = {
+    concepto: "C".repeat(75),
+    observaciones_visibles: "O".repeat(309),
+    observaciones_aeat: "A".repeat(80),
+  };
+  const frr = normalizeFrrPayload(extraction);
+
+  assertEquals(String(frr.FRR_Concepto).length, 50);
+  assertEquals(String(frr.FRR_Observaciones).length, 50);
+  assertEquals(String(frr.FRR_ObservacionesAEAT).length, 50);
+  assertEquals(extraction.observaciones_visibles.length, 309);
+});
+
 Deno.test("conserva las cuatro dimensiones analiticas FRC", () => {
   const frc = normalizeFrcPayload({
     FRC_Importe: 42_341.52,

@@ -33,6 +33,23 @@ Estas instrucciones aplican a todo el repositorio.
 - Si añades columnas en `cliente_behavior_rules`, actualiza de extremo a extremo:
   migración, tipos de Supabase, servicio `clienteBehaviorRules`, panel admin y consumo en el flujo correspondiente.
 
+## API y Netagro
+
+- La fuente de trabajo prevista para FastAPI es `KarmaAgenciaGit/api-campojoyma`;
+  mientras haya cambios sin commit/push, la autoridad concreta es su working tree
+  local. Este repositorio solo conserva contrato, OpenAPI, workflows y una copia
+  sincronizada del parche.
+- La MariaDB de pruebas de Netagro es estructuralmente inmutable. No ejecutar nunca
+  `CREATE`, `ALTER`, `DROP`, `TRUNCATE` ni otras operaciones DDL contra ella,
+  tampoco para comprobar permisos.
+- Los usuarios MariaDB runtime deben carecer de DDL y comprobarse de forma no
+  mutante mediante `SHOW GRANTS`.
+- El estado de idempotencia vive fuera de Netagro y se provisiona explícitamente
+  durante el despliegue. FastAPI no puede crear ni migrar su almacén al importar,
+  arrancar o atender una petición.
+- Si el almacén de idempotencia falta o no coincide con el esquema esperado, la API
+  debe fallar de forma cerrada y no abrir la conexión de escritura a Netagro.
+
 ## Frontend y UX
 
 - Mantén un estilo profesional, sobrio y operativo.
