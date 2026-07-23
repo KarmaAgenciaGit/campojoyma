@@ -1,21 +1,47 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
+  ERPWriterRelationsMatchSnapshot,
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   applyGastosToFrr,
+  buildERPDuplicateConsulta,
   buildERPContractV2,
+  extractOperationalERPAvailabilityWarnings,
+  getERPReadAuthorizedRoutes,
+  getERPProviderPreflightIssues,
+  getFacturaSyncEntryDecision,
+  getSelectedPunteoPreflightIssues,
+  getValidationErrorsForFactura,
+  hasBlockingERPValidationErrors,
+  isRouteSetAuthorized,
+  isEligibleERPCommitAttempt,
   isAllowedERPConsulta,
+  mergeValidationIssues,
   normalizeAccountingReadback,
   normalizeConfidence,
+  normalizeERPDuplicateCandidates,
   normalizeFrcPayload,
   normalizeFrrPayload,
   normalizePunteoPayload,
+  parseERPArrayEnvelope,
+  parseERPProviderDetailResponse,
+  prepareFacturaExtractionPersistence,
+  requestHasServiceRoleCredential,
+  resolveFacturaIngestAuthority,
+  resolveFacturaERPAccountingRules,
   requireAgentToken,
   sanitizeAuditValue,
+  sanitizeUntrustedFacturaAccountingFields,
   sha256Base64,
   sha256Text,
   toERPCtbPayload,
   toERPFacturaPayload,
+  toERPSelectedPunteosPayload,
+  upstreamResult,
   validateAccountingReadback,
+  validateERPDuplicateSearchResponse,
+  validateERPReadbackAgainstWrite,
+  validateERPWriteRequestV2,
+  validateERPWriteResponseV2,
 } from "./facturas-recibidas-erp.ts";
 
 const requestWithToken = (token?: string, header = "x-agent-token") =>
@@ -24,6 +50,17 @@ const requestWithToken = (token?: string, header = "x-agent-token") =>
   });
 
 const responsePayload = (response: Response) => response.json() as Promise<{ error?: string }>;
+
+Deno.test("lectura ERP comparte acreedores sin abrir facturas entre modulos", () => {
+  const acreedoresRoutes = getERPReadAuthorizedRoutes("acreedores/17");
+  const facturasRoutes = getERPReadAuthorizedRoutes("facturasrecibidas/49305/asiento");
+  assertEquals(isRouteSetAuthorized("user", ["/pedidos"], acreedoresRoutes), true);
+  assertEquals(isRouteSetAuthorized("user", ["/cambios"], acreedoresRoutes), true);
+  assertEquals(isRouteSetAuthorized("user", ["/pedidos"], facturasRoutes), false);
+  assertEquals(isRouteSetAuthorized("user", ["/admin"], acreedoresRoutes), false);
+  assertEquals(isRouteSetAuthorized("admin", [], facturasRoutes), true);
+  assertEquals(facturasRoutes, ["/facturas-recibidas"]);
+});
 
 Deno.test("normaliza la confianza de porcentaje a fraccion y rechaza valores imposibles", () => {
   assertEquals(normalizeConfidence(0.85), 0.85);
@@ -113,6 +150,134 @@ Deno.test("hash no reconocido devuelve 401", async () => {
   assert(!result.ok);
   assertEquals(result.response.status, 401);
   assertEquals((await responsePayload(result.response)).error, "Unauthorized");
+});
+
+Deno.test("ingesta normal rechaza inyeccion contable aunque se falsifique source ERP", async () => {
+  const trustedImportSignal = await requestHasServiceRoleCredential(
+    new Request("https://edge.invalid", { headers: { apikey: "credencial-falsa" } }),
+    () => "service-role-real",
+  );
+  const result = resolveFacturaIngestAuthority({
+    frr: {
+      FRR_id: 49305,
+      FRR_numero: 5052,
+      FRR_IdAsientoNet: 390305,
+      FRR_IdfacturaRec: 123,
+      remote_frr_id: 49305,
+      is_readonly_reference: true,
+      source_kind: "erp_reference",
+      sync_status: "sent",
+      estado: "enviada",
+      accounting_status: "created",
+      accounting_visible_number: "48732",
+      accounting_date: "2099-12-31",
+      FRR_ejercicio: 99,
+      FRR_tipofactura: "XX",
+      FRR_idregimen: 9999,
+      FRR_fechactb: "2099-12-31",
+      FechaVto: "2099-12-31",
+      ImporteVto: 999,
+      FRR_FechaVto1: "2099-12-31",
+      FRR_FechaVto2: "2099-12-31",
+      FRR_FechaVto3: "2099-12-31",
+      FRR_ImporteVto1: 333,
+      FRR_ImporteVto2: 333,
+      FRR_ImporteVto3: 333,
+      FRR_igasto1: 999,
+      FRR_igasto2: 999,
+      FRR_igasto3: 999,
+      FRR_igasto4: 999,
+      FRR_ctagasto1: "69999999999",
+      FRR_ctagasto2: "69999999999",
+      FRR_ctagasto3: "69999999999",
+      FRR_ctagasto4: "69999999999",
+      FRR_Contabilizar: "S",
+      FRR_numerofactura: "INJECTED",
+    },
+    source: "apiCampojoyma-read-sample",
+    remoteFrrId: 49305,
+    trustedImportSignal,
+    ctb: [{ FRC_id: 1, FRC_Cuenta: "69999999999", FRC_Importe: 999 }],
+    punteos: [{ S: true, source_table: "albmaterial", source_id: 88 }],
+  });
+
+  assertEquals(result.isERPReference, false);
+  assertEquals(result.remoteFrrId, null);
+  assertEquals(result.frr.FRR_numerofactura, "INJECTED");
+  assertEquals(result.frr.FRR_Contabilizar, "N");
+  assertEquals(result.ctb, []);
+  assertEquals(result.punteos, [{ S: false, source_table: "albmaterial", source_id: 88 }]);
+  for (const field of [
+    "FRR_id",
+    "FRR_numero",
+    "FRR_IdAsientoNet",
+    "FRR_IdfacturaRec",
+    "remote_frr_id",
+    "is_readonly_reference",
+    "source_kind",
+    "sync_status",
+    "estado",
+    "accounting_status",
+    "accounting_visible_number",
+    "accounting_date",
+    "FRR_ejercicio",
+    "FRR_tipofactura",
+    "FRR_idregimen",
+    "FRR_fechactb",
+    "FechaVto",
+    "ImporteVto",
+    "FRR_FechaVto1",
+    "FRR_FechaVto2",
+    "FRR_FechaVto3",
+    "FRR_ImporteVto1",
+    "FRR_ImporteVto2",
+    "FRR_ImporteVto3",
+    "FRR_igasto1",
+    "FRR_igasto2",
+    "FRR_igasto3",
+    "FRR_igasto4",
+    "FRR_ctagasto1",
+    "FRR_ctagasto2",
+    "FRR_ctagasto3",
+    "FRR_ctagasto4",
+  ]) {
+    assertEquals(field in result.frr, false, field);
+  }
+});
+
+Deno.test("import-samples preserva referencia ERP solo con credencial service role", async () => {
+  const trustedImportSignal = await requestHasServiceRoleCredential(
+    new Request("https://edge.invalid", { headers: { apikey: "service-role-real" } }),
+    () => "service-role-real",
+  );
+  const importedFrr = {
+    FRR_ejercicio: 25,
+    FRR_tipofactura: "OT",
+    FRR_idregimen: 2110,
+    FRR_fechactb: "2026-06-30",
+    FechaVto: "2026-07-30",
+    ImporteVto: 100,
+    FRR_FechaVto1: "2026-07-30",
+    FRR_ImporteVto1: 100,
+    FRR_igasto1: 100,
+    FRR_ctagasto1: "60200000001",
+    FRR_Contabilizar: "S",
+  };
+  const result = resolveFacturaIngestAuthority({
+    frr: importedFrr,
+    source: "apiCampojoyma-read-sample",
+    remoteFrrId: 49305,
+    trustedImportSignal,
+    ctb: [{ FRC_id: 9, FRC_Cuenta: "60200000001", FRC_Importe: 100 }],
+    punteos: [{ S: true, source_table: "albmaterial", source_id: 88 }],
+  });
+
+  assertEquals(trustedImportSignal, true);
+  assertEquals(result.isERPReference, true);
+  assertEquals(result.remoteFrrId, 49305);
+  assertEquals(result.frr, importedFrr);
+  assertEquals(result.ctb, [{ FRC_id: 9, FRC_Cuenta: "60200000001", FRC_Importe: 100 }]);
+  assertEquals(result.punteos, [{ S: true, source_table: "albmaterial", source_id: 88 }]);
 });
 
 Deno.test("error del backend de hashes falla cerrado con 500", async () => {
@@ -217,6 +382,226 @@ Deno.test("normaliza albmaterial con claves estables y lineas de solo lectura", 
   assertEquals(punteo.Origen, "MA");
   assertEquals(punteo.line_count, 2);
   assertEquals(punteo.source_lines, [{ id: 1 }, { id: 2 }]);
+  assertEquals(punteo.S, false);
+});
+
+Deno.test("no deduce fecha CTB y conserva solo una fecha CTB explicita", () => {
+  const unresolved = normalizeFrrPayload({ FRR_fechafactura: "2026-06-30" });
+  const explicit = normalizeFrrPayload({
+    FRR_fechafactura: "2026-06-30",
+    FRR_fechactb: "2026-07-01",
+  });
+
+  assertEquals(unresolved.FRR_fechactb, undefined);
+  assertEquals(unresolved.FRR_Contabilizar, "N");
+  assertEquals(explicit.FRR_fechactb, "2026-07-01");
+  assertEquals(normalizePunteoPayload({ S: "N" }, 1).S, false);
+  assertEquals(normalizePunteoPayload({ S: "S" }, 1).S, true);
+});
+
+Deno.test("proyecta punteos seleccionados explicitamente al contrato ERP estricto", () => {
+  const payload = toERPSelectedPunteosPayload([
+    {
+      S: true,
+      source_table: "ALBMATERIAL",
+      source_id: "23265",
+      importe_factura: "1056.00",
+      Origen: "MA",
+      remote_id: "legacy-1",
+      raw: { no_enviar: true },
+    },
+    {
+      S: "S",
+      source_table: "albsalida_gastos",
+      source_id: 77,
+      importe_factura: 12.5,
+      Serie: "A",
+      Ver: true,
+    },
+    {
+      S: true,
+      source_table: "albmaterial",
+      source_id: 88,
+      importe_factura: null,
+      "Importe P": 999,
+      Importe: 999,
+    },
+  ]);
+
+  assertEquals(payload, [
+    {
+      source_table: "albmaterial",
+      source_id: 23265,
+      importe_factura: 1056,
+    },
+    {
+      source_table: "albsalida_gastos",
+      source_id: 77,
+      importe_factura: 12.5,
+    },
+    {
+      source_table: "albmaterial",
+      source_id: 88,
+    },
+  ]);
+});
+
+Deno.test("normalizar un punteo no convierte importes visibles ni cuenta CTB en autoridad", () => {
+  const normalized = normalizePunteoPayload({
+    S: true,
+    source_table: "albmaterial",
+    source_id: 88,
+    importe_factura: null,
+    importe_punteado: 777,
+    "Importe P": 999,
+    FRC_Cuenta: "60000000000",
+  }, 1);
+
+  assertEquals(normalized.importe_factura, null);
+  assertEquals(normalized.cuenta_gasto, null);
+  assertEquals(normalized["Importe P"], 999);
+  assertEquals(toERPSelectedPunteosPayload([normalized]), [{
+    source_table: "albmaterial",
+    source_id: 88,
+  }]);
+});
+
+Deno.test("preflight de punteos exige identidad completa y no duplicada", () => {
+  assertEquals(
+    getSelectedPunteoPreflightIssues([
+      { S: true, source_table: "albmaterial", source_id: 88 },
+      { S: false, source_table: null, source_id: null },
+    ]),
+    [],
+  );
+
+  const missing = getSelectedPunteoPreflightIssues([
+    { S: true, source_table: "", source_id: 0 },
+  ]);
+  assertEquals(missing.map((issue) => issue.field), [
+    "punteos.0.source_table",
+    "punteos.0.source_id",
+  ]);
+
+  const duplicate = getSelectedPunteoPreflightIssues([
+    { S: "S", source_table: " ALBMATERIAL ", source_id: "88" },
+    { S: true, source_table: "albmaterial", source_id: 88 },
+  ]);
+  assertEquals(duplicate.length, 1);
+  assertEquals(duplicate[0].field, "punteos.1.source_id");
+  assert(duplicate[0].message.includes("duplicado"));
+});
+
+Deno.test("excluye del writer candidatos sin seleccion explicita", () => {
+  const payload = toERPSelectedPunteosPayload([
+    { S: false, source_table: "albmaterial", source_id: 1 },
+    { S: "N", source_table: "albmaterial", source_id: 2 },
+    { S: "true", source_table: "albmaterial", source_id: 3 },
+    { S: 1, source_table: "albmaterial", source_id: 4 },
+    { source_table: "albmaterial", source_id: 5 },
+    { seleccionado: true, source_table: "albmaterial", source_id: 6 },
+  ]);
+
+  assertEquals(payload, []);
+});
+
+Deno.test("reextraccion preserva decisiones confirmadas y no reemplaza CTB ni punteos", () => {
+  const existingFactura = {
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_idcuenta: "41000000017",
+    FRR_ejercicio: 25,
+    FRR_tipofactura: "OT",
+    FRR_idregimen: 2110,
+    FRR_fechactb: "2026-06-30",
+    FRR_Contabilizar: "S",
+    FechaVto: "2026-07-30",
+    ImporteVto: 100,
+    FRR_FechaVto1: "2026-07-30",
+    FRR_FechaVto2: "2026-08-30",
+    FRR_FechaVto3: "2026-09-30",
+    FRR_ImporteVto1: 25,
+    FRR_ImporteVto2: 25,
+    FRR_ImporteVto3: 50,
+    FRR_igasto1: 100,
+    FRR_ctagasto1: "60200000001",
+    FRR_numerofactura: "ANTIGUA",
+  };
+  const result = prepareFacturaExtractionPersistence({
+    existingFactura,
+    extractedFrr: sanitizeUntrustedFacturaAccountingFields({
+      FRR_Idempresa: null,
+      FRR_idproveedor: 99,
+      FRR_idcuenta: "41009999999",
+      FRR_ejercicio: 26,
+      FRR_tipofactura: "GE",
+      FRR_idregimen: 1000,
+      FRR_fechactb: "2026-07-22",
+      FRR_Contabilizar: "N",
+      FechaVto: "2099-12-31",
+      ImporteVto: 999,
+      FRR_FechaVto1: "2099-12-31",
+      FRR_FechaVto2: "2099-12-31",
+      FRR_FechaVto3: "2099-12-31",
+      FRR_ImporteVto1: 333,
+      FRR_ImporteVto2: 333,
+      FRR_ImporteVto3: 333,
+      FRR_igasto1: 999,
+      FRR_ctagasto1: "69999999999",
+      FRR_numerofactura: "NUEVA",
+    }),
+    ctb: [{ FRC_Cuenta: "60000000000", FRC_Importe: 100 }],
+    punteos: [{ S: false, source_table: "albmaterial", source_id: 1 }],
+  });
+
+  for (const field of [
+    "FRR_Idempresa",
+    "FRR_idproveedor",
+    "FRR_idcuenta",
+    "FRR_ejercicio",
+    "FRR_tipofactura",
+    "FRR_idregimen",
+    "FRR_fechactb",
+    "FRR_Contabilizar",
+    "FechaVto",
+    "ImporteVto",
+    "FRR_FechaVto1",
+    "FRR_FechaVto2",
+    "FRR_FechaVto3",
+    "FRR_ImporteVto1",
+    "FRR_ImporteVto2",
+    "FRR_ImporteVto3",
+    "FRR_igasto1",
+    "FRR_ctagasto1",
+  ] as const) {
+    assertEquals(result.factura[field], existingFactura[field], field);
+    assertEquals(result.persistedFrr[field], existingFactura[field], field);
+  }
+  assertEquals(result.factura.FRR_numerofactura, "NUEVA");
+  assertEquals(result.persistedFrr.FRR_numerofactura, "NUEVA");
+  assertEquals(result.ctb, null);
+  assertEquals(result.punteos, null);
+});
+
+Deno.test("alta nueva conserva cabecera y arrays normalizados de extraccion", () => {
+  const extractedFrr = {
+    FRR_Idempresa: 1,
+    FRR_numerofactura: "NUEVA",
+    FRR_Contabilizar: "N",
+  };
+  const ctb = [{ FRC_Cuenta: "60000000000", FRC_Importe: 100 }];
+  const punteos = [{ S: false, source_table: "albmaterial", source_id: 1 }];
+  const result = prepareFacturaExtractionPersistence({
+    existingFactura: null,
+    extractedFrr,
+    ctb,
+    punteos,
+  });
+
+  assertEquals(result.factura, extractedFrr);
+  assertEquals(result.persistedFrr, extractedFrr);
+  assertEquals(result.ctb, ctb);
+  assertEquals(result.punteos, punteos);
 });
 
 Deno.test("construye el contrato v2 estricto sin campos de compatibilidad v1", () => {
@@ -233,6 +618,159 @@ Deno.test("construye el contrato v2 estricto sin campos de compatibilidad v1", (
   assertEquals(payload.cabecera, { FRR_numerofactura: "A-1" });
   assertEquals("factura" in payload, false);
   assertEquals("operation" in payload, false);
+});
+
+Deno.test("valida de forma estricta el sobre de respuesta del writer v2", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  assertEquals(
+    validateERPWriteResponseV2({
+      contract_version: 2,
+      request_id: requestId,
+      ok: true,
+      dry_run: true,
+    }, { requestId, expectedDryRun: true }).ok,
+    true,
+  );
+
+  const commit = validateERPWriteResponseV2({
+    contract_version: 2,
+    request_id: requestId,
+    ok: true,
+    dry_run: false,
+    FRR_id: 49305,
+  }, { requestId, expectedDryRun: false });
+  assertEquals(commit.ok, true);
+  assertEquals(commit.remoteFacturaId, 49305);
+
+  const crossedRequest = validateERPWriteResponseV2({
+    contract_version: 2,
+    request_id: "22222222-2222-4222-8222-222222222222",
+    ok: true,
+    dry_run: true,
+  }, { requestId, expectedDryRun: true });
+  assertEquals(crossedRequest.ok, false);
+
+  const missingOk = validateERPWriteResponseV2({
+    contract_version: 2,
+    request_id: requestId,
+    dry_run: true,
+  }, { requestId, expectedDryRun: true });
+  assertEquals(missingOk.ok, false);
+
+  const incoherentDryRun = validateERPWriteResponseV2({
+    contract_version: 2,
+    request_id: requestId,
+    ok: true,
+    dry_run: false,
+  }, { requestId, expectedDryRun: true });
+  assertEquals(incoherentDryRun.ok, false);
+
+  const commitWithoutId = validateERPWriteResponseV2({
+    contract_version: 2,
+    request_id: requestId,
+    ok: true,
+    dry_run: false,
+  }, { requestId, expectedDryRun: false });
+  assertEquals(commitWithoutId.ok, false);
+  assertEquals(commitWithoutId.remoteFacturaId, null);
+});
+
+Deno.test("replay terminal y reconciliacion ambigua nunca habilitan otro writer", () => {
+  const originalRequestId = "11111111-1111-4111-8111-111111111111";
+  const newRequestId = "22222222-2222-4222-8222-222222222222";
+  assertEquals(getFacturaSyncEntryDecision({
+    sync_status: "sent",
+    last_request_id: originalRequestId,
+  }, originalRequestId), {
+    mode: "replay",
+    syncRequestId: originalRequestId,
+    writerAllowed: false,
+  });
+  assertEquals(getFacturaSyncEntryDecision({
+    sync_status: "unknown",
+    last_request_id: originalRequestId,
+  }, newRequestId), {
+    mode: "reconcile",
+    syncRequestId: originalRequestId,
+    writerAllowed: false,
+  });
+  assertEquals(isEligibleERPCommitAttempt({
+    request_id: originalRequestId,
+    phase: "commit",
+    status: "unknown",
+  }, originalRequestId), true);
+  assertEquals(isEligibleERPCommitAttempt({
+    request_id: originalRequestId,
+    phase: "dry_run",
+    status: "succeeded",
+  }, originalRequestId), false);
+  assertEquals(isEligibleERPCommitAttempt({
+    request_id: originalRequestId,
+    phase: "commit",
+    status: "failed",
+  }, originalRequestId), false);
+});
+
+Deno.test("reconciliacion usa el request original aunque cambien reglas actuales", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const snapshot = buildERPContractV2({
+    requestId,
+    dryRun: true,
+    cabecera: {
+      FRR_Idempresa: 1,
+      FRR_ejercicio: 25,
+      FRR_idproveedor: 17,
+      FRR_numerofactura: "A-1",
+      FRR_tipofactura: "OT",
+    },
+    ctb: [{ FRC_Cuenta: "60200000001", FRC_Importe: 100 }],
+    punteos: [{ source_table: "albmaterial", source_id: 88, importe_factura: 100 }],
+  });
+  const parsed = validateERPWriteRequestV2(snapshot, { requestId, expectedDryRun: true });
+
+  assertEquals(parsed.ok, true);
+  assertEquals(parsed.cabecera.FRR_ejercicio, 25);
+  assertEquals(parsed.cabecera.FRR_tipofactura, "OT");
+  assertEquals(ERPWriterRelationsMatchSnapshot({
+    currentCtb: [{ FRC_Importe: 100, FRC_Cuenta: "60200000001" }],
+    currentPunteos: [{ importe_factura: 100, source_id: 88, source_table: "albmaterial" }],
+    snapshotCtb: parsed.ctb,
+    snapshotPunteos: parsed.punteos,
+  }), true);
+  assertEquals(ERPWriterRelationsMatchSnapshot({
+    currentCtb: [{ FRC_Cuenta: "60200000001", FRC_Importe: 99 }],
+    currentPunteos: parsed.punteos,
+    snapshotCtb: parsed.ctb,
+    snapshotPunteos: parsed.punteos,
+  }), false);
+});
+
+Deno.test("bloquea errores de validacion anidados aunque el writer declare ok", () => {
+  assertEquals(
+    hasBlockingERPValidationErrors({
+      ok: true,
+      validations: {
+        errors: [{ field: "cabecera", message: "invalida" }],
+        warnings: [{ message: "aviso" }],
+      },
+    }),
+    true,
+  );
+  assertEquals(
+    hasBlockingERPValidationErrors({
+      ok: true,
+      validations: { errors: [], warnings: [{ severity: "warning" }] },
+    }),
+    false,
+  );
+});
+
+Deno.test("HTTP 200 con error o detail declarado no cuenta como exito upstream", () => {
+  const response = new Response("", { status: 200 });
+  assertEquals(upstreamResult(response, { error: "fallo ERP" }).ok, false);
+  assertEquals(upstreamResult(response, { detail: "fallo ERP" }).ok, false);
+  assertEquals(upstreamResult(response, { items: [], total: 0 }).ok, true);
+  assertEquals(upstreamResult(response, { ok: true, detail: "informativo" }).ok, true);
 });
 
 Deno.test("excluye IDs y campos de log generados por el ERP del payload de alta", () => {
@@ -289,6 +827,7 @@ Deno.test("desenvuelve /asiento v2 y exige Debe/Haber cuadrado", () => {
     factura_id: 49305,
     accounting: {
       status: "created",
+      created: true,
       technical_id: 390305,
       visible_number: "48732",
     },
@@ -308,13 +847,108 @@ Deno.test("desenvuelve /asiento v2 y exige Debe/Haber cuadrado", () => {
   assert(validation.ok);
 });
 
+Deno.test("reference_only nunca confirma un asiento aunque created sea true", () => {
+  const accounting = normalizeAccountingReadback({
+    accounting: {
+      status: "reference_only",
+      created: true,
+      technical_id: 390305,
+      visible_number: "48732",
+    },
+    entries: [
+      { cuenta: "60200000001", debe: 100, haber: 0 },
+      { cuenta: "41000000017", debe: 0, haber: 100 },
+    ],
+  });
+
+  assertEquals(validateAccountingReadback(accounting).ok, false);
+});
+
+Deno.test("readback coincide con cabecera, CTB posicional y punteos enviados", () => {
+  const base = {
+    remoteFacturaId: 49305,
+    cabecera: {
+      FRR_Idempresa: 1,
+      FRR_numerofactura: "A-00748886",
+      FRR_totalfac: 100,
+    },
+    ctb: [{
+      FRC_Cuenta: "60200000001",
+      FRC_Importe: 80,
+      FRC_IdActividad: 11,
+      FRC_Idseccion: 12,
+      FRC_Iddepartamento: 13,
+      FRC_Idsubdepartamento: 14,
+    }],
+    punteos: [
+      { source_table: "albmaterial", source_id: 88, importe_factura: 80 },
+      { source_table: "albsalida_gastos", source_id: 77 },
+    ],
+    readback: {
+      factura: {
+        FRR_id: 49305,
+        FRR_Idempresa: 1,
+        FRR_numerofactura: "A-00748886",
+        FRR_totalfac: 100.009,
+      },
+      ctb: [{
+        FRC_Cuenta: "60200000001",
+        FRC_Importe: 80.009,
+        FRC_IdActividad: 11,
+        FRC_Idseccion: 12,
+        FRC_Iddepartamento: 13,
+        FRC_Idsubdepartamento: 14,
+      }],
+      punteos: [
+        { source_table: "ALBMATERIAL", source_id: 88, importe_factura: 80.009 },
+        { source_table: "albsalida_gastos", source_id: 77, importe_factura: 999 },
+      ],
+    },
+  };
+
+  assertEquals(validateERPReadbackAgainstWrite(base).ok, true);
+
+  const mismatched = validateERPReadbackAgainstWrite({
+    ...base,
+    readback: {
+      ...base.readback,
+      factura: { ...base.readback.factura, FRR_numerofactura: "OTRA" },
+      ctb: [{
+        ...base.readback.ctb[0],
+        FRC_Cuenta: "69999999999",
+        FRC_Importe: 80.02,
+        FRC_IdActividad: 99,
+      }],
+      punteos: [
+        { source_table: "albmaterial", source_id: 88, importe_factura: 81 },
+        base.readback.punteos[1],
+      ],
+    },
+  });
+  assertEquals(mismatched.ok, false);
+  assertEquals(mismatched.errors.map((issue) => issue.field), [
+    "factura.FRR_numerofactura",
+    "ctb.0.FRC_Cuenta",
+    "ctb.0.FRC_Importe",
+    "ctb.0.FRC_IdActividad",
+    "punteos.0.importe_factura",
+  ]);
+});
+
 Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados", () => {
   const allowed = [
     "acreedores?nif=B04243655&limit=10",
     "acreedores?nombre=ONDUSPAN&limit=10",
+    "acreedores/17",
+    "acreedores/17/gastos",
+    "acreedores/17/gastos?schema=agroiris",
+    "agricultores?q=BIO&limit=10",
+    "agricultores?nif=F04661460&activo=true",
+    "agricultores/1680",
+    "agricultores/1680/gastos",
     "cuentas-contables?q=41000000017&limit=100",
     "facturasrecibidas?numero_factura=A-00748886&limit=20",
-    "facturasrecibidas/buscar?empresa_id=1&ejercicio=26&proveedor_id=17&numero_factura=A-00748886",
+    "facturasrecibidas/buscar?empresa_id=1&ejercicio=25&proveedor_id=17&numero_factura=A-00748886",
     "facturasrecibidas/49305/punteos?include_lines=true&limit=100",
     "facturasrecibidas/49305/asiento",
     "albaranes-gastos/punteables?empresa_id=1&proveedor_id=17&solo_pendientes=true&source_table=albmaterial&include_lines=true",
@@ -324,10 +958,408 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
   const denied = [
     "https://attacker.invalid/facturasrecibidas",
     "../facturasrecibidas",
+    "%2e%2e/facturasrecibidas",
+    "acreedores/no-numerico/gastos",
+    "acreedores/17/gastos/extra",
+    "acreedores/17/gastos?limit=1",
+    "agricultores/1680/gastos?limit=1",
+    "agricultores/no-numerico",
+    "cuentas/60200000001",
+    "cuentas?q=602",
     "facturasrecibidas/49305/delete",
     "facturasrecibidas?redirect=https://attacker.invalid",
     "facturasrecibidas/49305/asiento?include_lines=true",
     "albaranes-gastos/punteables?sql=drop",
   ];
   for (const consulta of denied) assert(!isAllowedERPConsulta(consulta), consulta);
+});
+
+Deno.test("readback CTB y punteos exige arrays o envelopes explicitos incluso vacios", () => {
+  assertEquals(parseERPArrayEnvelope({}, ["items", "ctb", "data"]).ok, false);
+  assertEquals(parseERPArrayEnvelope({}, ["items", "punteos", "data"]).ok, false);
+  assertEquals(parseERPArrayEnvelope({ items: [] }, ["items", "ctb", "data"]), {
+    ok: true,
+    items: [],
+    error: null,
+  });
+  assertEquals(parseERPArrayEnvelope({ data: { items: [] } }, ["items", "punteos"]), {
+    ok: true,
+    items: [],
+    error: null,
+  });
+  assertEquals(
+    parseERPArrayEnvelope({ ctb: [null] }, ["items", "ctb", "data"]).ok,
+    false,
+  );
+});
+
+Deno.test("validacion estructural no consulta cache y fusiona avisos por campo semantico", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_idcuenta: "41000000017",
+    FRR_numerofactura: "A-00748886",
+    FRR_fechafactura: "2026-06-30",
+    FRR_totalfac: 51_233.24,
+    FRR_tipofactura: "OT",
+  };
+  const issues = await getValidationErrorsForFactura(factura);
+  const merged = mergeValidationIssues(issues, [
+    "FRR_fechactb requiere revision.",
+    "Falta una regla confirmada para FRR_idregimen.",
+    "FRR_fechactb requiere revision.",
+  ]);
+
+  assertEquals(merged.filter((issue) => issue.field === "FRR_fechactb").length, 1);
+  assertEquals(merged.filter((issue) => issue.field === "FRR_idregimen").length, 1);
+  assertEquals(merged.find((issue) => issue.field === "FRR_fechactb")?.severity, "error");
+  assertEquals(merged.find((issue) => issue.field === "FRR_idregimen")?.severity, "error");
+});
+
+Deno.test("conserva por separado proveedor ausente y caida operativa de acreedores", async () => {
+  const structuralIssues = await getValidationErrorsForFactura({});
+  const apiWarning = "No se pudo consultar /acreedores. La resolucion queda pendiente.";
+  const merged = mergeValidationIssues(structuralIssues, [apiWarning]);
+
+  assertEquals(
+    merged.find((issue) => issue.field === "FRR_idproveedor"),
+    {
+      field: "FRR_idproveedor",
+      message: "Falta proveedor/acreedor resuelto.",
+      severity: "error",
+    },
+  );
+  assertEquals(
+    merged.find((issue) => issue.field === "metadata.warnings" && issue.message === apiWarning),
+    {
+      field: "metadata.warnings",
+      message: apiWarning,
+      severity: "warning",
+    },
+  );
+});
+
+Deno.test("deduplica la misma causa operativa normalizada sin perder severidad", () => {
+  const merged = mergeValidationIssues([], [
+    "No se pudo consultar /acreedores. La resolucion queda pendiente.",
+    "  NO SE PUDO CONSULTAR /ACREEDORES.   La resolución queda pendiente.  ",
+  ]);
+
+  assertEquals(merged, [{
+    field: "metadata.warnings",
+    message: "No se pudo consultar /acreedores. La resolucion queda pendiente.",
+    severity: "warning",
+  }]);
+});
+
+Deno.test("update conserva solo avisos operativos ERP y descarta validaciones obsoletas", () => {
+  const operationalWarning = "No se pudo consultar /acreedores. La resolucion queda pendiente.";
+  const apiBaseWarning =
+    "CAMPOJOYMA_API_BASE_URL no es una URL HTTP(S) valida; no se hacen consultas ERP.";
+  const preserved = extractOperationalERPAvailabilityWarnings([
+    { field: "metadata.warnings", message: operationalWarning, severity: "warning" },
+    {
+      field: "metadata.warnings",
+      message: "NO SE PUDO CONSULTAR /ACREEDORES. La resolución queda pendiente.",
+      severity: "warning",
+    },
+    { field: "metadata.warnings", message: apiBaseWarning, severity: "warning" },
+    { field: "FRR_idproveedor", message: "Falta proveedor/acreedor resuelto.", severity: "error" },
+    { field: "erp_duplicate", message: "Posible duplicado ERP.", severity: "warning" },
+    { field: "metadata.warnings", message: "Aviso OCR antiguo.", severity: "warning" },
+    { field: "metadata.warnings", message: operationalWarning, severity: "error" },
+  ]);
+
+  assertEquals(preserved, [operationalWarning, apiBaseWarning]);
+  assertEquals(
+    extractOperationalERPAvailabilityWarnings(
+      [{ field: "metadata.warnings", message: operationalWarning, severity: "warning" }],
+      { providerPreflightVerified: true },
+    ),
+    [],
+  );
+  assertEquals(
+    mergeValidationIssues([
+      { field: "FRR_idproveedor", message: "Falta proveedor/acreedor resuelto.", severity: "error" },
+    ], preserved),
+    [
+      { field: "FRR_idproveedor", message: "Falta proveedor/acreedor resuelto.", severity: "error" },
+      { field: "metadata.warnings", message: operationalWarning, severity: "warning" },
+      { field: "metadata.warnings", message: apiBaseWarning, severity: "warning" },
+    ],
+  );
+});
+
+Deno.test("preflight ERP exige mismo acreedor y misma cuenta contable", () => {
+  const factura = { FRR_idproveedor: 17, FRR_idcuenta: "41000000017" };
+  assertEquals(
+    getERPProviderPreflightIssues(factura, {
+      id: 17,
+      cuenta_id: "41000000017",
+      cuenta_gasto: "60200000001",
+    }),
+    [],
+  );
+
+  const mismatches = getERPProviderPreflightIssues(factura, {
+    id: 18,
+    cuenta_id: "41000000018",
+  });
+  assertEquals(mismatches.map((issue) => issue.field), ["FRR_idproveedor", "FRR_idcuenta"]);
+  assert(mismatches.every((issue) => issue.severity === "error"));
+});
+
+Deno.test("detalle de acreedor vacio falla cerrado y un detalle identificado es reconocido", () => {
+  assertEquals(parseERPProviderDetailResponse({}).ok, false);
+  assertEquals(parseERPProviderDetailResponse({ data: {} }).ok, false);
+  assertEquals(parseERPProviderDetailResponse({
+    data: { id: 17, cuenta_id: "41000000017" },
+  }), {
+    ok: true,
+    provider: { id: 17, cuenta_id: "41000000017" },
+    error: null,
+  });
+});
+
+Deno.test("preflight ERP bloquea un acreedor marcado como bloqueado", () => {
+  const issues = getERPProviderPreflightIssues(
+    { FRR_idproveedor: 17, FRR_idcuenta: "41000000017" },
+    {
+      id: 17,
+      cuenta_id: "41000000017",
+      activo: true,
+      bloqueado: "S",
+      inactivo_rgpd: "N",
+    },
+  );
+
+  assertEquals(issues, [{
+    field: "FRR_idproveedor",
+    message: "El acreedor seleccionado esta bloqueado en el ERP.",
+    severity: "error",
+  }]);
+});
+
+Deno.test("preflight ERP bloquea acreedor inactivo o inactivo por RGPD", () => {
+  const factura = { FRR_idproveedor: 17, FRR_idcuenta: "41000000017" };
+  const inactiveIssues = getERPProviderPreflightIssues(factura, {
+    id: 17,
+    cuenta_id: "41000000017",
+    activo: false,
+    bloqueado: "N",
+    inactivo_rgpd: "N",
+  });
+  const rgpdIssues = getERPProviderPreflightIssues(factura, {
+    id: 17,
+    cuenta_id: "41000000017",
+    activo: true,
+    bloqueado: false,
+    inactivo_rgpd: "S",
+  });
+
+  assertEquals(inactiveIssues.map((issue) => issue.message), [
+    "El acreedor seleccionado no esta activo en el ERP.",
+  ]);
+  assertEquals(rgpdIssues.map((issue) => issue.message), [
+    "El acreedor seleccionado esta inactivo por RGPD en el ERP.",
+  ]);
+});
+
+Deno.test("duplicado ERP usa la clave exacta y conserva candidatos utiles", () => {
+  const consulta = buildERPDuplicateConsulta({
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A/1 & 2",
+  });
+  assert(consulta);
+  const url = new URL(consulta, "https://erp.invalid/");
+  assertEquals(url.pathname, "/facturasrecibidas/buscar");
+  assertEquals(url.searchParams.get("empresa_id"), "1");
+  assertEquals(url.searchParams.get("ejercicio"), "25");
+  assertEquals(url.searchParams.get("proveedor_id"), "17");
+  assertEquals(url.searchParams.get("numero_factura"), "A/1 & 2");
+  assertEquals(url.searchParams.get("limit"), "10");
+
+  assertEquals(normalizeERPDuplicateCandidates({
+    items: [{
+      FRR_id: 49305,
+      FRR_numero: 5052,
+      FRR_Idempresa: 1,
+      FRR_ejercicio: 25,
+      FRR_idproveedor: 17,
+      FRR_numerofactura: "A-00748886",
+    }],
+    total: 1,
+  }), [{
+    FRR_id: 49305,
+    FRR_numero: 5052,
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-00748886",
+  }]);
+});
+
+Deno.test("contrato /buscar falla cerrado ante shapes o candidatos no verificables", () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-00748886",
+  };
+  const exactCandidate = {
+    FRR_id: 49305,
+    FRR_numero: 5052,
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-00748886",
+  };
+
+  assertEquals(validateERPDuplicateSearchResponse({}, factura).ok, false);
+  assertEquals(validateERPDuplicateSearchResponse([], factura).ok, false);
+  assertEquals(
+    validateERPDuplicateSearchResponse({ items: [], total: "0" }, factura).ok,
+    false,
+  );
+  assertEquals(
+    validateERPDuplicateSearchResponse({ items: [exactCandidate], total: 0 }, factura).ok,
+    false,
+  );
+  assertEquals(
+    validateERPDuplicateSearchResponse({ items: [], total: 1 }, factura).ok,
+    false,
+  );
+  assertEquals(
+    validateERPDuplicateSearchResponse({ items: [{}], total: 1 }, factura).ok,
+    false,
+  );
+  assertEquals(
+    validateERPDuplicateSearchResponse({
+      items: [{ ...exactCandidate, FRR_idproveedor: 18 }],
+      total: 1,
+    }, factura).ok,
+    false,
+  );
+
+  assertEquals(validateERPDuplicateSearchResponse({
+    items: [exactCandidate],
+    total: 1,
+  }, factura), {
+    ok: true,
+    total: 1,
+    candidates: [exactCandidate],
+    error: null,
+  });
+});
+
+Deno.test("reglas contables aplican precedencia proveedor sobre empresa y completan solo vacios", () => {
+  const resolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_fechafactura: "2026-06-30",
+  }, [
+    {
+      empresa_id: 1,
+      proveedor_id: null,
+      ejercicio_erp: 25,
+      tipo_factura: "GE",
+      regimen_id: 1110,
+      fecha_ctb_policy: "manual",
+      activo: true,
+    },
+    {
+      empresa_id: 1,
+      proveedor_id: 17,
+      ejercicio_erp: null,
+      tipo_factura: "OT",
+      regimen_id: 2110,
+      fecha_ctb_policy: "invoice_date",
+      activo: true,
+    },
+  ]);
+
+  assertEquals(resolution.factura.FRR_ejercicio, 25);
+  assertEquals(resolution.factura.FRR_tipofactura, "OT");
+  assertEquals(resolution.factura.FRR_idregimen, 2110);
+  assertEquals(resolution.factura.FRR_fechactb, "2026-06-30");
+  assertEquals(resolution.applied, {
+    FRR_ejercicio: 25,
+    FRR_tipofactura: "OT",
+    FRR_idregimen: 2110,
+    FRR_fechactb: "2026-06-30",
+  });
+  assertEquals(resolution.issues, []);
+});
+
+Deno.test("reglas contables nunca sobrescriben valores explicitos y exponen conflictos bloqueantes", () => {
+  const resolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_ejercicio: 26,
+    FRR_tipofactura: "OT",
+    FRR_idregimen: 2110,
+    FRR_fechafactura: "2026-06-30",
+    FRR_fechactb: "2026-07-01",
+  }, [{
+    empresa_id: 1,
+    proveedor_id: 17,
+    ejercicio_erp: 25,
+    tipo_factura: "OT",
+    regimen_id: 2110,
+    fecha_ctb_policy: "invoice_date",
+    activo: true,
+  }]);
+
+  assertEquals(resolution.factura.FRR_ejercicio, 26);
+  assertEquals(resolution.factura.FRR_fechactb, "2026-07-01");
+  assertEquals(resolution.applied, {});
+  assertEquals(resolution.issues.map((issue) => issue.field), ["FRR_ejercicio", "FRR_fechactb"]);
+  assert(resolution.issues.every((issue) => issue.severity === "error"));
+});
+
+Deno.test("politica CTB manual no deduce fecha e ignora reglas inactivas", () => {
+  const resolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_fechafactura: "2026-06-30",
+  }, [
+    {
+      empresa_id: 1,
+      proveedor_id: null,
+      ejercicio_erp: 25,
+      fecha_ctb_policy: "manual",
+      activo: true,
+    },
+    {
+      empresa_id: 1,
+      proveedor_id: 17,
+      ejercicio_erp: 99,
+      fecha_ctb_policy: "invoice_date",
+      activo: false,
+    },
+  ]);
+
+  assertEquals(resolution.factura.FRR_ejercicio, 25);
+  assertEquals(resolution.factura.FRR_fechactb, undefined);
+  assertEquals(resolution.applied, { FRR_ejercicio: 25 });
+  assertEquals(resolution.issues, []);
+});
+
+Deno.test("reglas activas incompatibles en el mismo scope fallan sin elegir valor", () => {
+  const resolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+  }, [
+    { empresa_id: 1, proveedor_id: 17, tipo_factura: "OT", activo: true },
+    { empresa_id: 1, proveedor_id: 17, tipo_factura: "MA", activo: true },
+  ]);
+
+  assertEquals(resolution.factura.FRR_tipofactura, undefined);
+  assertEquals(resolution.applied, {});
+  assertEquals(resolution.issues.length, 1);
+  assertEquals(resolution.issues[0].field, "FRR_tipofactura");
+  assertEquals(resolution.issues[0].severity, "error");
 });

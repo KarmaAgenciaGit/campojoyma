@@ -19,6 +19,16 @@ export type FacturaRecibidaAccountingStatus =
   | 'error'
   | string;
 
+export type FacturaValidationSeverity = 'error' | 'warning';
+
+export interface FacturaValidationIssue {
+  code?: string | null;
+  field: string;
+  message: string;
+  severity: FacturaValidationSeverity;
+  details?: Record<string, unknown> | null;
+}
+
 export interface FacturaRecibidaIvaTramo {
   posicion: FacturaRecibidaIvaPosicion;
   base: number | null;
@@ -159,7 +169,7 @@ export interface FacturaRecibida {
   pdf_nombre: string | null;
   pdf_mime_type: string | null;
   pdf_size: number | null;
-  validation_errors: string[] | null;
+  validation_errors: FacturaValidationIssue[] | null;
   erp_last_attempt_at: string | null;
   erp_sent_at: string | null;
   erp_response: Record<string, unknown> | null;

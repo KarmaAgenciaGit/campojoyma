@@ -1,0 +1,31 @@
+project_id = "adbprpemmbspntbttziz"
+
+# Sin este fichero, `supabase functions deploy` aplica verify_jwt = true por
+# defecto a todas las funciones. `factura-recibida-ingest` esta desplegada con
+# verify_jwt = false porque implementa su propia autenticacion por token de
+# ingesta: un despliegue sin esta configuracion la rompe en silencio.
+#
+# Las demas funciones usan verify_jwt = true, que es el valor por defecto, y se
+# declaran aqui de forma explicita para que un despliegue no dependa de ese
+# default implicito.
+
+[functions.factura-recibida-ingest]
+verify_jwt = false
+
+[functions.facturas-recibidas-erp-read]
+verify_jwt = true
+
+[functions.factura-recibida-send-erp]
+verify_jwt = true
+
+[functions.factura-recibida-update]
+verify_jwt = true
+
+[functions.factura-recibida-extraer]
+verify_jwt = true
+
+[functions.factura-recibida-delete]
+verify_jwt = true
+
+[functions.factura-recibida-import-erp-reference]
+verify_jwt = true

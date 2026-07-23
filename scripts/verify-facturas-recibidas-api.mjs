@@ -5,6 +5,9 @@ const EXPECTED = {
   frrId: 49305,
   numero: 5052,
   invoiceNumber: "A-00748886",
+  ejercicio: 25,
+  regimenId: 2110,
+  tipoFactura: "OT",
   base: 42341.52,
   vat: 8891.72,
   total: 51233.24,
@@ -123,6 +126,9 @@ const main = async () => {
   assertEqual(asNumber(header.FRR_id), EXPECTED.frrId, "FRR_id");
   assertEqual(asNumber(header.FRR_numero), EXPECTED.numero, "FRR_numero");
   assertEqual(header.FRR_numerofactura, EXPECTED.invoiceNumber, "Número de factura");
+  assertEqual(asNumber(header.FRR_ejercicio), EXPECTED.ejercicio, "Ejercicio ERP");
+  assertEqual(asNumber(header.FRR_idregimen), EXPECTED.regimenId, "Régimen ERP");
+  assertEqual(header.FRR_tipofactura, EXPECTED.tipoFactura, "Tipo de factura ERP");
   assertMoney(header.FRR_base1, EXPECTED.base, "Base imponible");
   assertMoney(header.FRR_cuota1, EXPECTED.vat, "Cuota IVA");
   assertMoney(header.FRR_totalfac, EXPECTED.total, "Total factura");
@@ -172,6 +178,46 @@ const main = async () => {
 
   const entries = unwrapList(asientoPayload);
   assertEqual(entries.length, 0, "Apuntes no disponibles en la copia de pruebas");
+
+  if (process.argv.includes("--details")) {
+    const headerKeys = [
+      "FRR_id",
+      "FRR_numero",
+      "FRR_ejercicio",
+      "FRR_idproveedor",
+      "FRR_idcuenta",
+      "FRR_numerofactura",
+      "FRR_fechafactura",
+      "FRR_fechactb",
+      "FRR_Idempresa",
+      "FRR_idregimen",
+      "FRR_tipofactura",
+      "FRR_base1",
+      "FRR_iva1",
+      "FRR_cuota1",
+      "FRR_igasto1",
+      "FRR_ctagasto1",
+      "FRR_totalfac",
+      "FRR_IdAsientoNet",
+      "FRR_Contabilizar",
+      "FRR_GeneraCartera",
+      "FRR_CtaCartera",
+      "FRR_IdBanco",
+      "FRR_IdFormaPago",
+      "FechaVto",
+      "ImporteVto",
+      "FRR_Concepto",
+      "FRR_Observaciones",
+      "FRR_ObservacionesAEAT",
+    ];
+    console.log(JSON.stringify({
+      header: Object.fromEntries(headerKeys.map((key) => [key, header[key] ?? null])),
+      accounting,
+      ctb_count: ctb.length,
+      punteos_count: punteos.length,
+      material_lines: materialLines,
+    }, null, 2));
+  }
 
   console.log("OK: aceptación de lectura ONDUSPAN completada; contabilidad en reference_only.");
 };

@@ -9,9 +9,11 @@ export type FacturaRecibidaEstado =
   | 'descartada';
 
 export type FacturaValidationIssue = {
+  code?: string | null;
   field: string;
   message: string;
   severity: 'error' | 'warning';
+  details?: Record<string, unknown> | null;
 };
 
 export type FacturaRecibidaCtb = {

@@ -38,6 +38,8 @@ import { PdfViewer } from '../components/PdfViewer';
 import { facturaEstadoLabels } from '../lib/facturasSummary';
 import {
   type LocalizarProveedorResponse,
+  type FacturaERPDuplicateCandidate,
+  type FacturaProveedorERPDetail,
   type FacturaEmpresaOption,
   type FacturaCuentaOption,
   type FacturaRegimenOption,
@@ -45,16 +47,22 @@ import {
   fetchFacturaCuentas,
   fetchFacturaEmpresas,
   fetchFacturaPunteables,
+  fetchFacturaProveedorERPDetail,
   fetchFacturaRecibidaById,
   fetchFacturaRecibidaERPPayloadPreview,
   fetchFacturaRegimenes,
   fetchFacturaTipos,
   fetchFacturasRecibidasPage,
+  getFacturaERPReconciliationRequestId,
+  getFacturaERPSendConfirmation,
   getFacturaPdfSignedUrl,
   extractFacturaWithN8n,
   isERPReferenceFactura,
   isERPReadOnlyFactura,
   localizarProveedorERP,
+  normalizeFacturaValidationIssues,
+  partitionFacturaValidationIssues,
+  preflightFacturaRecibidaERP,
   saveFacturaRecibida,
   sendFacturaRecibidaToERP,
 } from '../services/facturas';
@@ -63,9 +71,19 @@ import type {
   FacturaRecibidaIvaTramo,
   FacturaRecibidaLinea,
   FacturaRecibidaPunteo,
+  FacturaValidationIssue,
   FacturaRecibidaVencimiento,
 } from '../services/apiContracts';
 import type { AgroIrisAcreedor } from '../services/agroirisAcreedores';
+import { useConfirmacion } from '../hooks/useConfirmacion';
+import {
+  calcularSugerencias,
+  construirConceptoFactura,
+  describirSugerencia,
+  obtenerHistorialProveedor,
+  type FacturaHistorica,
+  type Sugerencia,
+} from '../services/facturasRecibidasHistorial';
 
 type FacturaDraft = Partial<FacturaRecibida>;
 type FacturaFlowFilter = 'todos' | 'enviada_erp' | 'no_enviada_erp';
@@ -116,6 +134,17 @@ const estadoOptions: { value: FacturaFlowFilter; label: string }[] = [
 ];
 
 const estadoLabels = facturaEstadoLabels;
+
+// Estados contables del contrato v2. `not_requested` significa que el borrador no ha
+// solicitado contabilizacion; mostrarlo crudo confundia al usuario.
+const asientoEstadoLabels: Record<string, string> = {
+  not_requested: 'No solicitado (borrador)',
+  pending: 'Pendiente del ERP',
+  created: 'Creado y verificado',
+  reference_only: 'Solo referencia técnica',
+  unavailable: 'Mecanismo no disponible',
+  error: 'Error del ERP',
+};
 
 const yesNoOptions: FilterSelectOption[] = [
   { value: 'S', label: 'Sí' },
@@ -304,6 +333,11 @@ const getErrorMessage = (error: unknown, fallback: string) => {
 const hasAccountingLineData = (linea: FacturaRecibidaLinea) =>
   Boolean(cleanOptionalString(linea.descripcion)) || Math.abs(Number(linea.importe) || 0) > ACCOUNTING_AMOUNT_TOLERANCE;
 
+const ivaTramoTieneDato = (tramo: FacturaRecibidaIvaTramo) =>
+  Math.abs(Number(tramo.base) || 0) > ACCOUNTING_AMOUNT_TOLERANCE ||
+  Math.abs(Number(tramo.porcentaje) || 0) > 0 ||
+  Math.abs(Number(tramo.cuota) || 0) > ACCOUNTING_AMOUNT_TOLERANCE;
+
 const shouldOpenAccountingBreakdownFor = (
   factura: FacturaDraft | null | undefined,
   lineas: FacturaRecibidaLinea[],
@@ -424,13 +458,38 @@ const proveedorDraftFromAcreedor = (acreedor: AgroIrisAcreedor | null): Pick<
   };
 };
 
+const applyProveedorERPDetail = (
+  factura: FacturaDraft,
+  proveedor: FacturaProveedorERPDetail,
+): FacturaDraft => ({
+  ...factura,
+  proveedor_codigo: String(proveedor.codigo),
+  proveedor_nombre: proveedor.nombre,
+  proveedor_nif: proveedor.nif,
+  proveedor_cuenta: proveedor.cuenta,
+  cta_cartera: proveedor.cuentaCartera,
+  forma_pago: proveedor.formaPagoId !== null ? String(proveedor.formaPagoId) : null,
+  banco: proveedor.bancoId !== null ? String(proveedor.bancoId) : null,
+});
+
+const facturaProviderScopeKey = (factura: FacturaDraft | null | undefined) =>
+  [
+    factura?.id ?? 'new',
+    cleanOptionalString(factura?.fr_alm) ?? 'sin-empresa',
+    cleanOptionalString(factura?.proveedor_codigo) ?? 'sin-proveedor',
+  ].join(':');
+
 const erpStateForInvoice = (
   factura: FacturaRecibida,
   externalState?: FacturaERPListState,
 ): FacturaERPListState => {
-  if (isERPReferenceFactura(factura)) return 'reference';
-  if (externalState) return externalState;
-  if (factura.estado === 'enviada_erp' || factura.erp_sent_at) return 'registered';
+  const confirmation = getFacturaERPSendConfirmation(factura);
+  if (confirmation === 'confirmed') return 'registered';
+  if (confirmation === 'reference_only') {
+    return isERPReferenceFactura(factura) ? 'reference' : 'checking';
+  }
+  if (confirmation === 'reconciling') return 'checking';
+  if (externalState && externalState !== 'registered') return externalState;
   if (factura.estado === 'error_erp') return 'unregistered';
   if (factura.estado === 'validada' || factura.erp_payload) return 'unregistered';
   return 'unknown';
@@ -632,7 +691,9 @@ function FacturaListItem({
         : invoiceErpState === 'checking'
         ? 'bg-slate-400'
         : 'bg-amber-500';
-  const hasErrors = Boolean(factura.validation_errors?.length || factura.erp_error);
+  const validation = partitionFacturaValidationIssues(factura.validation_errors);
+  const hasErrors = Boolean(validation.errors.length || factura.erp_error);
+  const hasWarnings = validation.warnings.length > 0;
   const isBusy = loadingFacturaId === factura.id;
 
   const handleDeleteClick = async (event: MouseEvent<HTMLButtonElement>) => {
@@ -673,6 +734,11 @@ function FacturaListItem({
             </span>
             {hasErrors ? (
               <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 dark:text-red-300">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Con errores
+              </span>
+            ) : hasWarnings ? (
+              <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 Con avisos
               </span>
@@ -778,6 +844,48 @@ function Field({
       <span>{label}</span>
       <div className="mt-2">{children}</div>
     </label>
+  );
+}
+
+function SugerenciaHistorial({
+  sugerencia,
+  actual,
+  disabled,
+  onAplicar,
+  formatValor = (valor) => String(valor),
+}: {
+  sugerencia: Sugerencia<string | number>;
+  actual: string | null | undefined;
+  disabled?: boolean;
+  onAplicar: (valor: string) => void;
+  formatValor?: (valor: string | number) => string;
+}) {
+  // Solo evidencia medida: sin historico no se muestra nada, y nunca se auto-aplica.
+  if (sugerencia.valor === null || sugerencia.criterio === 'sin_historial') return null;
+  const valorSugerido = String(sugerencia.valor);
+  if (cleanOptionalString(actual) === valorSugerido) return null;
+  const descripcion = describirSugerencia(sugerencia);
+
+  return (
+    <p
+      className={`mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium ${
+        sugerencia.ambigua ? 'text-amber-700 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'
+      }`}
+    >
+      <span>
+        Histórico ERP: <span className="font-semibold">{formatValor(sugerencia.valor)}</span>
+        {descripcion ? ` — ${descripcion}` : ''}
+      </span>
+      {disabled ? null : (
+        <button
+          type="button"
+          className="font-semibold text-primary underline-offset-2 hover:underline"
+          onClick={() => onAplicar(valorSugerido)}
+        >
+          Aplicar
+        </button>
+      )}
+    </p>
   );
 }
 
@@ -930,13 +1038,23 @@ const Facturas = () => {
   const [empresas, setEmpresas] = useState<FacturaEmpresaOption[]>([]);
   const [tiposFactura, setTiposFactura] = useState<FacturaTipoOption[]>([]);
   const [regimenes, setRegimenes] = useState<FacturaRegimenOption[]>([]);
+  const [historialProveedor, setHistorialProveedor] = useState<FacturaHistorica[]>([]);
+  const historialRunRef = useRef(0);
+  const [ivaTramosExtra, setIvaTramosExtra] = useState(0);
+  const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
   const [cuentas, setCuentas] = useState<FacturaCuentaOption[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [punteosLoading, setPunteosLoading] = useState(false);
   const [punteosLoadError, setPunteosLoadError] = useState<string | null>(null);
+  const [preflightIssues, setPreflightIssues] = useState<FacturaValidationIssue[]>([]);
+  const [duplicateCandidate, setDuplicateCandidate] = useState<FacturaERPDuplicateCandidate | null>(null);
+  const [providerScopeNotice, setProviderScopeNotice] = useState<string | null>(null);
   const [lastSavedEditorSnapshot, setLastSavedEditorSnapshot] = useState<string | null>(null);
   const [loadedDetailId, setLoadedDetailId] = useState<string | null>(null);
   const erpPayloadPreviewRunRef = useRef(0);
+  const providerDetailRunRef = useRef(0);
+  const punteablesRunRef = useRef(0);
+  const activeProviderScopeRef = useRef('');
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
   const [extractingIa, setExtractingIa] = useState(false);
@@ -959,7 +1077,12 @@ const Facturas = () => {
   const hasUnsavedDetailChanges = Boolean(
     isDetailMode && lastSavedEditorSnapshot && currentEditorSnapshot !== lastSavedEditorSnapshot,
   );
-  const visibleErrors = draft?.validation_errors ?? [];
+  const visibleIssues = useMemo(
+    () => normalizeFacturaValidationIssues([...(draft?.validation_errors ?? []), ...preflightIssues]),
+    [draft?.validation_errors, preflightIssues],
+  );
+  const visibleErrors = visibleIssues.filter((issue) => issue.severity === 'error');
+  const visibleWarnings = visibleIssues.filter((issue) => issue.severity === 'warning');
   const pageSizeOptions = PAGE_SIZE_OPTIONS.map((option) => ({ value: option, label: `${option} por pagina` }));
   const empresaOptions = useMemo(
     () => buildEmpresaOptions(empresas, draft?.fr_alm),
@@ -973,6 +1096,55 @@ const Facturas = () => {
     () => buildRegimenOptions(regimenes, draft?.tipo_iva_codigo),
     [draft?.tipo_iva_codigo, regimenes],
   );
+
+  // Historico ERP del proveedor para sugerir tipo y regimen con confianza medida.
+  // Se carga una vez por proveedor; el calculo por IVA es local y no vuelve a llamar.
+  const proveedorErpId = useMemo(() => {
+    const parsed = Number.parseInt(cleanOptionalString(draft?.proveedor_codigo) ?? '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }, [draft?.proveedor_codigo]);
+  const detailIsReadOnly = isERPReadOnlyFactura(draft);
+
+  useEffect(() => {
+    const runId = historialRunRef.current + 1;
+    historialRunRef.current = runId;
+    setHistorialProveedor([]);
+    if (!proveedorErpId || detailIsReadOnly) return;
+    obtenerHistorialProveedor(proveedorErpId)
+      .then((historial) => {
+        if (historialRunRef.current !== runId) return;
+        setHistorialProveedor(historial);
+      })
+      .catch(() => {
+        // Sin historico no hay sugerencias; la edicion manual sigue disponible.
+        if (historialRunRef.current !== runId) return;
+        setHistorialProveedor([]);
+      });
+  }, [proveedorErpId, detailIsReadOnly]);
+
+  const sugerenciasHistorial = useMemo(
+    () => calcularSugerencias(historialProveedor, { iva1: draft?.iva_porcentaje ?? null }),
+    [historialProveedor, draft?.iva_porcentaje],
+  );
+
+  // Al cambiar de factura se vuelve a colapsar el desglose de IVA.
+  useEffect(() => {
+    setIvaTramosExtra(0);
+  }, [draft?.id]);
+
+  useEffect(() => {
+    const scope = facturaProviderScopeKey(draft);
+    if (activeProviderScopeRef.current && activeProviderScopeRef.current !== scope) {
+      providerDetailRunRef.current += 1;
+      punteablesRunRef.current += 1;
+      setPunteosLoading(false);
+    }
+    activeProviderScopeRef.current = scope;
+  }, [draft?.fr_alm, draft?.id, draft?.proveedor_codigo]);
+
+  useEffect(() => {
+    setProviderScopeNotice(null);
+  }, [activeDraftId]);
 
   useEffect(() => {
     if (!saveFeedback) {
@@ -1038,8 +1210,13 @@ const Facturas = () => {
       setFacturasTotal(loaded.total);
       setERPRegistrationByFacturaId(
         loaded.items.reduce<Record<string, FacturaERPListState>>((acc, factura) => {
-          if (factura.estado === 'enviada_erp' || factura.erp_sent_at) {
+          const confirmation = getFacturaERPSendConfirmation(factura);
+          if (confirmation === 'confirmed') {
             acc[factura.id] = 'registered';
+          } else if (confirmation === 'reference_only') {
+            acc[factura.id] = isERPReferenceFactura(factura) ? 'reference' : 'checking';
+          } else if (confirmation === 'reconciling') {
+            acc[factura.id] = 'checking';
           } else if (factura.estado === 'validada' || factura.estado === 'error_erp' || factura.erp_payload) {
             acc[factura.id] = 'unregistered';
           }
@@ -1110,6 +1287,8 @@ const Facturas = () => {
         setPdfUrl(null);
         setFacturaUploadStep('idle');
         setModalMessage(null);
+        setPreflightIssues([]);
+        setDuplicateCandidate(null);
       }
       return;
     }
@@ -1130,6 +1309,8 @@ const Facturas = () => {
       setPdfUrl(null);
       setFacturaUploadStep('idle');
       setModalMessage(null);
+      setPreflightIssues([]);
+      setDuplicateCandidate(null);
       setModalOpen(false);
       window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
     };
@@ -1192,11 +1373,14 @@ const Facturas = () => {
       }
 
       const preview = await fetchFacturaRecibidaERPPayloadPreview(activeDraftId);
-      if (preview.validation_errors.length > 0) {
+      if (preview.blocking_errors.length > 0) {
         console.warn(
           `[ERP] El envio real quedaria bloqueado por validacion para factura ${activeDraftId}:`,
-          preview.validation_errors,
+          preview.blocking_errors,
         );
+      }
+      if (preview.validation_warnings.length > 0) {
+        console.warn(`[ERP] Avisos no bloqueantes para factura ${activeDraftId}:`, preview.validation_warnings);
       }
       console.log(`[ERP] Body de envio para factura ${activeDraftId}:`, preview.payload);
       return preview.payload;
@@ -1208,11 +1392,14 @@ const Facturas = () => {
       }
 
       const preview = await fetchFacturaRecibidaERPPayloadPreview(activeDraftId);
-      if (preview.validation_errors.length > 0) {
+      if (preview.blocking_errors.length > 0) {
         console.warn(
           `[ERP] El envio real quedaria bloqueado por validacion para factura ${activeDraftId}:`,
-          preview.validation_errors,
+          preview.blocking_errors,
         );
+      }
+      if (preview.validation_warnings.length > 0) {
+        console.warn(`[ERP] Avisos no bloqueantes para factura ${activeDraftId}:`, preview.validation_warnings);
       }
       console.log(preview.body_json);
       return preview.body_json;
@@ -1244,13 +1431,21 @@ const Facturas = () => {
           return;
         }
 
-        if (preview.validation_errors.length > 0) {
+        if (preview.blocking_errors.length > 0) {
           console.warn(
             `[ERP] Payload calculado para factura ${activeDraftId}. El envio real quedaria bloqueado por validacion:`,
             preview.body_json,
-            preview.validation_errors,
+            preview.blocking_errors,
           );
           return;
+        }
+
+        if (preview.validation_warnings.length > 0) {
+          console.warn(
+            `[ERP] Payload calculado para factura ${activeDraftId} con avisos no bloqueantes:`,
+            preview.body_json,
+            preview.validation_warnings,
+          );
         }
 
         return;
@@ -1321,8 +1516,14 @@ const Facturas = () => {
     activeFiltersCount > 0
       ? `${formatInteger(facturasTotal)} facturas filtradas`
       : `${formatInteger(facturasTotal)} facturas entrantes`;
-  const detailActionMessage = isDetailMode && modalMessage?.type === 'error' ? modalMessage : null;
-  const showSaveFeedback = Boolean(isDetailMode && saveFeedback && !hasUnsavedDetailChanges && !saving && !sending);
+  const detailActionMessage = isDetailMode ? modalMessage : null;
+  const showSaveFeedback = Boolean(
+    isDetailMode &&
+      saveFeedback &&
+      !hasUnsavedDetailChanges &&
+      !saving &&
+      !sending,
+  );
   const saveButtonClass = showSaveFeedback
     ? 'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 text-sm font-semibold text-primary shadow-sm transition-colors disabled:cursor-default disabled:opacity-100 dark:border-blue-400/40 dark:bg-blue-400/10 dark:text-blue-200'
     : 'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:hover:bg-slate-800';
@@ -1364,6 +1565,8 @@ const Facturas = () => {
     setPdfUrl(null);
     setFacturaUploadStep('idle');
     setModalMessage(null);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
     setModalOpen(true);
   };
 
@@ -1382,6 +1585,8 @@ const Facturas = () => {
     setPdfUrl(null);
     setFacturaUploadStep('idle');
     setModalMessage(null);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
   };
 
   const openFactura = async (factura: FacturaRecibida) => {
@@ -1399,6 +1604,8 @@ const Facturas = () => {
       setPdfFile(null);
       setPdfUrl(null);
       setModalMessage(null);
+      setPreflightIssues([]);
+      setDuplicateCandidate(null);
       setModalOpen(false);
       navigate(`/facturas-recibidas/${encodeURIComponent(facturaToOpen.id)}`);
       window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
@@ -1409,13 +1616,16 @@ const Facturas = () => {
     }
   };
 
-  const closeDetail = () => {
-    if (
-      hasUnsavedDetailChanges &&
-      !saving &&
-      !window.confirm('Hay cambios sin guardar. ¿Quieres salir y descartarlos?')
-    ) {
-      return;
+  const closeDetail = async () => {
+    if (hasUnsavedDetailChanges && !saving) {
+      const confirmed = await confirmar({
+        titulo: 'Salir sin guardar',
+        descripcion: 'Hay cambios sin guardar en esta factura. Si sales ahora se descartarán.',
+        aceptar: 'Salir y descartar',
+        cancelar: 'Seguir editando',
+        destructivo: true,
+      });
+      if (!confirmed) return;
     }
     setDraft(null);
     setLineas(createEmptyGastos());
@@ -1426,16 +1636,172 @@ const Facturas = () => {
     setPdfUrl(null);
     setFacturaUploadStep('idle');
     setModalMessage(null);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
     setModalOpen(false);
     navigate('/facturas-recibidas');
   };
 
-  const updateDraft = <TKey extends keyof FacturaDraft>(key: TKey, value: FacturaDraft[TKey]) => {
-    setDraft((current) => (current ? { ...current, [key]: value } : current));
+  const updateDraft = async <TKey extends keyof FacturaDraft>(key: TKey, value: FacturaDraft[TKey]) => {
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
+    let clearPunteos = false;
+    if (
+      key === 'fr_alm' &&
+      cleanOptionalString(String(draft?.fr_alm ?? '')) !== cleanOptionalString(String(value ?? '')) &&
+      (draft?.punteos?.length ?? 0) > 0
+    ) {
+      const confirmed = await confirmar({
+        titulo: 'Cambiar de empresa',
+        descripcion: `Los ${draft?.punteos?.length ?? 0} punteos actuales pertenecen al ámbito de la empresa anterior. Si continúas se eliminarán y tendrás que cargar y seleccionar manualmente los del nuevo ámbito.`,
+        aceptar: 'Cambiar y eliminar punteos',
+        cancelar: 'Mantener la empresa',
+        destructivo: true,
+      });
+      if (!confirmed) {
+        setProviderScopeNotice('Cambio de empresa cancelado. Los punteos actuales se han conservado.');
+        return;
+      }
+      clearPunteos = true;
+      setProviderScopeNotice('Se han retirado los punteos de la empresa anterior. Carga y selecciona manualmente los del nuevo ambito.');
+    }
+
+    if (key === 'fr_alm' || key === 'proveedor_codigo') {
+      const nextDraft = draft ? { ...draft, [key]: value } : null;
+      providerDetailRunRef.current += 1;
+      punteablesRunRef.current += 1;
+      activeProviderScopeRef.current = facturaProviderScopeKey(nextDraft);
+      setPunteosLoading(false);
+      setPunteosLoadError(null);
+    }
+
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            [key]: value,
+            ...(clearPunteos ? { punteos: [] } : {}),
+          }
+        : current,
+    );
   };
 
-  const selectProveedorAcreedor = (acreedor: AgroIrisAcreedor | null) => {
-    setDraft((current) => (current ? { ...current, ...proveedorDraftFromAcreedor(acreedor) } : current));
+  const selectProveedorAcreedor = async (acreedor: AgroIrisAcreedor | null) => {
+    const previousProveedorId = acreedorIdFromDraft(draft);
+    const nextProveedorId = acreedor?.acreedorid ?? null;
+    const providerChanged = previousProveedorId !== nextProveedorId;
+    const hasDependentGastos = lineas.some(hasAccountingLineData);
+    const dependentPunteos = draft?.punteos?.length ?? 0;
+    const hasDependentData = providerChanged && (hasDependentGastos || dependentPunteos > 0);
+
+    if (hasDependentData) {
+      const dependencies = [
+        hasDependentGastos ? 'el desglose de gastos' : null,
+        dependentPunteos > 0 ? `${dependentPunteos} punteo${dependentPunteos === 1 ? '' : 's'}` : null,
+      ].filter(Boolean).join(' y ');
+      const confirmed = await confirmar({
+        titulo: 'Cambiar de acreedor',
+        descripcion: (
+          <>
+            Vas a cambiar de acreedor, y {dependencies} pertenecen al anterior. La cuenta de gasto
+            depende del proveedor, así que conservarla contabilizaría contra la cuenta equivocada.
+            {' '}Si continúas se limpiarán esos datos y tendrás que revisarlos.
+          </>
+        ),
+        aceptar: 'Cambiar y limpiar',
+        cancelar: 'Mantener el acreedor',
+        destructivo: true,
+      });
+      if (!confirmed) {
+        setProviderScopeNotice('Cambio de acreedor cancelado. Los gastos y punteos actuales se han conservado.');
+        return;
+      }
+    }
+
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
+    const providerFields = {
+      ...proveedorDraftFromAcreedor(acreedor),
+      cta_cartera: null,
+      forma_pago: null,
+      banco: null,
+    } satisfies FacturaDraft;
+    const nextDraft = draft
+      ? {
+          ...draft,
+          ...providerFields,
+          ...(hasDependentData ? { punteos: [] } : {}),
+        }
+      : null;
+    const scope = facturaProviderScopeKey(nextDraft);
+    const runId = providerDetailRunRef.current + 1;
+    providerDetailRunRef.current = runId;
+    punteablesRunRef.current += 1;
+    activeProviderScopeRef.current = scope;
+    setPunteosLoading(false);
+    setPunteosLoadError(null);
+    setModalMessage(null);
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            ...providerFields,
+            ...(hasDependentData ? { punteos: [] } : {}),
+          }
+        : current,
+    );
+
+    if (hasDependentData) {
+      if (hasDependentGastos) setLineas(createEmptyGastos());
+      setProviderScopeNotice(
+        'Se han limpiado los gastos y punteos vinculados al acreedor anterior tras tu confirmacion. Revisa los datos maestros y selecciona manualmente los nuevos punteos.',
+      );
+    } else {
+      setProviderScopeNotice(null);
+    }
+
+    if (!acreedor) return;
+
+    try {
+      const detail = await fetchFacturaProveedorERPDetail(acreedor.acreedorid);
+      if (providerDetailRunRef.current !== runId || activeProviderScopeRef.current !== scope) return;
+      if (!detail) {
+        setModalMessage({
+          type: 'error',
+          text: `El proveedor ${acreedor.acreedorid} no existe en la API del ERP.`,
+        });
+        return;
+      }
+      if (detail.codigo !== acreedor.acreedorid) {
+        setModalMessage({
+          type: 'error',
+          text: `La API devolvio el proveedor ${detail.codigo} al consultar ${acreedor.acreedorid}. Selecciona el acreedor de nuevo.`,
+        });
+        return;
+      }
+
+      setDraft((current) => {
+        if (!current || facturaProviderScopeKey(current) !== scope || providerDetailRunRef.current !== runId) return current;
+        return applyProveedorERPDetail(current, detail);
+      });
+      if (detail.cuentaGasto && (!hasDependentGastos || hasDependentData)) {
+        setLineas((current) => {
+          if (providerDetailRunRef.current !== runId || activeProviderScopeRef.current !== scope) return current;
+          if (current.some(hasAccountingLineData)) return current;
+          const targetIndex = current.findIndex((linea) => !cleanOptionalString(linea.descripcion));
+          if (targetIndex < 0) return current;
+          return current.map((linea, index) =>
+            index === targetIndex ? { ...linea, descripcion: detail.cuentaGasto ?? '' } : linea,
+          );
+        });
+      }
+    } catch (error) {
+      if (providerDetailRunRef.current !== runId || activeProviderScopeRef.current !== scope) return;
+      setModalMessage({
+        type: 'error',
+        text: `No se pudo cargar el detalle del proveedor porque la API del ERP no esta disponible. ${getErrorMessage(error, '')}`.trim(),
+      });
+    }
   };
 
   const updateLinea = <TKey extends keyof FacturaRecibidaLinea>(
@@ -1568,11 +1934,15 @@ const Facturas = () => {
   const loadPunteables = async () => {
     const empresaId = Number(draft?.fr_alm ?? '');
     const proveedorId = Number(draft?.proveedor_codigo ?? '');
-    if (!Number.isFinite(empresaId) || !Number.isFinite(proveedorId)) {
+    if (!Number.isFinite(empresaId) || empresaId < 1 || !Number.isFinite(proveedorId) || proveedorId < 1) {
       setPunteosLoadError('Selecciona empresa y acreedor antes de consultar punteables.');
       return;
     }
 
+    const scope = facturaProviderScopeKey(draft);
+    const runId = punteablesRunRef.current + 1;
+    punteablesRunRef.current = runId;
+    activeProviderScopeRef.current = scope;
     setPunteosLoading(true);
     setPunteosLoadError(null);
     try {
@@ -1580,8 +1950,9 @@ const Facturas = () => {
         empresaId: Math.trunc(empresaId),
         proveedorId: Math.trunc(proveedorId),
       });
+      if (punteablesRunRef.current !== runId || activeProviderScopeRef.current !== scope) return;
       setDraft((current) => {
-        if (!current) return current;
+        if (!current || facturaProviderScopeKey(current) !== scope || punteablesRunRef.current !== runId) return current;
         const currentBySource = new Map(
           (current.punteos ?? []).map((punteo) => [
             `${punteo.source_table ?? ''}:${punteo.source_id ?? punteo.remote_id ?? ''}`,
@@ -1600,13 +1971,16 @@ const Facturas = () => {
           }),
         };
       });
-      if (candidates.length === 0) {
+      if (candidates.length === 0 && punteablesRunRef.current === runId) {
         setPunteosLoadError('La API no devolvió albaranes o gastos punteables para esta factura.');
       }
     } catch (error) {
+      if (punteablesRunRef.current !== runId || activeProviderScopeRef.current !== scope) return;
       setPunteosLoadError(getErrorMessage(error, 'No se pudieron cargar los punteables del ERP.'));
     } finally {
-      setPunteosLoading(false);
+      if (punteablesRunRef.current === runId && activeProviderScopeRef.current === scope) {
+        setPunteosLoading(false);
+      }
     }
   };
 
@@ -1618,7 +1992,11 @@ const Facturas = () => {
     );
   };
 
-  const persistFactura = async (validar: boolean, facturaOverride?: FacturaDraft) => {
+  const persistFactura = async (
+    validar: boolean,
+    facturaOverride?: FacturaDraft,
+    providerPreflightVerified = false,
+  ) => {
     const baseDraft = facturaOverride ?? draft;
     if (!baseDraft) {
       return null;
@@ -1637,31 +2015,52 @@ const Facturas = () => {
         payload,
         lineas.map((linea, index) => ({ ...linea, posicion: index + 1 })),
         validar,
+        { providerPreflightVerified },
       );
 
       setFacturas((current) => replaceFactura(current, saved));
+      const savedConfirmation = getFacturaERPSendConfirmation(saved);
       setERPRegistrationByFacturaId((current) => ({
         ...current,
-        [saved.id]: saved.estado === 'enviada_erp' || saved.erp_sent_at ? 'registered' : 'unregistered',
+        [saved.id]: savedConfirmation === 'confirmed'
+          ? 'registered'
+          : savedConfirmation === 'reference_only' || savedConfirmation === 'reconciling'
+            ? 'checking'
+            : 'unregistered',
       }));
       const savedLineas = getLineas(saved);
       setDraft(saved);
       setLineas(savedLineas);
+      setPreflightIssues([]);
+      setDuplicateCandidate(null);
       setLastSavedEditorSnapshot(createEditorSnapshot(saved, savedLineas));
       setLoadedDetailId(saved.id);
       setPdfFile(null);
+      const savedIssues = normalizeFacturaValidationIssues(saved.validation_errors);
+      const savedHasErrors = savedIssues.some((issue) => issue.severity === 'error');
+      const savedHasWarnings = savedIssues.some((issue) => issue.severity === 'warning');
       const successMessage: ModalMessage = {
-        type: saved.validation_errors?.length ? 'info' : 'success',
-        text: saved.validation_errors?.length
-          ? 'Factura guardada con avisos de validacion.'
-          : validar
-            ? 'Factura validada y lista para envio manual.'
-            : 'Factura guardada.',
+        type: savedHasErrors ? 'error' : savedHasWarnings ? 'info' : 'success',
+        text: savedHasErrors
+          ? 'Factura guardada con errores bloqueantes de validacion.'
+          : savedHasWarnings
+            ? 'Factura guardada con avisos de revision.'
+            : validar
+              ? 'Factura validada y lista para envio manual.'
+              : 'Factura guardada.',
       };
 
       if (isDetailMode) {
         setModalMessage(null);
-        setSaveFeedback(saved.validation_errors?.length ? 'Guardada con avisos' : validar ? 'Validada' : 'Guardada');
+        setSaveFeedback(
+          savedHasErrors
+            ? 'Guardada con errores'
+            : savedHasWarnings
+              ? 'Guardada con avisos'
+              : validar
+                ? 'Validada'
+                : 'Guardada',
+        );
       } else {
         setModalMessage(successMessage);
       }
@@ -1679,10 +2078,39 @@ const Facturas = () => {
     setSending(true);
     setModalMessage(null);
     setSaveFeedback(null);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
 
     try {
       if (!draft) {
         setModalMessage({ type: 'error', text: 'No hay factura seleccionada.' });
+        return;
+      }
+
+      const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
+      if (reconciliationRequestId) {
+        const reconciled = await sendFacturaRecibidaToERP(
+          draft.id,
+          draft.version,
+          reconciliationRequestId,
+        );
+        const reconciliationConfirmation = getFacturaERPSendConfirmation(reconciled);
+        setFacturas((current) => replaceFactura(current, reconciled));
+        setERPRegistrationByFacturaId((current) => ({
+          ...current,
+          [reconciled.id]: reconciliationConfirmation === 'confirmed' ? 'registered' : 'checking',
+        }));
+        const reconciledLineas = getLineas(reconciled);
+        setDraft(reconciled);
+        setLineas(reconciledLineas);
+        setLastSavedEditorSnapshot(createEditorSnapshot(reconciled, reconciledLineas));
+        setLoadedDetailId(reconciled.id);
+        setModalMessage(reconciliationConfirmation === 'confirmed'
+          ? { type: 'success', text: 'Reconciliacion completada y escritura confirmada por el ERP.' }
+          : {
+              type: 'info',
+              text: 'El ERP todavia no permite confirmar la escritura. No se ha realizado un segundo envio.',
+            });
         return;
       }
 
@@ -1693,30 +2121,96 @@ const Facturas = () => {
 
       if (needsProviderMatch) {
         const lookup = await locateProveedorForFactura(facturaForSend);
+        if (lookup.response && !lookup.response.ok) {
+          const issue: FacturaValidationIssue = {
+            code: 'proveedor_api_no_disponible',
+            field: 'FRR_idproveedor',
+            message: lookup.message,
+            severity: 'error',
+          };
+          setPreflightIssues([issue]);
+          setModalMessage({ type: 'error', text: lookup.message });
+          return;
+        }
+        if (!lookup.match) {
+          const manualSelection = lookup.response?.erp_response?.resultado === 'manual_selection_required';
+          const issue: FacturaValidationIssue = {
+            code: manualSelection ? 'proveedor_seleccion_manual_requerida' : 'proveedor_no_encontrado',
+            field: 'FRR_idproveedor',
+            message: lookup.message,
+            severity: 'error',
+          };
+          setPreflightIssues([issue]);
+          setModalMessage({ type: 'error', text: lookup.message });
+          return;
+        }
         if (lookup.match) {
           facturaForSend = lookup.factura;
           setDraft((current) => (current ? applyProveedorLookupMatch(current, lookup.match) : current));
         }
       }
 
-      const saved = await persistFactura(true, facturaForSend);
-      if (!saved || saved.validation_errors?.length) {
+      const preflight = await preflightFacturaRecibidaERP(facturaForSend);
+      setPreflightIssues(preflight.issues);
+      setDuplicateCandidate(preflight.duplicate);
+      const preflightErrors = preflight.issues.filter((issue) => issue.severity === 'error');
+      if (preflightErrors.length > 0) {
         setModalMessage({
           type: 'error',
-          text: saved?.validation_errors?.join(' ') || 'No se pudo preparar la factura para envio.',
+          text: preflightErrors.map((issue) => issue.message).join(' '),
+        });
+        return;
+      }
+
+      if (preflight.provider) {
+        facturaForSend = applyProveedorERPDetail(facturaForSend, preflight.provider);
+        setDraft((current) => (current ? applyProveedorERPDetail(current, preflight.provider as FacturaProveedorERPDetail) : current));
+      }
+
+      const saved = await persistFactura(true, facturaForSend, true);
+      const savedErrors = normalizeFacturaValidationIssues(saved?.validation_errors).filter(
+        (issue) => issue.severity === 'error',
+      );
+      if (!saved || savedErrors.length > 0) {
+        setModalMessage({
+          type: 'error',
+          text: savedErrors.map((issue) => issue.message).join(' ') || 'No se pudo preparar la factura para envio.',
         });
         return;
       }
 
       const sent = await sendFacturaRecibidaToERP(saved.id, saved.version);
+      const sendConfirmation = getFacturaERPSendConfirmation(sent);
       setFacturas((current) => replaceFactura(current, sent));
-      setERPRegistrationByFacturaId((current) => ({ ...current, [sent.id]: 'registered' }));
+      setERPRegistrationByFacturaId((current) => ({
+        ...current,
+        [sent.id]: sendConfirmation === 'confirmed' ? 'registered' : 'checking',
+      }));
       const sentLineas = getLineas(sent);
       setDraft(sent);
       setLineas(sentLineas);
+      setPreflightIssues([]);
+      setDuplicateCandidate(null);
       setLastSavedEditorSnapshot(createEditorSnapshot(sent, sentLineas));
       setLoadedDetailId(sent.id);
-      setModalMessage({ type: 'success', text: 'Factura enviada correctamente.' });
+      if (sendConfirmation === 'confirmed') {
+        setModalMessage({ type: 'success', text: 'Factura enviada y confirmada por el ERP.' });
+      } else if (sendConfirmation === 'reference_only') {
+        setModalMessage({
+          type: 'info',
+          text: 'El ERP devolvio una referencia de solo lectura. No se confirma la creacion y la factura queda pendiente de reconciliacion.',
+        });
+      } else if (sendConfirmation === 'reconciling') {
+        setModalMessage({
+          type: 'info',
+          text: 'La respuesta del ERP sigue indeterminada. No se marca como enviada hasta completar la reconciliacion.',
+        });
+      } else {
+        setModalMessage({
+          type: 'info',
+          text: 'La llamada al ERP termino sin remote_frr_id y estado enviado confirmados. La factura queda pendiente de reconciliacion.',
+        });
+      }
     } catch (error) {
       setModalMessage({ type: 'error', text: getErrorMessage(error, 'No se pudo enviar la factura.') });
     } finally {
@@ -1858,9 +2352,11 @@ const Facturas = () => {
     setPdfFile(file);
   };
 
-  const detailERPStatus = draft?.id
-    ? erpStatusMeta(erpStateForInvoice(draft as FacturaRecibida, erpRegistrationByFacturaId[draft.id]))
-    : erpStatusMeta('unknown');
+  const detailERPState = draft?.id
+    ? erpStateForInvoice(draft as FacturaRecibida, erpRegistrationByFacturaId[draft.id])
+    : 'unknown';
+  const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
+  const detailERPStatus = erpStatusMeta(detailERPState);
   const isReadOnlyDetail = isERPReadOnlyFactura(draft);
   const lineasBaseTotal = lineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
   const accountingLinesWithData = lineas.filter(hasAccountingLineData);
@@ -1871,17 +2367,36 @@ const Facturas = () => {
   const ctbLineas = draft?.ctb_lineas ?? [];
   const ctbTotal = ctbLineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
   const punteos = draft?.punteos ?? [];
-  const getPunteoImporte = (punteo: FacturaRecibidaPunteo) => Number(punteo.importe ?? 0) || 0;
+  const getPunteoImporte = (punteo: FacturaRecibidaPunteo) =>
+    Number(punteo.importe ?? punteo.importe_factura ?? punteo.importe_punteado ?? 0) || 0;
   const getPunteoImporteP = (punteo: FacturaRecibidaPunteo) =>
     Number(punteo.importe_punteado ?? punteo.importe_factura ?? 0) || 0;
-  const getPunteoSelected = (punteo: FacturaRecibidaPunteo) => Boolean(punteo.seleccionado);
-  const punteosTotal = punteos.reduce((sum, punteo) => sum + getPunteoImporte(punteo), 0);
+  const getPunteoSelected = (punteo: FacturaRecibidaPunteo) => punteo.seleccionado === true;
+  const punteosTotal = punteos
+    .filter(getPunteoSelected)
+    .reduce((sum, punteo) => sum + getPunteoImporte(punteo), 0);
   const punteosSeleccionados = punteos.filter(getPunteoSelected).length;
+  const punteosBaseDifference = punteosTotal - accountingBase;
+  const punteosGastosDifference = punteosTotal - lineasBaseTotal;
   const ivaTramos = draft?.iva_tramos?.length
     ? draft.iva_tramos
     : createEmptyDraft().iva_tramos ?? [];
   const ivaBaseTotal = ivaTramos.reduce((sum, tramo) => sum + Number(tramo.base ?? 0), 0);
   const ivaCuotaTotal = ivaTramos.reduce((sum, tramo) => sum + Number(tramo.cuota ?? 0), 0);
+  // El ERP tiene 5 huecos fijos (FRR_base1..5), no una tabla hija: el tope es 5 y no
+  // se puede ampliar. Pero el 96,8% de las facturas medidas solo usa el tramo 1, asi
+  // que se muestran los tramos con dato y el usuario revela los demas si los necesita.
+  // Los 5 siguen existiendo en el borrador y en el payload; esto es solo presentacion.
+  const ultimoIvaTramoConDato = ivaTramos.reduce(
+    (ultimo, tramo) => (ivaTramoTieneDato(tramo) ? tramo.posicion : ultimo),
+    0,
+  );
+  const ivaTramosVisibles = Math.min(
+    ivaTramos.length,
+    Math.max(1, ultimoIvaTramoConDato + ivaTramosExtra),
+  );
+  const visibleIvaTramos = ivaTramos.slice(0, ivaTramosVisibles);
+  const ivaTramosOcultos = ivaTramos.length - ivaTramosVisibles;
   const calculatedInvoiceTotal =
     ivaBaseTotal +
     ivaCuotaTotal -
@@ -1899,17 +2414,20 @@ const Facturas = () => {
   const useCalculatedInvoiceTotal = () => {
     updateDraft('total', Number(calculatedInvoiceTotal.toFixed(2)));
   };
-  const assignTotalToFirstVencimiento = () => {
+  const assignTotalToFirstVencimiento = async () => {
     const hasOtherAmounts = vencimientos
       .slice(1)
       .some((vencimiento) => Math.abs(Number(vencimiento.importe ?? 0)) > ACCOUNTING_AMOUNT_TOLERANCE);
-    if (
-      hasOtherAmounts &&
-      !window.confirm(
-        'Esta acción asignará el total al primer vencimiento y limpiará los importes de los vencimientos 2 a 4. ¿Continuar?',
-      )
-    ) {
-      return;
+    if (hasOtherAmounts) {
+      const confirmed = await confirmar({
+        titulo: 'Asignar el total al primer vencimiento',
+        descripcion:
+          'Se asignará el total al primer vencimiento y se limpiarán los importes de los vencimientos 2 a 4.',
+        aceptar: 'Asignar y limpiar',
+        cancelar: 'Cancelar',
+        destructivo: true,
+      });
+      if (!confirmed) return;
     }
     setDraft((current) => {
       if (!current) return current;
@@ -2180,7 +2698,7 @@ const Facturas = () => {
         <div className="mb-3">
           <button
             type="button"
-            className="-ml-2 inline-flex h-8 w-fit items-center justify-center gap-2 rounded-md px-2 text-sm font-semibold text-slate-600 transition-colors hover:bg-white hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+            className="-ml-2 inline-flex h-8 w-fit items-center justify-center gap-2 rounded-md px-2 text-sm font-semibold text-slate-600 transition-colors hover:bg-white hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
             onClick={closeDetail}
           >
             <ArrowLeft size={16} />
@@ -2233,11 +2751,24 @@ const Facturas = () => {
                 <button
                   type="button"
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
-                  disabled={saving || sending || extractingIa || draft.estado === 'enviada_erp' || draft.estado === 'descartada'}
+                  disabled={
+                    saving ||
+                    sending ||
+                    extractingIa ||
+                    detailERPState === 'registered' ||
+                    (detailERPState === 'checking' && !reconciliationRequestId) ||
+                    draft.estado === 'descartada'
+                  }
                   onClick={() => void handleSendERP()}
                 >
                   {sending ? <Loader2 className="animate-spin" size={15} /> : <CheckCircle2 size={15} />}
-                  {draft.estado === 'enviada_erp' ? 'Enviado a ERP' : 'Enviar a ERP'}
+                  {detailERPState === 'registered'
+                    ? 'Enviado a ERP'
+                    : detailERPState === 'checking'
+                      ? reconciliationRequestId
+                        ? 'Reconciliar con ERP'
+                        : 'Pendiente de reconciliacion'
+                      : 'Enviar a ERP'}
                 </button>
               </>
             )}
@@ -2272,7 +2803,7 @@ const Facturas = () => {
         </div>
       </header>
 
-      {draft.erp_error || visibleErrors.length > 0 || catalogError ? (
+      {draft.erp_error || visibleErrors.length > 0 || visibleWarnings.length > 0 || providerScopeNotice || catalogError ? (
         <div className="mx-2 mt-4 space-y-3">
           {draft.erp_error ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
@@ -2281,13 +2812,39 @@ const Facturas = () => {
             </div>
           ) : null}
           {visibleErrors.length > 0 ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
-              <p className="font-bold">Validacion pendiente</p>
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
+              <p className="font-bold">Errores bloqueantes</p>
               <ul className="mt-2 list-disc space-y-1 pl-5">
-                {visibleErrors.map((error) => (
-                  <li key={error}>{error}</li>
+                {visibleErrors.map((issue) => (
+                  <li key={issue.code ?? `${issue.field}:${issue.message}`}>{issue.message}</li>
                 ))}
               </ul>
+              {duplicateCandidate ? (
+                <div className="mt-3 rounded border border-red-200 bg-white/70 px-3 py-2 dark:border-red-900/60 dark:bg-red-950/30">
+                  <p className="font-bold">Candidato encontrado en ERP</p>
+                  <p className="mt-1">
+                    Empresa {duplicateCandidate.empresaId ?? '-'} · Ejercicio {duplicateCandidate.ejercicio ?? '-'} · Proveedor{' '}
+                    {duplicateCandidate.proveedorId ?? '-'}{duplicateCandidate.proveedor ? ` (${duplicateCandidate.proveedor})` : ''} · Factura{' '}
+                    {duplicateCandidate.numeroFactura ?? '-'} · FRR_id {duplicateCandidate.frrId}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {visibleWarnings.length > 0 ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
+              <p className="font-bold">Avisos de revision</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                {visibleWarnings.map((issue) => (
+                  <li key={issue.code ?? `${issue.field}:${issue.message}`}>{issue.message}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {providerScopeNotice ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
+              <p className="font-bold">Revisa el cambio de ambito</p>
+              <p className="mt-1">{providerScopeNotice}</p>
             </div>
           ) : null}
           {catalogError ? (
@@ -2302,9 +2859,9 @@ const Facturas = () => {
       <div className="purchase-invoice-detail-main grid flex-1 items-start gap-6 px-5 py-6 md:px-6 xl:grid-cols-[minmax(420px,0.92fr)_minmax(0,1.08fr)]">
         <section className="purchase-invoice-detail-pdf-panel flex min-w-0 flex-col bg-white dark:bg-transparent xl:sticky xl:top-4">
           <DetailSection title="Documento PDF" className="flex min-h-0 flex-1 flex-col">
-            <div className="purchase-invoice-pdf-shell flex min-h-[360px] flex-1 flex-col overflow-hidden rounded-sm bg-slate-100 dark:bg-slate-950 xl:min-h-[520px]">
+            <div className="purchase-invoice-pdf-shell flex flex-col overflow-hidden rounded-sm bg-slate-100 dark:bg-slate-950">
               {pdfLoading ? (
-                <div className="grid min-h-[520px] flex-1 place-items-center bg-neutral-900 text-sm font-semibold text-slate-300">
+                <div className="grid min-h-0 flex-1 place-items-center bg-neutral-900 text-sm font-semibold text-slate-300">
                   <div className="text-center">
                     <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-primary" />
                     Abriendo PDF...
@@ -2314,11 +2871,12 @@ const Facturas = () => {
                 <PdfViewer
                   url={pdfUrl}
                   showControls
+                  appearance="purchase-invoice"
                   fileName={draft.pdf_nombre ?? undefined}
-                  className="min-h-[720px] flex-1 xl:min-h-[520px]"
+                  className="purchase-invoice-pdf-viewer min-h-0 flex-1"
                 />
               ) : (
-                <div className="grid min-h-[360px] flex-1 place-items-center bg-slate-100 px-6 text-center text-sm font-semibold text-slate-500 dark:bg-slate-950 dark:text-slate-400">
+                <div className="grid min-h-0 flex-1 place-items-center bg-slate-100 px-6 text-center text-sm font-semibold text-slate-500 dark:bg-slate-950 dark:text-slate-400">
                   <div>
                     <FileText className="mx-auto mb-3 h-8 w-8" />
                     El visor aparecera cuando exista un PDF guardado.
@@ -2338,13 +2896,13 @@ const Facturas = () => {
                     <AcreedorCombobox
                       value={acreedorIdFromDraft(draft)}
                       onChange={() => undefined}
-                      onSelect={selectProveedorAcreedor}
+                      onSelect={(acreedor) => void selectProveedorAcreedor(acreedor)}
                       disabled={isReadOnlyDetail}
                       placeholder="Buscar acreedor por nombre o NIF"
                       className={detailInputClass}
                       source="erp"
-                      minSearchLength={0}
-                      searchLimit={2000}
+                      minSearchLength={2}
+                      searchLimit={25}
                     />
                   </Field>
                   <Field label="Nombre" className="sm:col-span-2">
@@ -2369,14 +2927,17 @@ const Facturas = () => {
               <FieldGroup title="Factura">
                 <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
                   <Field label="Entrada">
+                    {/* FRR_numero lo genera el ERP en el alta; el contrato v2 rechaza
+                        cualquier valor inyectado, asi que teclearlo solo podia
+                        bloquear el envio. Se muestra, nunca se edita. */}
                     <Input
                       className={detailInputClass}
                       value={draft.referencia ?? ''}
-                      disabled={isReadOnlyDetail}
-                      onChange={(event) => updateDraft('referencia', event.target.value)}
+                      placeholder="La asigna el ERP"
+                      disabled
                     />
                   </Field>
-                  <Field label="Ejercicio">
+                  <Field label="Ejercicio ERP">
                     <Input
                       className={detailInputClass}
                       inputMode="numeric"
@@ -2434,8 +2995,14 @@ const Facturas = () => {
                       disabled={isReadOnlyDetail}
                       triggerClassName={detailInputClass}
                     />
+                    <SugerenciaHistorial
+                      sugerencia={sugerenciasHistorial.tipo_factura}
+                      actual={draft.fr_sufa}
+                      disabled={isReadOnlyDetail}
+                      onAplicar={(valor) => updateDraft('fr_sufa', valor)}
+                    />
                   </Field>
-                  <Field label="Tipo IVA">
+                  <Field label="Régimen IVA">
                     <FilterSelect
                       value={draft.tipo_iva_codigo ?? ''}
                       options={regimenOptions}
@@ -2444,22 +3011,45 @@ const Facturas = () => {
                       disabled={isReadOnlyDetail}
                       triggerClassName={detailInputClass}
                     />
-                  </Field>
-                  <Field label="ID técnico asiento">
-                    <Input
-                      className={detailInputClass}
-                      value={numberInputValue(draft.asiento_tecnico ?? draft.asiento)}
-                      disabled
+                    <SugerenciaHistorial
+                      sugerencia={sugerenciasHistorial.regimen_id}
+                      actual={draft.tipo_iva_codigo}
+                      disabled={isReadOnlyDetail}
+                      onAplicar={(valor) => updateDraft('tipo_iva_codigo', valor)}
                     />
                   </Field>
-                  <Field label="N.º de asiento">
-                    <Input className={detailInputClass} value={draft.asiento_numero ?? ''} disabled />
-                  </Field>
-                  <Field label="Fecha asiento">
-                    <Input className={detailInputClass} value={formatDate(draft.asiento_fecha)} disabled />
-                  </Field>
+                  {/* Los identificadores del asiento los genera el ERP; en un
+                      borrador local son siempre nulos y solo anaden ruido. Se
+                      muestran unicamente cuando el ERP ha devuelto algun valor. */}
+                  {draft.asiento_tecnico || draft.asiento ? (
+                    <Field label="ID técnico asiento">
+                      <Input
+                        className={detailInputClass}
+                        value={numberInputValue(draft.asiento_tecnico ?? draft.asiento)}
+                        disabled
+                      />
+                    </Field>
+                  ) : null}
+                  {draft.asiento_numero ? (
+                    <Field label="N.º de asiento">
+                      <Input className={detailInputClass} value={draft.asiento_numero ?? ''} disabled />
+                    </Field>
+                  ) : null}
+                  {draft.asiento_fecha ? (
+                    <Field label="Fecha asiento">
+                      <Input className={detailInputClass} value={formatDate(draft.asiento_fecha)} disabled />
+                    </Field>
+                  ) : null}
                   <Field label="Estado asiento">
-                    <Input className={detailInputClass} value={draft.asiento_estado ?? 'not_requested'} disabled />
+                    <Input
+                      className={detailInputClass}
+                      value={
+                        asientoEstadoLabels[draft.asiento_estado ?? 'not_requested'] ??
+                        draft.asiento_estado ??
+                        'not_requested'
+                      }
+                      disabled
+                    />
                   </Field>
                   <Field label="Concepto asiento" className="sm:col-span-2 2xl:col-span-4">
                     <textarea
@@ -2470,6 +3060,30 @@ const Facturas = () => {
                       onChange={(event) => updateDraft('concepto_asiento', event.target.value)}
                       placeholder="Concepto asiento"
                     />
+                    {(() => {
+                      const conceptoSugerido = construirConceptoFactura(draft.proveedor_nombre);
+                      if (
+                        isReadOnlyDetail ||
+                        !conceptoSugerido ||
+                        cleanOptionalString(draft.concepto_asiento) === conceptoSugerido
+                      ) {
+                        return null;
+                      }
+                      return (
+                        <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                          <span>
+                            Convención ERP: <span className="font-semibold">{conceptoSugerido}</span>
+                          </span>
+                          <button
+                            type="button"
+                            className="font-semibold text-primary underline-offset-2 hover:underline"
+                            onClick={() => updateDraft('concepto_asiento', conceptoSugerido)}
+                          >
+                            Aplicar
+                          </button>
+                        </p>
+                      );
+                    })()}
                   </Field>
                   <Field label="Obs. AEAT" className="sm:col-span-2">
                     <Input
@@ -2478,6 +3092,20 @@ const Facturas = () => {
                       disabled={isReadOnlyDetail}
                       onChange={(event) => updateDraft('obs_aeat', event.target.value)}
                     />
+                    {!isReadOnlyDetail &&
+                    cleanOptionalString(draft.concepto_asiento) &&
+                    !cleanOptionalString(draft.obs_aeat) ? (
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                        <span>El ERP replica aquí el concepto del asiento.</span>
+                        <button
+                          type="button"
+                          className="font-semibold text-primary underline-offset-2 hover:underline"
+                          onClick={() => updateDraft('obs_aeat', draft.concepto_asiento ?? '')}
+                        >
+                          Copiar concepto
+                        </button>
+                      </p>
+                    ) : null}
                   </Field>
                   <Field label="Obs." className="sm:col-span-2">
                     <Input
@@ -2525,7 +3153,7 @@ const Facturas = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                      {ivaTramos.map((tramo) => (
+                      {visibleIvaTramos.map((tramo) => (
                         <tr key={tramo.posicion} className="bg-white dark:bg-slate-950">
                           <td className="px-3 py-3 font-bold text-slate-500">{tramo.posicion}</td>
                           <td className="px-3 py-3">
@@ -2542,6 +3170,22 @@ const Facturas = () => {
                     </tbody>
                   </table>
                 </div>
+                {ivaTramosOcultos > 0 ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
+                    <button
+                      type="button"
+                      className="font-semibold text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline"
+                      disabled={isReadOnlyDetail}
+                      onClick={() => setIvaTramosExtra((current) => current + 1)}
+                    >
+                      Añadir tramo de IVA
+                    </button>
+                    <span>
+                      {ivaTramosOcultos} de {ivaTramos.length} sin usar. El ERP admite un máximo de{' '}
+                      {ivaTramos.length}.
+                    </span>
+                  </div>
+                ) : null}
                 <div className="mt-4 grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
                   <Field label="Base retención">
                     <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.base_retencion)} disabled={isReadOnlyDetail} onChange={(event) => updateDraft('base_retencion', parseNumber(event.target.value))} />
@@ -2733,6 +3377,12 @@ const Facturas = () => {
                           </td>
                           <td className="px-3 py-3 text-right">{formatMoney(punteosTotal)}</td>
                           <td colSpan={3} />
+                        </tr>
+                        <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+                          <td className="px-3 pb-3" colSpan={11}>
+                            Diferencia frente a base: {formatMoney(punteosBaseDifference)} · Diferencia frente a gastos:{' '}
+                            {formatMoney(punteosGastosDifference)}
+                          </td>
                         </tr>
                       </tfoot>
                     </table>
@@ -2947,6 +3597,7 @@ const Facturas = () => {
 
   return (
     <>
+      {dialogoConfirmacion}
       {isDetailMode ? (
         <div className="h-full w-full">
           {detailView}

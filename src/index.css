@@ -284,6 +284,25 @@
     max-width: 100%;
   }
 
+  .purchase-invoice-pdf-shell {
+    height: calc(100dvh - 220px);
+    min-height: 720px;
+  }
+
+  .purchase-invoice-pdf-viewer {
+    height: 100%;
+    min-height: 0 !important;
+    max-height: 100%;
+  }
+
+  @media (max-width: 1023px) {
+    .purchase-invoice-pdf-shell {
+      height: min(640px, calc(100dvh - 220px));
+      min-height: 360px;
+      max-height: 640px;
+    }
+  }
+
   body.facturas-iberica-shell .app-topbar {
     min-height: 76px;
     background: #ffffff;

@@ -1,0 +1,152 @@
+       ASUNTO:
+         RE: Avances y documentación necesaria
+
+         FECHA:
+         2026-07-07 10:06
+
+         DE:
+         GESTION <gestion@campojoyma.com>
+
+         DESTINATARIO:
+         Miguel González <miguel@karma-box.com>
+
+         CC:
+         Calidad <calidad@campojoyma.com>
+
+OT, GE, MA, GV, FI, GC, CE, FZ, CX, GM
+
+OT- OTROS
+
+GE-COMPRAS GENERO
+
+MA-MATERIALES
+
+GV-GASTOS VENTAS
+
+FI-
+
+GC-GASTOS COMPRAS
+
+CE-
+
+FZ-FIANZA
+
+CX-COSTES EXTERNOS
+
+GM
+
+La cuenta 4009 es la cuenta del proveedor (agricultor) donde se contabilizan los albaranes de entrada de genero
+
+La cuenta 6000000010 es la comisión que se descuenta de su liquidacion
+
+ACREDITACIÓN PROFESIONAL [1]           AGRICULTURA ECOLÓGICA
+
+ MIGUEL ÁNGEL HERNÁNDEZ LÓPEZ
+
+DEPARTAMENTO DE CONTABILIDAD
+
+gestion@campojoyma.com
+
+AVDA. LAS NEGRAS 200
+
+A.P. CORREOS 38
+
+04110 CAMPOHERMOSO-ALMERIA
+
+Tlf:      0034 950 38 65 90
+
+Móvil: 669 633 828
+
+Fax:     0034 950 38 53 62
+
+www.campojoyma.com [2]
+
+Este mensaje y sus adjuntos contienen información confidencial y reservada dirigida exclusivamente a su destinatario. Si ha recibido este mensaje por error, se ruega lo notifique inmediatamente por esta misma vía y borre el mensaje de su sistema. Nótese que el correo electrónico vía Internet no permite asegurar ni la confidencialidad de los mensajes que se transmiten ni la correcta recepción de los mismos. En cumplimiento de la normativa vigente en materia de Protección de Datos de Carácter Personal, le informamos que los datos derivados de su correspondencia serán tratados por CAMPOJOYMA, S.L.U. con la finalidad de gestionar las comunicaciones que pudiera mantener con el personal de la entidad. Los datos personales proporcionados se conservarán, mientras no se solicite su supresión por el interesado o se mantenga la relación con esta empresa. La legitimación para el tratamiento de datos se basa en la relación que mantiene con esta empresa.  Para darse de baja o ejercer sus derechos de acceso, rectificación, supresión, limitación de tratamiento, oposición, portabilidad, derecho a no ser objeto de decisiones individualizadas, así como la revocación del consentimiento prestado, puede realizarlo dirigiéndose por escrito a la dirección Avenida de Las Negras nº 200 -04110 Campohermoso, Níjar (Almería). O por mail a contabilidad@campojoyma.com.
+
+_"CAMPOJOYMA, S.L.U. tiene implantadas políticas activas y procedimientos dirigidos a la prevención de riesgos penales, así mismo se rige por un Código de conducta que es de obligado cumplimiento para todas las personas físicas o jurídicas que entablen relación comercial con la misma. El Código de Conducta puede ser consultado en la página web corporativa. El incumplimiento del Código de Conducta supondrá el fin de la relación comercial o de otro tipo que haya sido establecida."_
+
+De: Calidad <calidad@campojoyma.com>
+Enviado el: martes, 7 de julio de 2026 8:17
+Para: GESTION <gestion@campojoyma.com>; Administracion <administracion@campojoyma.com>
+Asunto: RV: Avances y documentación necesaria
+
+Buenos días:
+
+Os reenvío email, con información que hay que facilitar a Karma (Miguel), ponedme en copia del envío, para poder hacer el seguimiento como hasta ahora.
+
+Un saludo
+
+ AGRICULTURA ECOLÓGICA
+
+Pilar Rodríguez Requena
+
+DEPARTAMENTO CALIDAD
+
+calidad@campojoyma.com
+
+AVDA. LAS NEGRAS 200
+
+A.P. CORREOS 38
+
+04110 CAMPOHERMOSO-ALMERIA
+
+Tlf:950386590
+
+Fax:     0034 950 38 53 62
+
+www.campojoyma.com [2]
+
+Este mensaje y sus adjuntos contienen información confidencial y reservada dirigida exclusivamente a su destinatario. Si ha recibido este mensaje por error, se ruega lo notifique inmediatamente por esta misma vía y borre el mensaje de su sistema. Nótese que el correo electrónico vía Internet no permite asegurar ni la confidencialidad de los mensajes que se transmiten ni la correcta recepción de los mismos. En cumplimiento de la normativa vigente en materia de Protección de Datos de Carácter Personal, le informamos que los datos derivados de su correspondencia serán tratados por CAMPOJOYMA, S.L.U. con la finalidad de gestionar las comunicaciones que pudiera mantener con el personal de la entidad. Los datos personales proporcionados se conservarán, mientras no se solicite su supresión por el interesado o se mantenga la relación con esta empresa. La legitimación para el tratamiento de datos se basa en la relación que mantiene con esta empresa.  Para darse de baja o ejercer sus derechos de acceso, rectificación, supresión, limitación de tratamiento, oposición, portabilidad, derecho a no ser objeto de decisiones individualizadas, así como la revocación del consentimiento prestado, puede realizarlo dirigiéndose por escrito a la dirección Avenida de Las Negras nº 200 -04110 Campohermoso, Níjar (Almería). O por mail a contabilidad@campojoyma.com.
+
+_"CAMPOJOYMA, S.L.U. tiene implantadas políticas activas y procedimientos dirigidos a la prevención de riesgos penales, así mismo se rige por un Código de conducta que es de obligado cumplimiento para todas las personas físicas o jurídicas que entablen relación comercial con la misma. El Código de Conducta puede ser consultado en la página web corporativa. El incumplimiento del Código de Conducta supondrá el fin de la relación comercial o de otro tipo que haya sido establecida."_
+
+De: Miguel González <miguel@karma-box.com>
+Enviado el: lunes, 6 de julio de 2026 16:39
+Para: Calidad <calidad@campojoyma.com>; Costes Campojoyma <costes@campojoyma.com>
+CC: Gabriel <gabriel@karma-box.com>
+Asunto: Avances y documentación necesaria
+
+Buenas tardes Pilar, espero que todo vaya bien.
+
+Te escribo para trasladarte algunos avances y comentarte la información que necesitaríamos para poder continuar con el desarrollo.
+
+En primer lugar, quería indicarte que hemos hablado con Clave y la documentación que nos han facilitado de la API no se ajusta a lo que necesitamos para la gestión de facturas y albaranes. Por este motivo, continuaremos desarrollando nosotros la API necesaria para cubrir esta parte del proceso.
+
+Asociado a este desarrollo, necesitaríamos, si fuera posible, la siguiente información:
+
+     * Un ejemplo de una factura en formato PDF y un pantallazo en Clave donde se vea en qué apartado se introduce cada campo. Esto nos ayudará a identificar correctamente dónde debe ir cada dato.
+     * Hemos detectado que las facturas pueden tener diferentes tipos, como OT, GE, MA, GV, FI, GC, CE, FZ, CX, GM, entre otros. Necesitaríamos que nos aclaraseis qué significa cada uno y en qué casos debe aplicarse, para que la IA pueda asignar correctamente el tipo correspondiente.
+     * Adjunto también una captura con otra consulta. En ella se pueden ver los importes de la factura, como la base imponible y el total, pero aparecen además una serie de conceptos como "apuntes"(no es el nombre exacto pero viene con una serie de siglas) que no terminamos de interpretar.
+
+Nos gustaría que nos aclaraseis a qué corresponden estos apuntes, ya que en algunos casos aparecen asociados en positivo a la factura, sin coincidir aparentemente con el total, y en otro caso aparece un importe en negativo vinculado a una cuenta que no parece corresponder a un proveedor.
+
+_(Esta captura es de nuestro programa ya que estamos haciendo pruebas)_
+
+Una vez aclarados estos puntos, quedaría pendiente conectar el sistema al correo donde se recibirán las facturas. Nuestra recomendación es que sea una cuenta destinada exclusivamente a este fin, por ejemplo facturas@campojoyma.com o facturacion@campojoyma.com.
+
+Cuando tengáis creado o definido ese correo, necesitaríamos que nos facilitéis la configuración IMAP para poder realizar la conexión.
+
+Por ahora, esto sería todo lo necesario para seguir avanzando. Quedo disponible para cualquier cuestión que os pueda surgir.
+
+Muchas gracias!
+
+Un saludo.
+
+-- 
+
+Miguel González
+
+DIRECTOR DE PROYECTOS - KARMA AGENCIA
+
+Tel: 673837438 - email: miguel@karma-box.com
+Web: https://karma-box.com/ Instagram: https://instagram.com/karma.agencia/ [3]
+
+---------------------------------------------------------
+
+Cumpliendo el Reglamento (UE) 2016 / 679 del Parlamento Europeo y del Consejo de 27 de abril de 2016, en Karma-Box Studio, S.L. tratamos la información que nos facilita con el fin de prestarles el servicio solicitado. Los datos proporcionados se conservarán mientras se mantenga la relación comercial o durante los años necesarios para cumplir con las obligaciones legales. Los datos no se cederán a terceros salvo en los casos en que exista una obligación legal. Usted tiene derecho a obtener confirmación sobre si en Karma-Box Studio, S.L. estamos tratando sus datos personales, por tanto tiene derecho a acceder a sus datos personales, rectificar los datos inexactos o solicitar su supresión cuando los datos ya no sean necesarios. Para ejercer sus derechos, pónganse en contacto con nosotros a través de la siguiente dirección postal C/ Juan Perez Perez, 7, 04001, Almeria o a través del email Info@karma-box.com.
+
+Links:
+------
+[1] https://www.ifema.es/fruit-attraction/entradas
+[2] http://www.campojoyma.com/
+[3] https://instagram.com/karma.agencia/

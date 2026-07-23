@@ -1,0 +1,79 @@
+{
+  "project_id": "adbprpemmbspntbttziz",
+  "table": "public.acreedores_cache",
+  "export_date": "2026-07-22",
+  "row_count": 5,
+  "rows": [
+    {
+      "raw": {
+        "source": "apiCampojoyma-read-sample",
+        "remote_id": 1174
+      },
+      "activo": true,
+      "ACR_Nif": "B13832399",
+      "synced_at": "2026-07-03T12:26:36.975654+00:00",
+      "ACR_Codigo": 1174,
+      "ACR_Cuenta": "41000001174",
+      "ACR_Nombre": "LA JABEGA PLAYA, S.L.",
+      "created_at": "2026-07-03T12:26:36.975654+00:00",
+      "updated_at": "2026-07-03T12:26:36.975654+00:00"
+    },
+    {
+      "raw": {
+        "source": "apiCampojoyma-read-sample",
+        "remote_id": 1924
+      },
+      "activo": true,
+      "ACR_Nif": "RO50377165",
+      "synced_at": "2026-07-03T12:26:36.975654+00:00",
+      "ACR_Codigo": 1924,
+      "ACR_Cuenta": "41000001924",
+      "ACR_Nombre": "CRISTOBAL HUGO RODOLFO",
+      "created_at": "2026-07-03T12:26:36.975654+00:00",
+      "updated_at": "2026-07-03T12:26:36.975654+00:00"
+    },
+    {
+      "raw": {
+        "source": "apiCampojoyma-read-sample",
+        "remote_id": 1941,
+        "cuenta_gasto": "62200059050"
+      },
+      "activo": true,
+      "ACR_Nif": "B04243655",
+      "synced_at": "2026-07-03T12:26:36.975654+00:00",
+      "ACR_Codigo": 1941,
+      "ACR_Cuenta": "41000001941",
+      "ACR_Nombre": "MONTAJES ELÉCTRICOS ÁVILA SL",
+      "created_at": "2026-07-03T12:26:36.975654+00:00",
+      "updated_at": "2026-07-03T12:26:36.975654+00:00"
+    },
+    {
+      "raw": {
+        "source": "apiCampojoyma-read-sample",
+        "remote_id": 2095
+      },
+      "activo": true,
+      "ACR_Nif": "B04885448",
+      "synced_at": "2026-07-03T12:26:36.975654+00:00",
+      "ACR_Codigo": 2095,
+      "ACR_Cuenta": "41000002095",
+      "ACR_Nombre": "TRACTORES RIVAS GONZALEZ SL",
+      "created_at": "2026-07-03T12:26:36.975654+00:00",
+      "updated_at": "2026-07-03T12:26:36.975654+00:00"
+    },
+    {
+      "raw": {
+        "source": "apiCampojoyma-read-sample",
+        "remote_id": 3147
+      },
+      "activo": true,
+      "ACR_Nif": "B26689034",
+      "synced_at": "2026-07-03T12:26:36.975654+00:00",
+      "ACR_Codigo": 3147,
+      "ACR_Cuenta": "41000003147",
+      "ACR_Nombre": "AGROELIAN, S.L.",
+      "created_at": "2026-07-03T12:26:36.975654+00:00",
+      "updated_at": "2026-07-03T12:26:36.975654+00:00"
+    }
+  ]
+}

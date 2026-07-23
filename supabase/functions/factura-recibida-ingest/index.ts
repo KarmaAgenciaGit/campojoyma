@@ -6,6 +6,8 @@ import {
   createServiceClient,
   ensureArchivoPdf,
   getValidationErrorsForFactura,
+  loadAndResolveFacturaERPAccountingRules,
+  mergeValidationIssues,
   integerValue,
   jsonResponse,
   applyGastosToFrr,
@@ -17,6 +19,8 @@ import {
   pick,
   requestIdValue,
   requireAgentToken,
+  requestHasServiceRoleCredential,
+  resolveFacturaIngestAuthority,
   rpcErrorStatus,
   sanitizeAuditValue,
   text,
@@ -35,7 +39,7 @@ const asStringArray = (value: unknown): string[] =>
     ? value.map((item) => text(item, null)).filter((item): item is string => Boolean(item)).slice(0, 25)
     : [];
 
-const normalizeOnePayload = (raw: JsonObject) => {
+const normalizeOnePayload = (raw: JsonObject, trustedImportSignal: boolean) => {
   const extraction = asObject(raw.extraction ?? raw.cabecera ?? raw.factura ?? raw.invoice ?? raw);
   const fileName = text(pick(raw, ["file_name", "filename", "source_pdf_name", "nombre_archivo", "pdf_nombre"]), "factura-recibida.pdf");
   const pdfBase64 = cleanBase64(pick(raw, ["file_base64", "pdf_base64", "b64_pdf", "B64_PDF", "pdf", "data"]));
@@ -48,23 +52,33 @@ const normalizeOnePayload = (raw: JsonObject) => {
       text(pick(extraction, ["source", "workflow", "origin"]), null),
     ),
   );
-  const frr = applyGastosToFrr(normalizeFrrPayload(extraction), extraction.gastos ?? raw.gastos);
-
-  const proveedorNombre = text(pick(extraction, ["proveedor_nombre", "nombre_proveedor", "acreedor_nombre", "FRR_proveedor_nombre"]), null);
-  const proveedorNif = text(pick(extraction, ["proveedor_nif", "nif_proveedor", "acreedor_nif", "cif"]), null);
+  const remoteFrrId = integerValue(extraction.remote_id, null);
   const lineasRaw =
     asArray(extraction.ctb).length > 0
       ? asArray(extraction.ctb)
       : asArray(extraction.lineas_ctb).length > 0
         ? asArray(extraction.lineas_ctb)
         : asArray(raw.ctb);
+  const normalizedCtb = lineasRaw.map((linea, index) =>
+    normalizeFrcPayload(linea, index + 1, { preserveRemoteIds: true })
+  );
+  const normalizedPunteos = asArray(extraction.punteos ?? raw.punteos).map((punteo, index) =>
+    normalizePunteoPayload(punteo, index + 1)
+  );
+  const ingestAuthority = resolveFacturaIngestAuthority({
+    frr: applyGastosToFrr(normalizeFrrPayload(extraction), extraction.gastos ?? raw.gastos),
+    source,
+    remoteFrrId,
+    trustedImportSignal,
+    ctb: normalizedCtb,
+    punteos: normalizedPunteos,
+  });
+  const frr = ingestAuthority.frr;
+  const ctb = ingestAuthority.ctb;
+  const punteos = ingestAuthority.punteos;
 
-  const ctb = lineasRaw.map((linea, index) =>
-    normalizeFrcPayload(linea, index + 1, { preserveRemoteIds: source === "apiCampojoyma-read-sample" })
-  );
-  const punteos = asArray(extraction.punteos ?? raw.punteos).map((punteo, index) =>
-    normalizePunteoPayload(punteo, index + 1),
-  );
+  const proveedorNombre = text(pick(extraction, ["proveedor_nombre", "nombre_proveedor", "acreedor_nombre", "FRR_proveedor_nombre"]), null);
+  const proveedorNif = text(pick(extraction, ["proveedor_nif", "nif_proveedor", "acreedor_nif", "cif"]), null);
 
   const sourcePageNumber = integerValue(pick(raw, ["source_page_number", "page_number"]), null);
   const sourcePageCount = integerValue(pick(raw, ["source_page_count", "page_count"]), null);
@@ -109,6 +123,8 @@ const normalizeOnePayload = (raw: JsonObject) => {
     auditMetadata,
     matchEvidence,
     source,
+    isERPReference: ingestAuthority.isERPReference,
+    remoteFrrId: ingestAuthority.remoteFrrId,
   };
 };
 
@@ -118,6 +134,7 @@ Deno.serve(async (req) => {
 
   const tokenResult = await requireAgentToken(req);
   if (!tokenResult.ok) return tokenResult.response;
+  const trustedImportSignal = await requestHasServiceRoleCredential(req);
 
   try {
     const body = await req.json();
@@ -139,42 +156,48 @@ Deno.serve(async (req) => {
     for (const [index, input] of inputs.entries()) {
       try {
         const requestId = requestIdValue(input.request_id ?? (inputs.length === 1 ? envelope.request_id : null));
-        const normalized = normalizeOnePayload(input);
+        const normalized = normalizeOnePayload(input, trustedImportSignal);
+        const accountingRules = await loadAndResolveFacturaERPAccountingRules(supabase, normalized.frr);
+        normalized.frr = accountingRules.factura;
         const pdfResult = await ensureArchivoPdf(supabase, normalized.pdfBase64, normalized.fileName);
 
         const duplicateCandidates = [];
         if (pdfResult.archivoPdfId) {
-          const { data: pdfDup } = await supabase
+          const { data: pdfDup, error: pdfDupError } = await supabase
             .from("facturasrecibidas")
             .select("id")
             .eq("archivo_pdf_id", pdfResult.archivoPdfId)
+            .neq("estado", "duplicada")
+            .neq("estado", "descartada")
             .limit(1);
+          if (pdfDupError) throw pdfDupError;
           if (pdfDup?.[0]?.id) duplicateCandidates.push(pdfDup[0].id);
         }
 
-        if (normalized.frr.FRR_idproveedor && normalized.frr.FRR_numerofactura) {
-          const { data: supplierDup } = await supabase
+        const empresaId = integerValue(normalized.frr.FRR_Idempresa, null);
+        const ejercicio = integerValue(normalized.frr.FRR_ejercicio, null);
+        const proveedorId = integerValue(normalized.frr.FRR_idproveedor, null);
+        const numeroFactura = text(normalized.frr.FRR_numerofactura, null);
+        if (empresaId && ejercicio && proveedorId && numeroFactura) {
+          const { data: supplierDup, error: supplierDupError } = await supabase
             .from("facturasrecibidas")
             .select("id")
-            .eq("FRR_idproveedor", normalized.frr.FRR_idproveedor)
-            .eq("FRR_numerofactura", normalized.frr.FRR_numerofactura)
+            .eq("FRR_Idempresa", empresaId)
+            .eq("FRR_ejercicio", ejercicio)
+            .eq("FRR_idproveedor", proveedorId)
+            .eq("FRR_numerofactura", numeroFactura)
             .neq("estado", "duplicada")
+            .neq("estado", "descartada")
             .limit(1);
+          if (supplierDupError) throw supplierDupError;
           if (supplierDup?.[0]?.id) duplicateCandidates.push(supplierDup[0].id);
         }
 
-        const baseValidationErrors = await getValidationErrorsForFactura(supabase, normalized.frr);
-        const warningErrors = normalized.auditMetadata.warnings.map((message) => ({
-          field: "metadata.warnings",
-          message,
-          severity: "warning" as const,
-        }));
-        const validationErrors = [
-          ...baseValidationErrors,
-          ...warningErrors.filter(
-            (warning) => !baseValidationErrors.some((issue) => issue.message === warning.message),
-          ),
-        ];
+        const baseValidationErrors = await getValidationErrorsForFactura(normalized.frr);
+        const validationErrors = mergeValidationIssues(
+          [...accountingRules.issues, ...baseValidationErrors],
+          normalized.auditMetadata.warnings,
+        );
         const duplicateOf = duplicateCandidates[0] ?? null;
         const nextEstado = duplicateOf
           ? "duplicada"
@@ -189,10 +212,10 @@ Deno.serve(async (req) => {
             archivo_pdf_id: pdfResult.archivoPdfId,
             duplicada_de: duplicateOf,
             estado: nextEstado,
-            source_kind: normalized.source === "apiCampojoyma-read-sample" ? "erp_reference" : "n8n_draft",
-            remote_frr_id: integerValue((normalized.extraction as JsonObject).remote_id, null),
-            is_readonly_reference: normalized.source === "apiCampojoyma-read-sample",
-            match_status: normalized.source === "apiCampojoyma-read-sample" ? "reference" : "matched",
+            source_kind: normalized.isERPReference ? "erp_reference" : "n8n_draft",
+            remote_frr_id: normalized.remoteFrrId,
+            is_readonly_reference: normalized.isERPReference,
+            match_status: normalized.isERPReference ? "reference" : "matched",
             match_evidence: normalized.matchEvidence,
             extraction: {
               ...normalized.extraction,
@@ -204,7 +227,7 @@ Deno.serve(async (req) => {
           p_punteos: normalized.punteos,
           p_actor: null,
           p_request_id: requestId,
-          p_change_source: normalized.source === "apiCampojoyma-read-sample" ? "erp_import" : "ingest",
+          p_change_source: normalized.isERPReference ? "erp_import" : "ingest",
           p_reason: "Ingesta autenticada desde agente/n8n",
         });
 

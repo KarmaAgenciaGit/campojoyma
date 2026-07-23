@@ -25,6 +25,11 @@ export interface AgroIrisAcreedor {
   empresabancoid: number;
   referencia: string | null;
   cuenta_contable: string | null;
+  cuenta_gasto: string | null;
+  cuenta_cartera: string | null;
+  porcentaje_iva: number | null;
+  forma_pago_id: number | null;
+  banco_id: number | null;
 }
 
 export interface AcreedorSelectOption {
@@ -34,15 +39,7 @@ export interface AcreedorSelectOption {
   acreedor: AgroIrisAcreedor;
 }
 
-export type AcreedorSource = 'cache' | 'erp';
-
-type AcreedorCacheRow = {
-  ACR_Codigo: number;
-  ACR_Nombre: string | null;
-  ACR_Nif: string | null;
-  ACR_Cuenta: string | null;
-  activo: boolean | null;
-};
+export type AcreedorSource = 'erp';
 
 type ERPReadListResponse<T> = {
   items?: T[];
@@ -52,15 +49,10 @@ type ERPReadListResponse<T> = {
 };
 
 type ERPAcreedorRow = Record<string, unknown>;
-type ERPFetchResult = {
-  acreedores: AgroIrisAcreedor[];
-  complete: boolean;
-};
 
 const ERP_READ_FUNCTION = 'facturas-recibidas-erp-read';
-const db = supabase as any;
-const ERP_ACREEDORES_PAGE_SIZE = 200;
-const ERP_ACREEDORES_PREFETCH_CONCURRENCY = 4;
+const DEFAULT_ERP_ACREEDORES_PAGE_SIZE = 25;
+const MAX_ERP_ACREEDORES_PAGE_SIZE = 50;
 
 const cleanText = (value: unknown) => {
   const cleaned = String(value ?? '').trim();
@@ -83,6 +75,14 @@ const readNumber = (source: Record<string, unknown>, keys: string[], fallback: n
     if (Number.isFinite(parsed)) {
       return Math.trunc(parsed);
     }
+  }
+  return fallback;
+};
+
+const readDecimal = (source: Record<string, unknown>, keys: string[], fallback: number | null = null) => {
+  for (const key of keys) {
+    const parsed = Number(source[key]);
+    if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
 };
@@ -176,38 +176,6 @@ const isFalseyFlag = (value: unknown) => {
   return ['0', 'false', 'n', 'no'].includes(normalized);
 };
 
-const mapCacheRow = (row: AcreedorCacheRow): AgroIrisAcreedor => {
-  const code = Number(row.ACR_Codigo);
-  const name = String(row.ACR_Nombre ?? '').trim() || `Acreedor ${code}`;
-
-  return {
-    acreedorid: code,
-    sujetoid: code,
-    perfilacreedorid: 0,
-    codigo_fianza: '',
-    subgrupoanalisisid: 0,
-    formacobropagoid: 0,
-    cuentaid_contrapartida: 0,
-    tags_acreedor: '',
-    activo: row.activo !== false,
-    observaciones: '',
-    acreedorid_facturacion: code,
-    nombre_sujeto: name,
-    apellido1_sujeto: '',
-    apellido2_sujeto: '',
-    tipo_documento: '',
-    identificador_fiscal: String(row.ACR_Nif ?? '').trim(),
-    idiomaid: 0,
-    divisaid: 0,
-    imagen_sujeto: '',
-    web_sujeto: '',
-    nombre_comercial: name,
-    empresabancoid: 0,
-    referencia: row.ACR_Cuenta ?? null,
-    cuenta_contable: row.ACR_Cuenta ?? null,
-  };
-};
-
 const mapERPRow = (row: ERPAcreedorRow): AgroIrisAcreedor | null => {
   const code = readNumber(row, ['ACR_Codigo', 'codigo', 'id', 'acreedor_id'], null);
   if (!code) return null;
@@ -216,10 +184,19 @@ const mapERPRow = (row: ERPAcreedorRow): AgroIrisAcreedor | null => {
     readText(row, ['ACR_Nombre', 'nombre', 'nombre_comercial', 'razon_social'], null) ??
     `Acreedor ${code}`;
   const nif = readText(row, ['ACR_Nif', 'nif', 'cif'], '');
-  const cuenta = readText(row, ['ACR_IdCuenta', 'ACR_Cuenta', 'cuenta', 'cuenta_contable'], null);
-  const activoValue = row.activo ?? row.ACR_Activo;
-  const blocked = isTruthyFlag(row.ACR_Bloqueado);
-  const inactive = isTruthyFlag(row.ACR_InactivoRGPD);
+  const cuenta = readText(row, ['cuenta_id', 'ACR_IdCuenta', 'ACR_Cuenta', 'cuenta', 'cuenta_contable'], null);
+  const cuentaGasto = readText(row, ['cuenta_gasto', 'ACR_Cuentagasto', 'ACR_CuentaGasto'], null);
+  const cuentaCartera = readText(
+    row,
+    ['cuenta_cartera', 'ACR_IdCuentaCartera', 'ACR_CuentaCartera', 'ACR_CtaCartera'],
+    null,
+  );
+  const porcentajeIva = readDecimal(row, ['porcentaje_iva', 'ACR_PorcentajeIVA', 'ACR_PorcentajeIva'], null);
+  const formaPagoId = readNumber(row, ['forma_pago_id', 'ACR_IdFormaPago', 'formacobropagoid'], null);
+  const bancoId = readNumber(row, ['banco_id', 'ACR_IdBanco', 'empresabancoid'], null);
+  const activoValue = row.activo ?? row.operativo ?? row.ACR_Activo;
+  const blocked = isTruthyFlag(row.bloqueado ?? row.ACR_Bloqueado);
+  const inactive = isTruthyFlag(row.inactivo_rgpd ?? row.ACR_InactivoRGPD);
   const active = activoValue === undefined || activoValue === null ? !blocked && !inactive : !isFalseyFlag(activoValue);
 
   return {
@@ -228,7 +205,7 @@ const mapERPRow = (row: ERPAcreedorRow): AgroIrisAcreedor | null => {
     perfilacreedorid: 0,
     codigo_fianza: '',
     subgrupoanalisisid: 0,
-    formacobropagoid: 0,
+    formacobropagoid: formaPagoId ?? 0,
     cuentaid_contrapartida: 0,
     tags_acreedor: '',
     activo: active && !blocked && !inactive,
@@ -244,19 +221,18 @@ const mapERPRow = (row: ERPAcreedorRow): AgroIrisAcreedor | null => {
     imagen_sujeto: '',
     web_sujeto: '',
     nombre_comercial: name,
-    empresabancoid: 0,
+    empresabancoid: bancoId ?? 0,
     referencia: cuenta,
     cuenta_contable: cuenta,
+    cuenta_gasto: cuentaGasto,
+    cuenta_cartera: cuentaCartera,
+    porcentaje_iva: porcentajeIva,
+    forma_pago_id: formaPagoId,
+    banco_id: bancoId,
   };
 };
 
 class AgroIrisAcreedorService {
-  private acreedoresPromise: Promise<AgroIrisAcreedor[]> | null = null;
-  private erpAcreedoresPromise: Promise<AgroIrisAcreedor[]> | null = null;
-  private erpAcreedoresPromiseLimit = 0;
-  private erpAcreedoresCache: AgroIrisAcreedor[] | null = null;
-  private erpAcreedoresCacheComplete = false;
-
   private async getFunctionErrorMessage(error: unknown): Promise<string> {
     const fallback = error instanceof Error ? error.message : 'Error consultando el ERP.';
     const context = isRecord(error) ? error.context : null;
@@ -287,41 +263,14 @@ class AgroIrisAcreedorService {
     const { data, error } = await supabase.functions.invoke(ERP_READ_FUNCTION, {
       body: { consulta },
     });
-    if (error) throw new Error(await this.getFunctionErrorMessage(error));
+    if (error) {
+      const details = await this.getFunctionErrorMessage(error);
+      throw new Error(`No se pudo consultar el ERP de acreedores: ${details}`);
+    }
     if (data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string') {
-      throw new Error(String((data as { error: string }).error));
+      throw new Error(`No se pudo consultar el ERP de acreedores: ${String((data as { error: string }).error)}`);
     }
     return data as T;
-  }
-
-  private async fetchAcreedores(): Promise<AgroIrisAcreedor[]> {
-    const { data, error } = await db
-      .from('acreedores_cache')
-      .select('ACR_Codigo, ACR_Nombre, ACR_Nif, ACR_Cuenta, activo')
-      .eq('activo', true)
-      .order('ACR_Nombre', { ascending: true });
-
-    if (error) throw error;
-    return ((data ?? []) as AcreedorCacheRow[]).map(mapCacheRow);
-  }
-
-  private async searchAcreedoresCache(query: string, limit: number): Promise<AgroIrisAcreedor[]> {
-    const cleaned = query.trim();
-    let request = db
-      .from('acreedores_cache')
-      .select('ACR_Codigo, ACR_Nombre, ACR_Nif, ACR_Cuenta, activo')
-      .eq('activo', true)
-      .order('ACR_Nombre', { ascending: true })
-      .limit(limit);
-
-    if (cleaned) {
-      const safeSearch = cleaned.replace(/[,%]/g, ' ').trim();
-      request = request.or(`ACR_Nombre.ilike.%${safeSearch}%,ACR_Nif.ilike.%${safeSearch}%,ACR_Codigo.eq.${Number(safeSearch) || -1}`);
-    }
-
-    const { data, error } = await request;
-    if (error) throw error;
-    return ((data ?? []) as AcreedorCacheRow[]).map(mapCacheRow);
   }
 
   private mapAcreedoresERPPage(payload: unknown): ERPReadListResponse<ERPAcreedorRow> {
@@ -332,110 +281,19 @@ class AgroIrisAcreedorService {
     };
   }
 
-  private async fetchAcreedoresERPPage(offset: number, limit: number): Promise<ERPReadListResponse<ERPAcreedorRow>> {
-    const consulta = `acreedores?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`;
-    const payload = await this.erpRead<unknown>(consulta);
-    return this.mapAcreedoresERPPage(payload);
-  }
-
-  private async fetchAcreedoresERPBatch(offsets: number[], pageSize: number): Promise<ERPReadListResponse<ERPAcreedorRow>[]> {
-    const pages: ERPReadListResponse<ERPAcreedorRow>[] = [];
-
-    for (let index = 0; index < offsets.length; index += ERP_ACREEDORES_PREFETCH_CONCURRENCY) {
-      const batch = offsets.slice(index, index + ERP_ACREEDORES_PREFETCH_CONCURRENCY);
-      const batchPages = await Promise.all(batch.map((offset) => this.fetchAcreedoresERPPage(offset, pageSize)));
-      pages.push(...batchPages);
-    }
-
-    return pages;
-  }
-
-  private async fetchAcreedoresERPUncached(limit: number): Promise<ERPFetchResult> {
-    const requestedLimit = Math.max(1, limit);
-    const pageSize = Math.min(ERP_ACREEDORES_PAGE_SIZE, requestedLimit);
-    const firstPage = await this.fetchAcreedoresERPPage(0, pageSize);
-    const total = typeof firstPage.total === 'number' ? firstPage.total : null;
-    const targetCount = total === null ? requestedLimit : Math.min(requestedLimit, total);
-    const offsets: number[] = [];
-
-    for (let offset = pageSize; offset < targetCount; offset += pageSize) {
-      offsets.push(offset);
-    }
-
-    const pages = offsets.length > 0 ? [firstPage, ...(await this.fetchAcreedoresERPBatch(offsets, pageSize))] : [firstPage];
-    const acreedores = pages
-      .flatMap((page) => page.items ?? [])
-      .map(mapERPRow)
-      .filter((item): item is AgroIrisAcreedor => Boolean(item))
-      .slice(0, requestedLimit);
-    const complete = total !== null ? requestedLimit >= total && acreedores.length >= total : acreedores.length < requestedLimit;
-
-    return { acreedores, complete };
-  }
-
-  private async fetchAcreedoresERP(limit: number): Promise<AgroIrisAcreedor[]> {
-    const requestedLimit = Math.max(1, limit);
-
-    if (this.erpAcreedoresCache && (this.erpAcreedoresCacheComplete || this.erpAcreedoresCache.length >= requestedLimit)) {
-      return this.erpAcreedoresCache.slice(0, requestedLimit);
-    }
-
-    if (this.erpAcreedoresPromise && this.erpAcreedoresPromiseLimit >= requestedLimit) {
-      const acreedores = await this.erpAcreedoresPromise;
-      return acreedores.slice(0, requestedLimit);
-    }
-
-    this.erpAcreedoresPromiseLimit = requestedLimit;
-    this.erpAcreedoresPromise = this.fetchAcreedoresERPUncached(requestedLimit)
-      .then(({ acreedores, complete }) => {
-        if (!this.erpAcreedoresCache || acreedores.length >= this.erpAcreedoresCache.length) {
-          this.erpAcreedoresCache = acreedores;
-          this.erpAcreedoresCacheComplete = complete;
-        }
-        return acreedores;
-      })
-      .finally(() => {
-        this.erpAcreedoresPromise = null;
-        this.erpAcreedoresPromiseLimit = 0;
-      });
-
-    return this.erpAcreedoresPromise;
-  }
-
-  private filterAcreedoresLocal(acreedores: AgroIrisAcreedor[], query: string, limit: number): AgroIrisAcreedor[] {
-    const cleaned = normalizeLookupText(query);
-    if (!cleaned) return acreedores.slice(0, limit);
-
-    return acreedores
-      .filter((acreedor) => {
-        const searchText = normalizeLookupText(
-          `${acreedor.nombre_comercial} ${acreedor.nombre_sujeto} ${acreedor.identificador_fiscal} ${acreedor.acreedorid}`,
-        );
-        return searchText.includes(cleaned);
-      })
-      .slice(0, limit);
-  }
-
-  private async searchAcreedoresERP(query: string, limit: number): Promise<AgroIrisAcreedor[]> {
+  private async searchAcreedoresERP(query: string, limit: number, offset: number): Promise<AgroIrisAcreedor[]> {
     const cleaned = query.trim();
-    const encodedLimit = encodeURIComponent(String(Math.min(Math.max(1, limit), ERP_ACREEDORES_PAGE_SIZE)));
-    if (limit > ERP_ACREEDORES_PAGE_SIZE || this.erpAcreedoresCacheComplete) {
-      const acreedores = await this.fetchAcreedoresERP(limit);
-      return this.filterAcreedoresLocal(acreedores, cleaned, limit);
-    }
-
-    if (!cleaned) {
-      return this.fetchAcreedoresERP(limit);
-    }
-
+    const pageSize = Math.min(Math.max(1, Math.trunc(limit)), MAX_ERP_ACREEDORES_PAGE_SIZE);
+    const pageOffset = Math.max(0, Math.trunc(offset));
+    const pagination = `limit=${encodeURIComponent(String(pageSize))}&offset=${encodeURIComponent(String(pageOffset))}&activo=true`;
     const consultas = cleaned
       ? [
-          `acreedores?q=${encodeURIComponent(cleaned)}&limit=${encodedLimit}`,
-          `acreedores?nombre=${encodeURIComponent(cleaned)}&limit=${encodedLimit}`,
-          `acreedores?nif=${encodeURIComponent(cleaned)}&limit=${encodedLimit}`,
-          `acreedores?codigo=${encodeURIComponent(cleaned)}&limit=${encodedLimit}`,
+          `acreedores?q=${encodeURIComponent(cleaned)}&${pagination}`,
+          `acreedores?nombre=${encodeURIComponent(cleaned)}&${pagination}`,
+          `acreedores?nif=${encodeURIComponent(cleaned)}&${pagination}`,
+          `acreedores?codigo=${encodeURIComponent(cleaned)}&${pagination}`,
         ]
-      : [];
+      : [`acreedores?${pagination}`];
 
     for (const consulta of consultas) {
       const payload = await this.erpRead<unknown>(consulta);
@@ -449,64 +307,22 @@ class AgroIrisAcreedorService {
     return [];
   }
 
-  async getAcreedores(): Promise<AgroIrisAcreedor[]> {
-    if (this.acreedoresPromise) return this.acreedoresPromise;
-
-    this.acreedoresPromise = this.fetchAcreedores().finally(() => {
-      this.acreedoresPromise = null;
-    });
-
-    return this.acreedoresPromise;
-  }
-
   async searchAcreedores(
     query: string,
-    options: { limit?: number; source?: AcreedorSource } = {},
+    options: { limit?: number; offset?: number; source?: AcreedorSource } = {},
   ): Promise<AgroIrisAcreedor[]> {
-    const limit = options.limit ?? 25;
-    const source = options.source ?? 'cache';
-
-    if (source === 'erp') {
-      return this.searchAcreedoresERP(query, limit);
-    }
-
-    return this.searchAcreedoresCache(query, limit);
+    const limit = options.limit ?? DEFAULT_ERP_ACREEDORES_PAGE_SIZE;
+    const offset = options.offset ?? 0;
+    return this.searchAcreedoresERP(query, limit, offset);
   }
 
-  prefetchAcreedores(options: { limit?: number; source?: AcreedorSource } = {}): void {
-    const limit = options.limit ?? 25;
-    const source = options.source ?? 'cache';
+  async getAcreedorById(acreedorid: number): Promise<AgroIrisAcreedor | null> {
+    const normalizedId = Math.trunc(Number(acreedorid));
+    if (!Number.isFinite(normalizedId) || normalizedId <= 0) return null;
 
-    if (source === 'erp') {
-      void this.fetchAcreedoresERP(limit).catch((error) => {
-        console.error('Error precargando acreedores del ERP:', error);
-      });
-      return;
-    }
-
-    void this.getAcreedores().catch((error) => {
-      console.error('Error precargando acreedores:', error);
-    });
-  }
-
-  async getAcreedorById(acreedorid: number, source: AcreedorSource = 'cache'): Promise<AgroIrisAcreedor | null> {
-    if (source === 'erp') {
-      const acreedor = await this.erpRead<ERPAcreedorRow>(`acreedores/${encodeURIComponent(String(acreedorid))}`);
-      return mapERPRow(acreedor);
-    }
-
-    const { data, error } = await db
-      .from('acreedores_cache')
-      .select('ACR_Codigo, ACR_Nombre, ACR_Nif, ACR_Cuenta, activo')
-      .eq('ACR_Codigo', acreedorid)
-      .maybeSingle();
-
-    if (error) {
-      console.error(`Error obteniendo acreedor ${acreedorid}:`, error);
-      return null;
-    }
-
-    return data ? mapCacheRow(data as AcreedorCacheRow) : null;
+    const payload = await this.erpRead<unknown>(`acreedores/${encodeURIComponent(String(normalizedId))}`);
+    const [row] = extractRows<ERPAcreedorRow>(payload);
+    return row ? mapERPRow(row) : null;
   }
 
   formatAcreedoresForSelect(acreedores: AgroIrisAcreedor[]): AcreedorSelectOption[] {

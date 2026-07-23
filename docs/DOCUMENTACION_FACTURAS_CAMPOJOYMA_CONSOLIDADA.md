@@ -1,133 +1,171 @@
-# Documentacion consolidada: facturas Campojoyma
+# Documentación consolidada: facturas Campojoyma
 
-Última actualización: 2026-07-16
+Última actualización: 2026-07-22
 
-> Estado v2: la implementación completa de staging está preparada, pero no está
-> promovida a producción. La referencia canónica del contrato es
-> [`FACTURAS_RECIBIDAS_API_CONTRACT.md`](FACTURAS_RECIBIDAS_API_CONTRACT.md), el
-> estado del despliegue de pruebas y sus bloqueos se documentan en
-> [`FACTURAS_RECIBIDAS_API_V2_STAGING.md`](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
-> y el OpenAPI verificable está en
-> [`openapi/netagro-test-api-v0.2.0.json`](openapi/netagro-test-api-v0.2.0.json).
->
-> La copia Netagro no contiene el mecanismo oficial de contabilización ni el
-> diario de apuntes. Por ello, la v2 bloquea antes de escribir cualquier alta que
-> solicite `FRR_Contabilizar="S"`; no se fabrica ningún asiento mediante SQL.
+La referencia canónica del contrato de escritura es
+[FACTURAS_RECIBIDAS_API_CONTRACT.md](FACTURAS_RECIBIDAS_API_CONTRACT.md). El
+estado de homologación y los límites de la API se documentan en
+[FACTURAS_RECIBIDAS_API_V2_STAGING.md](FACTURAS_RECIBIDAS_API_V2_STAGING.md);
+el OpenAPI verificable está en
+[openapi/netagro-test-api-v0.2.0.json](openapi/netagro-test-api-v0.2.0.json).
 
-Este documento consolida la documentacion tecnica del repo, la documentacion descargada desde el VPS intermedio y las decisiones de implementacion del modulo de facturas de compra.
+La API de escritura sigue en modo <code>reference_only</code>. La copia de
+Netagro no expone el mecanismo oficial que crea el asiento ni permite verificar
+su número y sus apuntes Debe/Haber. Una respuesta de referencia, un dry-run
+correcto o un registro guardado en Supabase no significan que exista un asiento
+en ERP.
 
-Fuentes usadas:
+Estado de aplicación a 22/07/2026: Supabase ya incorpora la finalización contra
+el dry-run original, el default <code>S=false</code> de punteos y el cierre de
+todos los privilegios mutantes de tabla para clientes sobre cabecera, CTB y
+punteos. Tras la confirmación expresa, <code>acreedores_cache</code> se retiró
+físicamente y sus cinco filas quedaron exportadas como evidencia recuperable.
+Las cinco Edge Functions saneadas están desplegadas; el frontend y n8n todavía
+requieren despliegue e importación remota antes de considerarse activos.
 
-- `C:\Users\Moises-Karma\Desktop\documentacion_facturas_albaranes.md`, descargada desde `/root/netagro_docs/documentacion_facturas_albaranes.md`.
-- `documentacion_facturas_albaranes.md` del repo.
-- `docs/FACTURAS_RECIBIDAS_CAMPOJOYMA.md`.
-- Implementacion actual del repo en `src/pages/FacturasRecibidas.tsx`, `src/services/facturas.ts` y Edge Functions de `supabase/functions`.
+## Estado vigente
 
-## Resumen ejecutivo
+La arquitectura activa se rige por estas decisiones:
 
-La pantalla de facturas de compra trabaja contra Supabase como bandeja de revisión. La base real del ERP no se escribe desde frontend. El único escritor previsto es un webhook n8n v2 autenticado, separado del proxy de lectura, que ejecuta dry-run, escritura e inspección posterior mediante la API oficial de pruebas.
+- Supabase es la bandeja de revisión. ERP es la autoridad para maestros,
+  duplicados y, cuando la escritura real sea homologada, el destino final.
+- Los acreedores se consultan exclusivamente mediante la API ERP:
+  búsqueda, detalle y gastos. No existe una fuente ni un fallback local.
+- Antes de enviar se repite un preflight contra ERP: existencia del proveedor,
+  coincidencia de su cuenta y duplicado exacto.
+- El ejercicio 25 procede de una regla explícita limitada a Onduspan (acreedor
+  ERP 17). No
+  se calcula a partir de la fecha de factura.
+- Tipo de factura, régimen IVA y fecha CTB solo pueden venir de una regla
+  aprobada para la empresa/proveedor o de una selección manual. No se deducen.
+- Gastos, CTB, punteos y asiento son conceptos distintos y se almacenan,
+  validan y presentan por separado.
+- Los punteos son propuestas para selección manual. Solo los seleccionados
+  intervienen en su total; una sugerencia nunca queda marcada por defecto.
+- Un commit de estado desconocido se concilia con el <code>request_id</code> y
+  el dry-run originales: solo búsqueda/readback exactos, sin repetir el POST
+  escritor y sin resolver ambigüedades automáticamente.
+- Los vencimientos extraídos del PDF son evidencia. No se copian
+  automáticamente a <code>FechaVto</code> o <code>ImporteVto</code> sin una
+  regla aprobada o confirmación manual.
+- <code>acreedores_cache</code> ya no existe en Supabase. El runtime usa
+  exclusivamente la API ERP y se conserva una exportación local de las cinco
+  filas históricas para una recuperación controlada.
 
-Flujo actual:
+Los valores contrastados para un caso de aceptación, como ONDUSPAN
+(ejercicio 25, tipo OT y régimen 2110), no son defaults universales. Solo se
+aplican cuando una regla con ese alcance está aprobada.
 
-1. El usuario sube un PDF desde la UI.
-2. El PDF se guarda en `archivos_pdf`.
-3. La Edge Function `factura-recibida-extraer` lee el base64 y llama al webhook n8n `campojoyma-factura-extraer`.
-4. n8n extrae datos visibles con IA y resuelve proveedor contra la API Campojoyma.
-5. La Edge Function guarda cabecera en `facturasrecibidas` y apuntes en `facturasrecibidas_ctb`, si n8n/API devuelve apuntes explicitos.
-6. La factura queda en Supabase como `validada`, `pendiente_revision` o `duplicada`.
-7. El envio real al ERP queda separado y solo debe hacerse mediante el flujo de envio ERP cuando existan endpoints POST seguros.
+## Flujo y autoridad de datos
 
-Reglas importantes:
-
-- n8n no escribe directamente en Supabase.
-- n8n no debe usar service role hardcodeado.
-- La IA no inventa proveedor, cuentas contables, `FRR_idproveedor`, `FRR_idcuenta` ni `ctb`.
-- Supabase staging no es la base real del ERP.
-- `FRR_id` debe quedar `null` hasta que el ERP real devuelva un id creado.
-- `FRR_tipofactura = "1"` no se ha visto en la MariaDB dumpeada; no debe usarse como valor por defecto.
-
-## Arquitectura
-
-```text
+~~~text
 Frontend React
   -> archivos_pdf
-  -> Edge Function factura-recibida-extraer
-      -> n8n webhook campojoyma-factura-extraer
-          -> IA sobre imagenes del PDF
-          -> API Campojoyma para proveedor/reglas
-      -> Supabase facturasrecibidas
-      -> Supabase facturasrecibidas_ctb
+  -> factura-recibida-extraer
+      -> n8n campojoyma-factura-extraer
+          -> IA: solo datos visibles y evidencia del PDF
+          -> API ERP: proveedor y reglas confirmadas
+      -> facturasrecibidas (cabecera de staging)
+      -> facturasrecibidas_ctb (solo CTB explícito)
+      -> facturasrecibidas_punteos (propuestas no seleccionadas)
 
 Frontend React
-  -> Edge Function facturas-recibidas-erp-read
-      -> n8n webhook apiCampojoyma
-          -> FastAPI interna 172.19.0.1:18000
-              -> copia MariaDB solo lectura
-```
+  -> facturas-recibidas-erp-read
+      -> n8n apiCampojoyma
+          -> FastAPI
+              -> copia MariaDB de solo lectura
 
-## API Campojoyma / VPS intermedio
+Frontend React
+  -> factura-recibida-send-erp
+      -> preflight de proveedor, cuenta y duplicado contra API ERP
+      -> escritor v2
+      -> reference_only: no declarar asiento creado
+~~~
 
-La FastAPI desplegada en el VPS intermedio consulta una copia local de MariaDB con permisos de solo lectura. Produccion no se toca.
+Secuencia operativa:
+
+1. El usuario incorpora un PDF.
+2. El PDF se guarda en <code>archivos_pdf</code>.
+3. <code>factura-recibida-extraer</code> envía su contenido al extractor n8n.
+4. La IA extrae únicamente datos visibles; n8n contrasta el proveedor con ERP.
+5. La Edge Function normaliza y guarda cabecera, CTB explícito y propuestas de
+   punteo sin seleccionar.
+6. Los errores bloqueantes y avisos quedan visibles para revisión.
+7. Antes del envío se consulta de nuevo ERP y se rechaza cualquier proveedor
+   inexistente, cuenta incoherente o duplicado exacto.
+8. Mientras el escritor continúe en <code>reference_only</code>, el resultado
+   solo acredita validación/referencia, nunca la creación de un asiento.
+
+## API ERP de lectura
+
+La FastAPI del VPS intermedio consulta una copia local de MariaDB con
+credenciales de solo lectura. No se ejecutan operaciones DDL contra Netagro.
 
 Base interna desde n8n:
 
-```text
+~~~text
 http://172.19.0.1:18000
-```
+~~~
 
-Webhook externo de lectura:
+Webhook externo:
 
-```text
+~~~text
 https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma?consulta=...
-```
+~~~
 
-En n8n el parametro correcto es `query.consulta`. La llamada HTTP interna se construye como:
+En n8n el parámetro correcto es <code>query.consulta</code>. La petición
+interna se forma con:
 
-```text
+~~~text
 ={{ 'http://172.19.0.1:18000/' + $json.query.consulta }}
-```
+~~~
 
 Endpoints relevantes:
 
 | Endpoint | Uso |
 |---|---|
-| `GET /health` | Estado de API y conexion a BD local. |
-| `GET /empresas` | Catalogo real para `FRR_Idempresa`. |
-| `GET /empresas/{empresa_id}` | Empresa por `EMP_idempresa`. |
-| `GET /acreedores` | Busqueda/listado de proveedores. Filtros: `q`, `nombre`, `nif`, `codigo`, `activo`, `schema`, `limit`, `offset`. |
-| `GET /acreedores/{acreedor_id}` | Ficha de proveedor por `ACR_Codigo`. |
-| `GET /facturasrecibidas/tipos` | Catalogo observado de `FRR_tipofactura`. No hay descripciones oficiales en la copia. |
-| `GET /facturasrecibidas` | Listado paginado de facturas recibidas. Filtros: `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura`, `schema`. |
-| `GET /facturasrecibidas/{factura_id}` | Cabecera completa por `FRR_id`, con datos de acreedor. |
-| `GET /facturasrecibidas/{factura_id}/ctb` | Desglose contable por `FRC_idfacturarecibida`. |
-| `GET /facturasrecibidas_ctb?factura_id={id}` | Alias de desglose contable. |
+| <code>GET /health</code> | Estado de API y conexión de lectura. |
+| <code>GET /empresas</code> | Catálogo real para <code>FRR_Idempresa</code>. |
+| <code>GET /empresas/{empresa_id}</code> | Detalle de empresa. |
+| <code>GET /acreedores</code> | Búsqueda acotada por nombre, NIF o código. |
+| <code>GET /acreedores/{acreedor_id}</code> | Detalle autoritativo del proveedor y su cuenta. |
+| <code>GET /acreedores/{acreedor_id}/gastos</code> | Reglas/cuentas de gasto observadas para el proveedor. |
+| <code>GET /facturasrecibidas/tipos</code> | Códigos observados; no constituye una regla de selección. |
+| <code>GET /facturasrecibidas</code> | Consulta y comprobación de duplicados exactos. |
+| <code>GET /facturasrecibidas/{factura_id}</code> | Cabecera real por <code>FRR_id</code>. |
+| <code>GET /facturasrecibidas/{factura_id}/ctb</code> | CTB real asociado a una factura. |
+| <code>GET /facturasrecibidas_ctb?factura_id={id}</code> | Alias de consulta CTB. |
 
-Formato de listados:
+Los listados responden con:
 
-```json
+~~~json
 {
   "items": [],
-  "limit": 50,
+  "limit": 25,
   "offset": 0,
   "total": 0
 }
-```
+~~~
 
-## Modelo real ERP
+La búsqueda interactiva de acreedores debe ser acotada y con debounce. Tras
+seleccionar uno se consulta su detalle para hidratar los campos maestros; no se
+rellenan desde una copia persistida en Supabase.
 
-Tablas principales para facturas de compra:
+## Modelo y duplicados
+
+Tablas ERP principales:
 
 | Tabla | Papel |
 |---|---|
-| `empresas` | Maestro de empresas. Resuelve `facturasrecibidas.FRR_Idempresa`. |
-| `acreedores` | Maestro de proveedores/acreedores. Resuelve `facturasrecibidas.FRR_idproveedor`. |
-| `facturasrecibidas` | Cabecera real de factura recibida en ERP. |
-| `facturasrecibidas_ctb` | Apuntes/desglose contable de la factura recibida. |
-| `tipoagricultor` | Reglas por tipo de agricultor/proveedor, incluyendo cuentas puente/gasto cuando aplica. |
+| <code>empresas</code> | Maestro de empresas. |
+| <code>acreedores</code> | Maestro de proveedores. |
+| <code>facturasrecibidas</code> | Cabecera real. |
+| <code>facturasrecibidas_ctb</code> | Apuntes CTB reales. |
+| <code>tipoagricultor</code> | Reglas contables cuando están confirmadas. |
 
-Relaciones practicas:
+Relaciones prácticas:
 
-```text
+~~~text
 empresas.EMP_idempresa
   -> facturasrecibidas.FRR_Idempresa
 
@@ -136,497 +174,240 @@ acreedores.ACR_Codigo
 
 facturasrecibidas.FRR_id
   -> facturasrecibidas_ctb.FRC_idfacturarecibida
-```
+~~~
 
-Clave practica para duplicados OCR:
+La clave de duplicado funcional es:
 
-```text
+~~~text
 FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura
-```
+~~~
 
-En la copia local no hay duplicados para esa combinacion excluyendo numero vacio. El ERP no declara necesariamente esta restriccion como unica, pero es una buena regla de validacion en staging.
+La comprobación debe usar los cuatro valores exactos, ignorar registros
+descartados/duplicados de staging cuando corresponda y mostrar el candidato que
+causa el conflicto. Una caída de API no equivale a «proveedor no encontrado»:
+se trata como indisponibilidad técnica y el envío falla de forma cerrada.
 
 ## Supabase staging
 
-Proyecto Supabase:
+Proyecto:
 
-```text
+~~~text
 CAMPOJOYMA
 adbprpemmbspntbttziz
-```
+~~~
 
-Tablas principales:
+Tablas operativas:
 
-| Tabla Supabase | Uso |
+| Tabla | Uso |
 |---|---|
-| `archivos_pdf` | Almacena PDF base64, hash y metadatos. |
-| `facturasrecibidas` | Cabecera staging con columnas `FRR_*`, estado, PDF, extraccion, errores y respuesta ERP. |
-| `facturasrecibidas_ctb` | Apuntes contables staging con columnas `FRC_*`. |
-| `acreedores_cache` | Cache local para validar proveedores contra ERP/API. |
+| <code>archivos_pdf</code> | PDF base64, hash y metadatos. |
+| <code>facturasrecibidas</code> | Cabecera, estado, extracción, validación y respuesta ERP. |
+| <code>facturasrecibidas_ctb</code> | CTB explícito y separado. |
+| <code>facturasrecibidas_punteos</code> | Propuestas de punteo y selección manual. |
+| <code>public.facturas_recibidas_erp_rules</code> | Reglas aprobadas con alcance de empresa/proveedor. |
+
+<code>acreedores_cache</code> se retiró físicamente el 22/07/2026 después de
+eliminar sus dependencias de runtime y recibir aprobación expresa. La migración
+<code>20260722190000_retire_acreedores_cache.sql</code> deja el cambio
+reproducible. La exportación previa está en
+<code>docs/evidencias/facturas-recibidas/acreedores-cache-backup-2026-07-22.json</code>
+y su SHA-256 es
+<code>79F49160CA74A3B2CAE88C026627B258FB10D69F27B38B7EB28E389152E4B5BC</code>.
 
 Estados principales:
 
 | Estado | Significado |
 |---|---|
-| `pendiente_revision` | Faltan datos, hay warnings o requiere revision manual. |
-| `validada` | Datos minimos correctos para preparar envio. |
-| `duplicada` | Coincide con PDF o clave practica de proveedor/factura. |
-| `enviada_erp` | La factura se ha enviado al ERP real. |
-| `error_erp` | Fallo al enviar al ERP. |
-| `descartada` | Factura descartada en staging. |
+| <code>pendiente_revision</code> | Faltan datos o existe una revisión manual pendiente. |
+| <code>validada</code> | Supera las validaciones de preparación, no implica asiento. |
+| <code>duplicada</code> | Conflicto confirmado por PDF o clave funcional. |
+| <code>enviada_erp</code> | Solo válido tras una creación real confirmada por ERP. |
+| <code>error_erp</code> | El envío/preflight no pudo completarse. |
+| <code>descartada</code> | Registro excluido manualmente de staging. |
 
-Regla de autoridad:
+Los identificadores <code>FRR_id</code>, <code>FRR_numero</code>,
+<code>FRC_id</code> y <code>FRC_idfacturarecibida</code> deben permanecer
+nulos hasta que el ERP confirme una escritura real.
 
-- Supabase es bandeja de trabajo.
-- MariaDB/ERP es destino real final.
-- `FRR_id`, `FRR_numero`, `FRC_id` y `FRC_idfacturarecibida` solo deben venir del ERP real tras el POST real.
+## Responsabilidades de las Edge Functions
 
-## Edge Functions
+### factura-recibida-extraer
 
-### `factura-recibida-extraer`
+- Lee el PDF almacenado y llama al extractor.
+- Guarda la cabecera normalizada.
+- Guarda CTB únicamente si el origen devuelve apuntes explícitos y trazables.
+- Guarda propuestas de punteo sin seleccionarlas.
+- No fabrica fecha CTB, tipo, régimen, cuenta ni vencimiento.
+- Devuelve estado y validaciones estructuradas.
 
-Funcion responsable de extraer y guardar una factura nueva desde PDF.
+### factura-recibida-ingest
 
-Entrada principal:
+- Recibe fuentes de email/agente o payload externo.
+- Aplica las mismas reglas de normalización y validación.
+- No crea una línea CTB por defecto para el flujo actual.
+- Mantiene separada la evidencia de extracción de los campos ERP confirmados.
 
-```json
-{
-  "archivo_pdf_id": 123,
-  "source": "xfuego-front",
-  "pdf_nombre": "factura.pdf",
-  "pdf_mime_type": "application/pdf",
-  "pdf_size": 123456
-}
-```
+### facturas-recibidas-erp-read
 
-Comportamiento:
+Es el proxy server-side que protege el JWT. Su lista permitida incluye las
+consultas concretas necesarias para empresas, acreedores, detalle, gastos,
+facturas, tipos y CTB. No acepta rutas arbitrarias ni navegación por segmentos.
 
-- Lee `archivos_pdf.b64_contenido`.
-- Llama a `N8N_CAMPOJOYMA_EXTRACT_WEBHOOK_URL`.
-- Fallback actual:
+Secrets:
 
-```text
-https://n8nbecarios.srv894901.hstgr.cloud/webhook/campojoyma-factura-extraer
-```
-
-- Recibe JSON normalizado desde n8n.
-- Guarda cabecera en `facturasrecibidas`.
-- Borra/reinserta `facturasrecibidas_ctb` solo con apuntes explicitos.
-- No fabrica apuntes si n8n devuelve `ctb: []`.
-- Devuelve `factura_id`, `estado` y `validation_errors`.
-
-### `factura-recibida-ingest`
-
-Funcion de ingesta por agente/email o payload externo.
-
-Regla actual:
-
-- Para fuentes `campojoyma-factura-extraer`, `campojoyma-front`, `campojoyma-email` o `xfuego-front`, o si llega `skip_default_ctb: true`, no genera linea contable por defecto.
-- El fallback antiguo de `FRR_idcuenta + base` solo se conserva para payloads heredados sin la marca estricta.
-
-### `facturas-recibidas-erp-read`
-
-Proxy server-side de lectura hacia n8n/API Campojoyma. Evita exponer JWT en navegador.
-
-Consultas permitidas actualmente:
-
-```text
-acreedores
-acreedores/{id}
-empresas
-facturasrecibidas
-facturasrecibidas/{id}
-facturasrecibidas/{id}/ctb
-facturasrecibidas/tipos
-facturasrecibidas_ctb
-```
-
-Secrets necesarios:
-
-```text
+~~~text
 N8N_CAMPOJOYMA_READ_WEBHOOK_URL
 N8N_CAMPOJOYMA_WEBHOOK_URL
 N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET
 N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS
-```
+~~~
 
-## n8n: extractor `campojoyma-factura-extraer`
+### factura-recibida-send-erp
 
-Workflow exportado:
+Antes de invocar al escritor:
 
-```text
-C:\Users\Moises-Karma\Downloads\CAMPOJOYMA - Entrada facturas.json
-```
+1. Comprueba que el proveedor existe en <code>/acreedores/{id}</code>.
+2. Contrasta la cuenta de la factura con la cuenta maestra del proveedor.
+3. Busca el duplicado exacto por empresa, ejercicio, proveedor y número.
+4. Bloquea si la API no está disponible, si el proveedor no existe, si la
+   cuenta difiere o si aparece un candidato duplicado.
+5. Conserva el resultado <code>reference_only</code> como referencia, sin
+   cambiarlo semánticamente a «asiento creado».
 
-Backup original:
+El escritor v2 debe repetir estas garantías antes de cualquier escritura.
 
-```text
-C:\Users\Moises-Karma\Downloads\CAMPOJOYMA - Entrada facturas.json.bak
-```
+## Reglas de negocio y edición manual
 
-Entrada esperada por webhook:
+Las variaciones específicas no se hardcodean en frontend ni se deducen por
+heurística. Se modelan en <code>public.facturas_recibidas_erp_rules</code> y deben ser
+visibles/editables desde administración cuando corresponda.
 
-```json
-{
-  "factura_id": null,
-  "archivo_pdf_id": 123,
-  "source": "xfuego-front",
-  "pdf_base64": "...",
-  "pdf_nombre": "factura.pdf",
-  "pdf_mime_type": "application/pdf",
-  "pdf_size": 123456,
-  "email": {
-    "from": null,
-    "subject": null,
-    "date": null
-  }
-}
-```
+Reglas vigentes:
 
-Salida esperada hacia la Edge Function:
+- Empresa: se selecciona del catálogo ERP.
+- Ejercicio: Onduspan (acreedor ERP 17) tiene un seed explícito con valor 25;
+  no existe un default general para la empresa.
+- Tipo de factura: regla aprobada o selección manual.
+- Régimen IVA: regla aprobada o selección manual.
+- Fecha CTB: regla aprobada o selección manual; no hereda la fecha de factura.
+- Cuenta del proveedor: detalle del acreedor ERP.
+- Gastos: endpoint de gastos/regla ERP o edición explícita; nunca IA inventada.
+- Vencimientos: evidencia separada hasta existir regla aprobada o confirmación.
 
-```json
-{
-  "ok": true,
-  "extraction": {
-    "proveedor_nombre": null,
-    "proveedor_nif": null,
-    "FRR_idproveedor": null,
-    "FRR_idcuenta": null,
-    "FRR_numerofactura": null,
-    "FRR_fechafactura": null,
-    "FRR_fechactb": null,
-    "FRR_Idempresa": 1,
-    "FRR_base1": null,
-    "FRR_iva1": null,
-    "FRR_cuota1": null,
-    "FRR_baseret": 0,
-    "FRR_ret": 0,
-    "FRR_cuotaret": 0,
-    "FRR_totalfac": null,
-    "FRR_tipofactura": null,
-    "FRR_Concepto": null,
-    "FRR_igasto1": null,
-    "FRR_ctagasto1": null,
-    "FRR_igasto2": null,
-    "FRR_ctagasto2": null,
-    "ctb": []
-  },
-  "metadata": {
-    "provider_match": null,
-    "confidence": null,
-    "warnings": [],
-    "raw_text_summary": null
-  }
-}
-```
+Los avisos informan de datos que requieren revisión. Los errores bloquean el
+envío. Para un mismo campo se muestra una sola incidencia semántica.
 
-Responsabilidades de n8n:
+## Separación contable obligatoria
 
-- Preparar imagenes del PDF para IA.
-- Extraer solo datos visibles.
-- Buscar proveedor por NIF y fallback por nombre.
-- Rellenar `FRR_idproveedor`, `FRR_idcuenta`, nombre y NIF si la API devuelve match.
-- Construir reglas contables solo si la API devuelve datos suficientes.
-- Devolver warnings si no resuelve proveedor o no tiene reglas contables.
+### Gastos
 
-n8n no debe:
+Los pares <code>FRR_igasto*</code>/<code>FRR_ctagasto*</code> son desglose de
+gastos de la cabecera. Proceden de reglas ERP confirmadas o de una decisión
+manual explícita.
 
-- Escribir en Supabase directamente.
-- Descargar PDF por URL firmada.
-- Usar service role hardcodeado.
-- Inventar proveedor o cuentas.
-- Rellenar `FRR_tipofactura = "1"`.
-- Devolver campos heredados como `albaranes`, `pendiente_pago`, `descuento_general`, `descuento_pronto_pago`.
+### CTB
 
-Variables/env recomendadas en n8n:
+<code>facturasrecibidas_ctb</code> contiene apuntes <code>FRC_*</code>. No son
+líneas de producto, gastos ni punteos. Si no hay CTB confirmado se conserva una
+lista vacía; no se construye desde la base o desde la cuenta del proveedor.
 
-```text
-CAMPOJOYMA_API_BASE_URL=http://172.19.0.1:18000
-CAMPOJOYMA_PROVEEDORES_URL=http://172.19.0.1:18000/acreedores
-CAMPOJOYMA_API_TOKEN=
-CAMPOJOYMA_API_KEY=
-SUPABASE_URL=
-CAMPOJOYMA_SUPABASE_URL=
-N8N_FACTURAS_RECIBIDAS_INGEST_TOKEN=
-N8N_AGENT_TOKEN=
-```
+### Punteos
 
-## Frontend
+Los punteos son candidatos de conciliación. La selección es manual y su estado
+por defecto es no seleccionado. El total mostrado suma únicamente candidatos
+marcados por el usuario.
 
-Ruta:
+### Asiento
 
-```text
-/facturas-recibidas
-```
+El asiento pertenece al ERP y solo existe cuando el mecanismo oficial devuelve
+un identificador verificable y sus apuntes. Staging, CTB propuesto, punteos,
+dry-run y <code>reference_only</code> no son un asiento.
 
-Copy visible:
+## Campos principales
 
-```text
-Facturas recibidas
-```
-
-Comportamiento actual del popup:
-
-1. Selecciona PDF.
-2. Sube a `archivos_pdf`.
-3. Llama a `factura-recibida-extraer`.
-4. Navega a la factura creada/devuelta.
-5. No crea una factura vacia antes de extraer.
-
-Combos actuales:
-
-| Campo UI | Campo ERP | Fuente |
+| Dato | Campo | Fuente permitida |
 |---|---|---|
-| Empresa | `FRR_Idempresa` | `GET /empresas` via `facturas-recibidas-erp-read`. |
-| Tipo factura | `FRR_tipofactura` | `GET /facturasrecibidas/tipos` via `facturas-recibidas-erp-read`. |
-| Proveedor | `FRR_idproveedor`, `FRR_idcuenta` | `acreedores`/cache/API. |
+| Empresa | <code>FRR_Idempresa</code> | Catálogo ERP/manual. |
+| Ejercicio | <code>FRR_ejercicio</code> | Regla explícita (seed 25 solo para Onduspan, acreedor 17). |
+| Tipo | <code>FRR_tipofactura</code> | Regla aprobada o manual. |
+| Régimen | <code>FRR_idregimen</code> | Regla aprobada o manual. |
+| Proveedor | <code>FRR_idproveedor</code> | Búsqueda y detalle ERP. |
+| Cuenta proveedor | <code>FRR_idcuenta</code> | Detalle ERP y preflight. |
+| Número factura | <code>FRR_numerofactura</code> | PDF/IA, confirmado por usuario. |
+| Fecha factura | <code>FRR_fechafactura</code> | PDF/IA. |
+| Fecha contable | <code>FRR_fechactb</code> | Regla aprobada o manual. |
+| Base/IVA/retención/total | <code>FRR_base*</code>, <code>FRR_iva*</code>, <code>FRR_cuota*</code>, <code>FRR_*ret</code>, <code>FRR_totalfac</code> | PDF/IA y validación aritmética. |
+| Gastos | <code>FRR_igasto*</code>/<code>FRR_ctagasto*</code> | Regla ERP o manual. |
+| Vencimiento | <code>FechaVto</code>/<code>ImporteVto</code> | Regla aprobada o manual. |
+| CTB | <code>facturasrecibidas_ctb</code> | Solo apuntes explícitos. |
+| Punteos | <code>facturasrecibidas_punteos</code> | Candidatos, selección manual. |
 
-Notas:
+## Caso histórico útil: FV26-13
 
-- Empresa tiene valor inicial `1`, porque la copia solo contiene `CAMPOJOYMA, S.L.`.
-- Tipo factura queda vacio si no se conoce.
-- Los tipos se muestran como codigo hasta que negocio aporte descripcion oficial.
-
-## Catalogos
-
-### Empresa: `FRR_Idempresa`
-
-Relacion:
-
-```text
-empresas.EMP_idempresa = facturasrecibidas.FRR_Idempresa
-```
-
-Endpoints:
-
-```text
-GET http://172.19.0.1:18000/empresas
-GET http://172.19.0.1:18000/empresas/1
-```
-
-Valor observado:
-
-| `EMP_idempresa` | Nombre | CIF | Ejercicio predeterminado |
-|---:|---|---|---:|
-| 1 | CAMPOJOYMA, S.L. | B04493482 | 25 |
-
-### Tipo factura: `FRR_tipofactura`
-
-`FRR_tipofactura` es un codigo corto de tipo/serie interna de factura recibida.
-
-Existe tabla candidata `facturasrecibidastipo`, pero esta vacia en la copia. Por tanto las descripciones no vienen de maestro de BD. El correo de Campojoyma del 2026-07-07 aporta descripciones funcionales parciales.
-
-Endpoint:
-
-```text
-GET http://172.19.0.1:18000/facturasrecibidas/tipos
-```
-
-Valores observados:
-
-| `FRR_tipofactura` | Facturas | Fecha min | Fecha max | Descripcion |
-|---|---:|---|---|---|
-| OT | 30570 | 2013-10-01 | 2026-08-01 | OTROS. |
-| GE | 8121 | 2020-01-02 | 2026-06-26 | COMPRAS GENERO. |
-| MA | 4919 | 2020-04-27 | 2026-04-07 | MATERIALES. |
-| GV | 2704 | 2020-06-30 | 2026-06-09 | GASTOS VENTAS. |
-| FI | 1279 | 2021-06-22 | 2026-04-20 | Sin descripcion en el correo. |
-| GC | 361 | 2020-08-31 | 2026-06-22 | GASTOS COMPRAS. |
-| CE | 356 | 2021-08-10 | 2025-10-31 | Sin descripcion en el correo. |
-| FZ | 308 | 2020-02-08 | 2021-05-20 | FIANZA. |
-| CX | 14 | 2020-07-30 | 2021-03-03 | COSTES EXTERNOS. |
-| GM | 8 | 2022-10-31 | 2024-04-30 | Sin descripcion en el correo. |
-| vacio/null | 1 | 1900-01-01 | 1900-01-01 | Registro historico sin tipo. |
-
-No se ha visto `FRR_tipofactura = "1"` en la copia MariaDB dumpeada. Si aparece `1` en staging/OCR, tratarlo como dato pendiente o confusion con `FRR_Idempresa = 1`.
-
-Uso recomendado:
-
-- Mantener `FRR_tipofactura` como combo/manual si la IA no tiene confianza.
-- La IA puede sugerir `GE`, `MA`, `GV`, `GC`, `FZ`, `CX` cuando el PDF y proveedor encajen claramente, pero no debe forzar tipo si no hay evidencia.
-- `FI`, `CE` y `GM` siguen pendientes de descripcion funcional.
-
-## Campos principales de factura recibida
-
-| Dato funcional | Campo ERP/Supabase | Origen recomendado |
-|---|---|---|
-| Empresa | `FRR_Idempresa` | Combo `/empresas`; default practico `1`. |
-| Tipo factura | `FRR_tipofactura` | Combo `/facturasrecibidas/tipos`; vacio si no se sabe. |
-| Proveedor | `FRR_idproveedor` | API `acreedores`, por NIF o nombre. |
-| Cuenta proveedor | `FRR_idcuenta` | API `acreedores`, campo cuenta. |
-| Nº Factura | `FRR_numerofactura` | PDF/IA. |
-| Fecha factura | `FRR_fechafactura` | PDF/IA. |
-| Fecha contable | `FRR_fechactb` | Normalmente fecha factura, salvo regla de negocio. |
-| Base | `FRR_base1` | PDF/IA. |
-| IVA % | `FRR_iva1` | PDF/IA. |
-| Cuota IVA | `FRR_cuota1` | PDF/IA. |
-| Retencion base | `FRR_baseret` | PDF/IA si aparece; si no, 0. |
-| Retencion % | `FRR_ret` | PDF/IA si aparece; si no, 0. |
-| Retencion importe | `FRR_cuotaret` | PDF/IA si aparece; si no, 0. |
-| Total | `FRR_totalfac` | PDF/IA. |
-| Concepto | `FRR_Concepto` | PDF/IA, maximo 50 caracteres en staging. |
-| Desglose de Gastos | `FRR_igasto*/FRR_ctagasto*` | API/reglas, no IA inventada. |
-| Apuntes CTB | `facturasrecibidas_ctb` | Solo `FRC_*` reales devueltos por API/ERP. |
-
-## Contabilidad y apuntes `ctb`
-
-`facturasrecibidas_ctb` no son lineas de producto ni desglose de gastos. Son apuntes CTB reales `FRC_*`.
-
-Campos principales:
-
-| Campo | Significado |
-|---|---|
-| `FRC_id` | Id real de apunte en ERP, null en staging hasta POST real. |
-| `FRC_idfacturarecibida` | Id real `FRR_id` de cabecera en ERP, null en staging hasta POST real. |
-| `FRC_Cuenta` | Cuenta contable. |
-| `FRC_Importe` | Importe del apunte. |
-| `FRC_IdActividad`, `FRC_Idseccion`, `FRC_Iddepartamento`, `FRC_Idsubdepartamento` | Dimensiones contables. |
-
-Regla actual:
-
-- Si n8n/API devuelve `ctb` real, se guarda.
-- Si no devuelve `ctb`, se guarda `ctb: []` y warning.
-- No se fabrica una linea por defecto con cuenta proveedor + base para el extractor nuevo.
-
-Confirmacion por correo Campojoyma 2026-07-07:
-
-- La cuenta `4009...` es la cuenta del proveedor/agricultor donde se contabilizan los albaranes de entrada de genero.
-- La cuenta `6000000010` indicada por Campojoyma corresponde a la comision que se descuenta de la liquidacion.
-- Ojo: en la copia/API para `FV26-13` aparece `60000000010` con un cero mas. Antes de hardcodear o comparar esta cuenta hay que confirmar el numero exacto de digitos con la API/ERP.
-
-## Caso trazado: `FV26-13`
-
-Datos trazados en copia local:
-
-```text
-FRR_id = 49174
-FRR_numerofactura = FV26-13
-FRR_idproveedor = 1924
-Proveedor/agricultor = HORTICOLAS LOS RUBIALES S.L.
-AGR_idtipo = 3004
-TPA_nombre = EMITEN SU PROPIA FACTURA
-```
-
-Cabecera:
+El caso real <code>FV26-13</code> demostró por qué no deben mezclarse gastos y
+CTB ni inferirse cuentas:
 
 | Campo | Valor |
 |---|---:|
-| `FRR_igasto1` | 15973.30 |
-| `FRR_ctagasto1` | 40090001924 |
-| `FRR_igasto2` | -1597.33 |
-| `FRR_ctagasto2` | 60000000010 |
-| `FRR_totalfac` | 14951.01 |
+| <code>FRR_id</code> | 49174 |
+| <code>FRR_idproveedor</code> | 1924 |
+| <code>FRR_igasto1</code> | 15973.30 |
+| <code>FRR_ctagasto1</code> | 40090001924 |
+| <code>FRR_igasto2</code> | -1597.33 |
+| <code>FRR_ctagasto2</code> | 60000000010 |
+| <code>FRR_totalfac</code> | 14951.01 |
 
-Desglose `facturasrecibidas_ctb`:
+Los apuntes CTB observados tenían importes equivalentes, pero su coincidencia en
+ese ejemplo no autoriza a copiar automáticamente un bloque al otro. La cuenta
+de comisión procede de una regla de <code>tipoagricultor</code>; no se elige
+mediante IA.
 
-| `FRC_Cuenta` | `FRC_Importe` |
-|---|---:|
-| 40090001924 | 15973.30 |
-| 60000000010 | -1597.33 |
+## Validación mínima antes del envío
 
-Interpretacion:
+- Empresa, ejercicio, proveedor, cuenta, número, fecha, tipo y régimen presentes.
+- Proveedor existente en el detalle ERP.
+- Cuenta coincidente con el maestro del proveedor.
+- Duplicado exacto inexistente en ERP.
+- Importes coherentes dentro de la tolerancia definida.
+- Fecha CTB confirmada por regla o usuario.
+- Gastos, CTB y punteos validados en sus bloques independientes.
+- API disponible durante el preflight.
 
-- `40090001924` parece generarse como `tipoagricultor.TPA_ctapuente = 400900` + id proveedor/agricultor `01924`.
-- `60000000010` sale de `tipoagricultor.TPA_cuentagasto1`.
-- `tipoagricultor.TPA_valorgasto1 = 10.0000`.
-- El importe negativo corresponde al 10%: `15973.30 * 10% = 1597.33`.
-- Para este proveedor `acreedores.ACR_Cuentagasto` esta vacio; la cuenta de gasto no sale de acreedores.
+Si no se resuelve un dato obligatorio, la factura permanece en revisión y el
+envío se bloquea. No se sustituye un error de maestro por una advertencia ni se
+usa una copia local.
 
-Conclusion para implementacion:
+## Decisiones y pendientes
 
-- La cuenta de arriba suele ser cuenta puente/proveedor calculada por regla.
-- La cuenta `60000000010` es una cuenta configurada en reglas de `tipoagricultor`, no una cuenta elegida por IA.
-- Negocio confirma funcionalmente que esta cuenta corresponde a la comision descontada de liquidacion.
-- No crear combobox manual de cuentas contables mientras no exista maestro descriptivo de plan contable.
+Decisiones vigentes:
 
-## Ejemplos reales utiles
+- La pantalla principal lista staging, no todo el histórico ERP.
+- Los catálogos y acreedores se consultan bajo demanda.
+- <code>FRR_tipofactura = "1"</code> no es un valor confirmado ni un default.
+- n8n extrae y contrasta; la Edge Function persiste en Supabase.
+- La escritura real debe devolver identificadores ERP verificables.
 
-Ejemplos de staging/API usados como referencia:
+Pendientes externos:
 
-```text
-FCD26/2820  - MONTAJES ELECTRICOS AVILA SL      - 13.884,51
-F2026/0195  - LA JABEGA PLAYA, S.L.             - 1.155,61
-FV26-13     - CRISTOBAL HUGO RODOLFO            - 14.951,01
-01/2026     - TRACTORES RIVAS GONZALEZ SL       - 79.151,52
-1 000265    - AGROELIAN, S.L.                   - 13.596,24
-```
-
-Ejemplos de llamadas:
-
-```text
-GET http://172.19.0.1:18000/acreedores?limit=50
-GET http://172.19.0.1:18000/acreedores?nif=B04243655
-GET http://172.19.0.1:18000/acreedores/1941
-GET http://172.19.0.1:18000/empresas
-GET http://172.19.0.1:18000/facturasrecibidas/tipos
-GET http://172.19.0.1:18000/facturasrecibidas?proveedor_id=1941&numero_factura=FCD26%2F2820
-GET http://172.19.0.1:18000/facturasrecibidas/49165
-GET http://172.19.0.1:18000/facturasrecibidas/34602/ctb
-GET http://172.19.0.1:18000/facturasrecibidas_ctb?factura_id=34602
-```
-
-## Validaciones recomendadas
-
-Antes de guardar como `validada`, comprobar:
-
-- `FRR_idproveedor` presente.
-- `FRR_numerofactura` presente.
-- `FRR_fechafactura` presente.
-- `FRR_totalfac` presente.
-- `FRR_Idempresa` presente.
-- Si hay base/cuota/retencion, total cuadra con tolerancia.
-- Si hay proveedor, existe en `acreedores_cache` o API.
-- Si hay `FRR_idcuenta`, coincide con cuenta del proveedor cuando la API/cache la conoce.
-
-Si no hay proveedor resuelto:
-
-- Crear factura en `pendiente_revision`.
-- Guardar warning visible.
-- No inventar proveedor ni cuenta.
-
-Si no hay apuntes contables:
-
-- Guardar `ctb: []`.
-- Guardar warning si n8n/API no pudo calcular reglas.
-- No fabricar apuntes para el extractor nuevo.
-
-## Decisiones vigentes
-
-- La UI usa `Facturas recibidas` como etiqueta principal.
-- La pantalla lista facturas de Supabase staging, no historico completo de ERP.
-- El historico real solo se consulta para validar, duplicar, buscar proveedor o revisar ejemplos concretos.
-- Empresa usa combo real desde `/empresas`.
-- Tipo factura usa combo observado desde `/facturasrecibidas/tipos`.
-- Tipo factura tiene descripciones funcionales parciales confirmadas por correo Campojoyma 2026-07-07.
-- `FRR_tipofactura = "1"` se considera dato incorrecto/no confirmado.
-- n8n devuelve payload listo para `factura-recibida-extraer`, no escribe.
-- La Edge Function propia es la unica responsable de guardar en Supabase.
-
-## Pendientes / preguntas a negocio o API
-
-1. Confirmar descripcion funcional de `FI`, `CE` y `GM`; el resto de codigos tiene descripcion parcial por correo.
-2. Confirmar si `FRR_Idempresa` siempre sera `1` en Campojoyma o si puede haber mas empresas reales.
-3. Confirmar endpoint definitivo para reglas proveedor/tipo agricultor con campos:
-   - `AGR_idtipo`
-   - `TPA_ctapuente`
-   - `TPA_cuentagasto*`
-   - `TPA_valorgasto*`
-4. Confirmar si existira maestro de plan contable con descripcion cuenta -> texto.
-5. Definir endpoints POST reales para enviar:
-   - cabecera `facturasrecibidas`
-   - desglose `facturasrecibidas_ctb`
-6. Definir si `FRR_fechactb` debe ser siempre igual a `FRR_fechafactura` o si debe seguir calendario contable.
+1. Homologar el mecanismo oficial de asiento y sus evidencias de lectura.
+2. Confirmar las descripciones funcionales pendientes de algunos tipos.
+3. Confirmar cualquier nueva regla de tipo, régimen, fecha CTB o vencimiento
+   antes de automatizarla.
+4. Desplegar el frontend y reemplazar el workflow n8n tras exportar la versión
+   remota vigente.
+5. Completar la aceptación autenticada del flujo desplegado.
 
 ## Errores a evitar
 
-- No tratar Supabase staging como ERP real.
-- No cargar el historico completo de `GET /facturasrecibidas` en la pantalla principal.
-- No exponer JWT del webhook en variables `VITE_*`.
-- No usar `$json.consulta` en n8n si el webhook recibe `query.consulta`.
-- No rellenar `FRR_id` en staging antes de POST real.
-- No mezclar facturas de compra con facturas emitidas a clientes.
-- No tratar `facturasrecibidas_ctb` como lineas de producto.
-- No usar `FRR_tipofactura = "1"` por defecto.
-- No inventar cuentas contables desde IA.
-- No mantener service role en workflows n8n exportados.
+- Usar <code>acreedores_cache</code> como fuente o fallback.
+- Tratar Supabase como ERP real.
+- Exponer el JWT en variables de frontend.
+- Cargar todo el histórico ERP en la pantalla principal.
+- Inferir ejercicio desde una fecha.
+- Copiar fecha de factura a fecha CTB.
+- Asignar tipo, régimen o vencimiento sin regla aprobada.
+- Confundir gastos, CTB, punteos o asiento.
+- Seleccionar punteos automáticamente.
+- Rellenar identificadores ERP antes de una escritura real.
+- Declarar un asiento creado a partir de <code>reference_only</code>.
+- Ejecutar DDL contra MariaDB Netagro.

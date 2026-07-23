@@ -53,7 +53,7 @@ El cliente v2 debe enviar siempre el siguiente sobre:
 | `dry_run` | booleano | Debe enviarse expresamente. Primero `true`; después, si procede, `false` con el mismo UUID y payload funcional. |
 | `cabecera` | objeto | Campos de la factura `FRR_*` y vencimientos permitidos. |
 | `ctb` | array | Solo filas `FRC_*` reales. Puede ser `[]`. |
-| `punteos` | array | Enlaces explícitamente seleccionados por el usuario o flujo de origen. |
+| `punteos` | array | Solo enlaces seleccionados manual y explícitamente por el usuario; ningún flujo de origen puede marcarlos automáticamente. |
 
 Por compatibilidad, la FastAPI aún acepta el parámetro query `dry_run` y el contrato
 v1 sin los campos nuevos. En v2, `dry_run` del cuerpo tiene prioridad. Todo consumidor

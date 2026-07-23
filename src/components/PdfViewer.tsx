@@ -11,6 +11,7 @@ interface PdfViewerProps {
   initialPage?: number | null;
   onError?: (error: Error) => void;
   showControls?: boolean;
+  appearance?: 'default' | 'purchase-invoice';
 }
 
 type PdfZoomMode = 'fit-width' | 'fit-page' | 'custom';
@@ -20,20 +21,27 @@ type PdfDocument = Awaited<ReturnType<PdfJsLib['getDocument']>['promise']>;
 type PdfLoadingTask = ReturnType<PdfJsLib['getDocument']>;
 
 const MIN_ZOOM = 50;
-const MAX_ZOOM = 200;
+const DEFAULT_MAX_ZOOM = 200;
+const PURCHASE_INVOICE_MAX_ZOOM = 220;
 const ZOOM_STEP = 10;
 const PAGE_GAP = 16;
 const STAGE_PADDING = 24;
 
-const toolbarButtonClass =
+const defaultToolbarButtonClass =
   'inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40';
+const purchaseInvoiceToolbarButtonClass =
+  'inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-700 transition-colors hover:border-primary/35 hover:bg-primary/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-blue-400/40 dark:hover:bg-blue-400/10 dark:hover:text-blue-200';
+const defaultToolbarActiveButtonClass =
+  'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15';
+const purchaseInvoiceToolbarActiveButtonClass =
+  'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15 dark:border-blue-400/45 dark:bg-blue-400/10 dark:text-blue-200';
 
-function clampZoom(value: number): number {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+function clampZoom(value: number, maxZoom: number): number {
+  return Math.min(maxZoom, Math.max(MIN_ZOOM, value));
 }
 
-function pdfDownloadName(fileName?: string): string {
-  const cleaned = fileName?.trim() || 'documento.pdf';
+function pdfDownloadName(fileName?: string, fallbackName = 'documento.pdf'): string {
+  const cleaned = fileName?.trim() || fallbackName;
   return /\.pdf$/i.test(cleaned) ? cleaned : `${cleaned}.pdf`;
 }
 
@@ -76,10 +84,12 @@ function PdfCanvasPage({
   pdf,
   pageNumber,
   scale,
+  purchaseInvoiceAppearance,
 }: {
   pdf: PdfDocument;
   pageNumber: number;
   scale: number;
+  purchaseInvoiceAppearance: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [renderError, setRenderError] = useState(false);
@@ -125,9 +135,14 @@ function PdfCanvasPage({
 
   return (
     <div className="flex justify-center" data-pdf-page={pageNumber}>
-      <div className="bg-white shadow-sm ring-1 ring-black/10">
+      <div className={cn('bg-white shadow-sm ring-1 ring-black/10', purchaseInvoiceAppearance && 'dark:ring-white/10')}>
         {renderError ? (
-          <div className="flex min-h-64 min-w-80 items-center justify-center px-6 text-center text-sm font-semibold text-muted-foreground">
+          <div
+            className={cn(
+              'flex min-h-64 min-w-80 items-center justify-center px-6 text-center text-sm font-semibold',
+              purchaseInvoiceAppearance ? 'text-slate-500' : 'text-muted-foreground',
+            )}
+          >
             No se pudo renderizar esta página.
           </div>
         ) : (
@@ -145,6 +160,7 @@ export function PdfViewer({
   initialPage,
   onError,
   showControls = false,
+  appearance = 'default',
 }: PdfViewerProps) {
   const ownedBlobUrlRef = useRef<string | null>(null);
   const onErrorRef = useRef(onError);
@@ -159,6 +175,14 @@ export function PdfViewer({
   const [loadError, setLoadError] = useState(false);
   const [zoom, setZoom] = useState(100);
   const [zoomMode, setZoomMode] = useState<PdfZoomMode>('fit-width');
+  const purchaseInvoiceAppearance = appearance === 'purchase-invoice';
+  const maxZoom = purchaseInvoiceAppearance ? PURCHASE_INVOICE_MAX_ZOOM : DEFAULT_MAX_ZOOM;
+  const toolbarButtonClass = purchaseInvoiceAppearance
+    ? purchaseInvoiceToolbarButtonClass
+    : defaultToolbarButtonClass;
+  const toolbarActiveButtonClass = purchaseInvoiceAppearance
+    ? purchaseInvoiceToolbarActiveButtonClass
+    : defaultToolbarActiveButtonClass;
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -290,6 +314,8 @@ export function PdfViewer({
   }, [pageScale, widthScale, zoom, zoomMode]);
 
   const controlsDisabled = !pdf || loading || loadError;
+  const sourceControlsDisabled = !objectUrl || loading;
+  const sourceActionDisabled = purchaseInvoiceAppearance ? sourceControlsDisabled : controlsDisabled;
   const safeRenderScale = Math.max(0.1, renderScale || 1);
 
   useEffect(() => {
@@ -321,14 +347,14 @@ export function PdfViewer({
 
   const applyZoom = (nextZoom: number) => {
     setZoomMode('custom');
-    setZoom(clampZoom(nextZoom));
+    setZoom(clampZoom(nextZoom, maxZoom));
   };
 
   const downloadPdf = () => {
     if (!objectUrl) return;
     const anchor = document.createElement('a');
     anchor.href = objectUrl;
-    anchor.download = pdfDownloadName(fileName);
+    anchor.download = pdfDownloadName(fileName, purchaseInvoiceAppearance ? 'factura.pdf' : 'documento.pdf');
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -340,9 +366,23 @@ export function PdfViewer({
   };
 
   return (
-    <div className={cn('flex min-h-[360px] w-full flex-col', className)}>
+    <div
+      className={cn(
+        'flex min-h-[360px] w-full flex-col',
+        purchaseInvoiceAppearance &&
+          'overflow-hidden rounded-sm border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-950',
+        className,
+      )}
+    >
       {showControls && (
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-background px-2.5 py-2">
+        <div
+          className={cn(
+            'flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-2.5 py-2',
+            purchaseInvoiceAppearance
+              ? 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-950'
+              : 'border-border bg-background',
+          )}
+        >
           <div className="flex min-w-0 items-center gap-1.5">
             <button
               type="button"
@@ -354,13 +394,20 @@ export function PdfViewer({
             >
               <ZoomOut className="h-4 w-4" />
             </button>
-            <span className="inline-flex h-8 min-w-16 items-center justify-center rounded-md border border-border bg-muted/50 px-2 text-xs font-semibold text-muted-foreground">
+            <span
+              className={cn(
+                'inline-flex h-8 min-w-16 items-center justify-center rounded-md border px-2 text-xs',
+                purchaseInvoiceAppearance
+                  ? 'border-slate-200 bg-slate-50 font-bold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                  : 'border-border bg-muted/50 font-semibold text-muted-foreground',
+              )}
+            >
               {zoomMode === 'custom' ? `${zoom}%` : zoomMode === 'fit-width' ? 'Ancho' : 'Página'}
             </span>
             <button
               type="button"
               onClick={() => applyZoom(zoom + ZOOM_STEP)}
-              disabled={controlsDisabled || (zoomMode === 'custom' && zoom >= MAX_ZOOM)}
+              disabled={controlsDisabled || (zoomMode === 'custom' && zoom >= maxZoom)}
               className={toolbarButtonClass}
               aria-label="Aumentar zoom"
               title="Aumentar zoom"
@@ -371,10 +418,7 @@ export function PdfViewer({
               type="button"
               onClick={() => setZoomMode('fit-width')}
               disabled={controlsDisabled}
-              className={cn(
-                toolbarButtonClass,
-                zoomMode === 'fit-width' && 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15'
-              )}
+              className={cn(toolbarButtonClass, zoomMode === 'fit-width' && toolbarActiveButtonClass)}
               aria-label="Ajustar al ancho"
               title="Ajustar al ancho"
             >
@@ -384,10 +428,7 @@ export function PdfViewer({
               type="button"
               onClick={() => setZoomMode('fit-page')}
               disabled={controlsDisabled}
-              className={cn(
-                toolbarButtonClass,
-                zoomMode === 'fit-page' && 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15'
-              )}
+              className={cn(toolbarButtonClass, zoomMode === 'fit-page' && toolbarActiveButtonClass)}
               aria-label="Ajustar página completa"
               title="Ajustar página completa"
             >
@@ -398,7 +439,7 @@ export function PdfViewer({
             <button
               type="button"
               onClick={openPdf}
-              disabled={controlsDisabled}
+              disabled={sourceActionDisabled}
               className={toolbarButtonClass}
               aria-label="Abrir PDF en pestaña nueva"
               title="Abrir PDF en pestaña nueva"
@@ -408,7 +449,7 @@ export function PdfViewer({
             <button
               type="button"
               onClick={downloadPdf}
-              disabled={controlsDisabled}
+              disabled={sourceActionDisabled}
               className={toolbarButtonClass}
               aria-label="Descargar PDF"
               title="Descargar PDF"
@@ -418,18 +459,45 @@ export function PdfViewer({
           </div>
         </div>
       )}
-      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-auto bg-[#262626]">
+      <div
+        ref={stageRef}
+        className={cn(
+          'relative min-h-0 flex-1 overflow-auto',
+          purchaseInvoiceAppearance ? 'bg-neutral-900' : 'bg-[#262626]',
+        )}
+      >
         {loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#262626]">
-            <div className="inline-flex items-center gap-2 rounded-md bg-background/95 px-3 py-2 text-sm font-semibold text-muted-foreground shadow-sm ring-1 ring-border">
+          <div
+            className={cn(
+              'absolute inset-0 z-10 flex items-center justify-center',
+              purchaseInvoiceAppearance ? 'bg-neutral-900' : 'bg-[#262626]',
+            )}
+          >
+            <div
+              className={cn(
+                'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold shadow-sm ring-1',
+                purchaseInvoiceAppearance
+                  ? 'bg-white/95 text-slate-600 ring-black/10 dark:bg-slate-950/95 dark:text-slate-200 dark:ring-white/10'
+                  : 'bg-background/95 text-muted-foreground ring-border',
+              )}
+            >
               <Loader2 className="h-4 w-4 animate-spin text-primary" />
               Cargando PDF...
             </div>
           </div>
         )}
         {!loading && loadError && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-muted/30 px-6 text-center text-sm text-muted-foreground">
-            No se pudo cargar la vista previa del PDF.
+          <div
+            className={cn(
+              'absolute inset-0 z-10 flex items-center justify-center px-6 text-center text-sm',
+              purchaseInvoiceAppearance
+                ? 'bg-slate-100 font-semibold text-slate-500 dark:bg-slate-950 dark:text-slate-400'
+                : 'bg-muted/30 text-muted-foreground',
+            )}
+          >
+            {purchaseInvoiceAppearance
+              ? 'No se pudo cargar la vista previa. Usa el botón de abrir PDF para ver el documento original.'
+              : 'No se pudo cargar la vista previa del PDF.'}
           </div>
         )}
         {pdf && !loadError && (
@@ -440,6 +508,7 @@ export function PdfViewer({
                 pdf={pdf}
                 pageNumber={index + 1}
                 scale={safeRenderScale}
+                purchaseInvoiceAppearance={purchaseInvoiceAppearance}
               />
             ))}
           </div>

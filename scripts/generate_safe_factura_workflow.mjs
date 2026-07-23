@@ -639,15 +639,11 @@ if (!configuredEmpresaId) {
   }
 }
 
-const ejercicio = readPositiveInteger(getVar('CAMPOJOYMA_EJERCICIO'));
-if (!ejercicio) warnings.push('Falta CAMPOJOYMA_EJERCICIO; no se deriva desde el ano natural.');
-const regimenId = readPositiveInteger(getVar('CAMPOJOYMA_REGIMEN_ID'));
-if (!regimenId) warnings.push('Falta una regla confirmada para FRR_idregimen; queda pendiente de revision.');
-const tipoFactura = readString(getVar('CAMPOJOYMA_TIPO_FACTURA'));
-if (!tipoFactura) warnings.push('Falta una regla confirmada para FRR_tipofactura; queda pendiente de revision.');
-const fechaCtbMode = (readString(getVar('CAMPOJOYMA_FECHA_CTB_MODE')) || '').toLowerCase();
-const fechaCtb = fechaCtbMode === 'fecha_factura' ? readString(literal.fecha_factura) : null;
-if (!fechaCtb) warnings.push('FRR_fechactb requiere revision; configura CAMPOJOYMA_FECHA_CTB_MODE=fecha_factura solo si esa es la regla aprobada.');
+// Las reglas contables son autoridad de Supabase/Edge, nunca variables de n8n.
+const ejercicio = null;
+const regimenId = null;
+const tipoFactura = null;
+const fechaCtb = null;
 
 const numeroFactura = readString(literal.numero_factura);
 const providerId = readPositiveInteger(provider?.id);
@@ -769,21 +765,12 @@ for (let index = 1; index <= 5; index += 1) {
   extraction['FRR_iva' + index] = readNumber(tramo.porcentaje);
   extraction['FRR_cuota' + index] = readNumber(tramo.cuota);
 }
-const vencimientos = Array.isArray(literal.vencimientos) ? literal.vencimientos.slice(0, 4) : [];
-for (let index = 1; index <= 4; index += 1) {
-  const vencimiento = vencimientos[index - 1] ?? {};
-  extraction['FRR_FechaVto' + index] = readString(vencimiento.fecha);
-  extraction['FRR_ImporteVto' + index] = readNumber(vencimiento.importe);
-}
-extraction.FechaVto = extraction.FRR_FechaVto1 ?? null;
-extraction.ImporteVto = extraction.FRR_ImporteVto1 ?? null;
-
 evidence.empresa = {
   configured_id: configuredEmpresaId,
   source: empresaVariableId ? 'n8n_variable' : 'workflow_default',
   validated: empresaValidated,
 };
-evidence.ejercicio = { configured: Boolean(ejercicio), value: ejercicio };
+evidence.ejercicio = { source: 'edge_rule', resolved: false, value: null };
 evidence.acreedor = {
   resolution: providerReason,
   matched: Boolean(provider),
@@ -805,16 +792,14 @@ evidence.punteos = {
   selected: 0,
   candidates: punteoSuggestions,
 };
-evidence.regimen = { source: regimenId ? 'n8n_variable' : 'pending', value: regimenId };
-evidence.tipo_factura = { source: tipoFactura ? 'n8n_variable' : 'pending', value: tipoFactura };
+evidence.regimen = { source: 'edge_rule', resolved: false, value: null };
+evidence.tipo_factura = { source: 'edge_rule', resolved: false, value: null };
+evidence.fecha_ctb = { source: 'edge_rule_or_manual', policy: 'manual', resolved: false, value: null };
 
 const documentKind = readString(literal.document_kind);
 const shouldIngest = ai.ok !== false && ['factura', 'factura_rectificativa', 'abono'].includes(documentKind);
-const readyForErp = Boolean(
-  shouldIngest && providerId && empresaId && ejercicio && regimenId && tipoFactura && fechaCtb &&
-  numeroFactura && extraction.FRR_fechafactura && extraction.FRR_totalfac !== null &&
-  duplicateCheckStatus === 'ok' && duplicateCount === 0
-);
+const readyForErp = false;
+evidence.erp_rules = { source: 'supabase_edge', required: true, resolved: false };
 const finalWarnings = [...new Set(warnings.map(readString).filter(Boolean))];
 const finalMetadata = {
   confidence: readNumber(metadata.confidence),
@@ -1062,7 +1047,7 @@ getNode('Respond to Webhook').parameters.responseBody = '={{ { contract_version:
 
 const note = getNode('Notas revision');
 note.position = [1440, -416];
-note.parameters.content = `# Facturas recibidas Campojoyma - flujo seguro\n\n1. El PDF se valida, se calcula SHA-256 sobre sus bytes y la IA solo extrae datos visibles.\n2. La API resuelve acreedor operativo por coincidencia exacta y comprueba duplicados.\n3. No se inventan empresa, ejercicio, regimen, fecha CTB, cuenta gasto ni tipo ERP.\n4. Los candidatos de punteo quedan solo en metadata.match_evidence; punteos se envia siempre vacio.\n5. Frontend: n8n responde a factura-recibida-extraer y esa Edge guarda la factura.\n6. Email: n8n llama directamente a factura-recibida-ingest.\n7. Nunca se escribe en Netagro desde este workflow.\n\nDependencia: debe estar activa la API POST /webhook/pdf-imagen y aceptar el header Authorization configurado en apipdfimagefri.\n\nVariable requerida: CAMPOJOYMA_EJERCICIO.\nFallbacks no secretos por limitacion de licencia de Variables n8n: API de lectura http://172.19.0.1:18001, empresa 1 validada contra /empresas/1 y sugerencias de punteo activas. Si las variables se habilitan, CAMPOJOYMA_API_BASE_URL, CAMPOJOYMA_EMPRESA_ID y CAMPOJOYMA_CARGAR_PUNTEOS sobrescriben esos valores.\nVariables opcionales y solo con regla aprobada: CAMPOJOYMA_REGIMEN_ID, CAMPOJOYMA_TIPO_FACTURA, CAMPOJOYMA_FECHA_CTB_MODE=fecha_factura, CAMPOJOYMA_API_BEARER_TOKEN, CAMPOJOYMA_MAX_PDF_BYTES.\n\nEl Email Trigger queda desactivado por seguridad. No habilitarlo hasta configurar credencial IMAP, prueba controlada, tratamiento de errores/dead-letter y politica explicita de lectura, movimiento y reintento del correo.`;
+note.parameters.content = `# Facturas recibidas Campojoyma - flujo seguro\n\n1. El PDF se valida, se calcula SHA-256 sobre sus bytes y la IA solo extrae datos visibles.\n2. La API resuelve el acreedor operativo por coincidencia exacta; Edge aplica las reglas contables y comprueba duplicados.\n3. n8n no inventa ni decide ejercicio, regimen, fecha CTB, cuenta gasto ni tipo ERP.\n4. Los candidatos de punteo quedan solo en metadata.match_evidence; punteos se envia siempre vacio.\n5. Frontend: n8n responde a factura-recibida-extraer y esa Edge guarda la factura.\n6. Email: n8n llama directamente a factura-recibida-ingest.\n7. Nunca se escribe en Netagro desde este workflow.\n\nDependencia: debe estar activa la API POST /webhook/pdf-imagen y aceptar el header Authorization configurado en apipdfimagefri.\n\nReglas contables: ejercicio, regimen, tipo de factura y politica de fecha CTB se resuelven exclusivamente en Supabase/Edge. El workflow envia esos campos a null para su resolucion autoritativa o revision manual.\nFallbacks no secretos por limitacion de licencia de Variables n8n: API de lectura http://172.19.0.1:18001, empresa 1 validada contra /empresas/1 y sugerencias de punteo activas. Si las variables se habilitan, CAMPOJOYMA_API_BASE_URL, CAMPOJOYMA_EMPRESA_ID y CAMPOJOYMA_CARGAR_PUNTEOS sobrescriben esos valores.\nVariables opcionales no contables: CAMPOJOYMA_API_BEARER_TOKEN y CAMPOJOYMA_MAX_PDF_BYTES.\n\nEl Email Trigger queda desactivado por seguridad. No habilitarlo hasta configurar credencial IMAP, prueba controlada, tratamiento de errores/dead-letter y politica explicita de lectura, movimiento y reintento del correo.`;
 
 getNode('Preparar respuesta Edge').position = [3840, 0];
 getNode('Es email?').position = [4064, 0];
@@ -1301,6 +1286,41 @@ if (/\b(CREATE|ALTER|DROP|TRUNCATE)\b/i.test(JSON.stringify(workflow))) {
 }
 if (getNode('Email Trigger (IMAP)').disabled !== true || workflow.active !== false) {
   throw new Error('El workflow debe generarse inactivo y con IMAP desactivado.');
+}
+
+const enrichmentCode = getNode('Enriquecer por API Campojoyma').parameters.jsCode;
+const forbiddenAccountingVariables = [
+  'CAMPOJOYMA_EJERCICIO',
+  'CAMPOJOYMA_REGIMEN_ID',
+  'CAMPOJOYMA_DEFAULT_REGIMEN_ID',
+  'CAMPOJOYMA_TIPO_FACTURA',
+  'CAMPOJOYMA_TIPO_FACTURA_DEFAULT',
+  'CAMPOJOYMA_FECHA_CTB_MODE',
+  'CAMPOJOYMA_CUENTA_GASTO_DEFAULT',
+];
+for (const variableName of forbiddenAccountingVariables) {
+  if (enrichmentCode.includes(variableName)) {
+    throw new Error('El workflow conserva una regla contable prohibida en n8n: ' + variableName);
+  }
+}
+if (/\b(?:FechaVto|ImporteVto|FRR_FechaVto\d*|FRR_ImporteVto\d*)\b/.test(enrichmentCode)) {
+  throw new Error('El workflow intenta crear vencimientos ERP desde la extraccion del PDF.');
+}
+if (/\bS\s*:\s*true\b|\.S\s*=\s*true\b/.test(enrichmentCode)) {
+  throw new Error('El workflow intenta seleccionar punteos automaticamente.');
+}
+if (!/const ejercicio = null;/.test(enrichmentCode) ||
+    !/const regimenId = null;/.test(enrichmentCode) ||
+    !/const tipoFactura = null;/.test(enrichmentCode) ||
+    !/const fechaCtb = null;/.test(enrichmentCode) ||
+    !/const readyForErp = false;/.test(enrichmentCode)) {
+  throw new Error('El workflow no delega de forma explicita las reglas contables en Supabase/Edge.');
+}
+if (!/const output = \{ extraction, gastos: \[\], ctb: \[\], punteos: \[\], metadata: finalMetadata \};/.test(enrichmentCode)) {
+  throw new Error('El workflow no mantiene gastos, CTB y punteos fuera de la ingesta automatica.');
+}
+if (/acreedores_cache|\$env\.HISPATEC_API_KEY/.test(JSON.stringify(workflow))) {
+  throw new Error('El workflow conserva una fuente o credencial prohibida.');
 }
 
 fs.writeFileSync(outputPath, JSON.stringify(workflow, null, 2) + '\n', 'utf8');

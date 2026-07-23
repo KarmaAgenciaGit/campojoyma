@@ -6,6 +6,8 @@ import {
   corsHeaders,
   ensureArchivoPdf,
   getValidationErrorsForFactura,
+  loadAndResolveFacturaERPAccountingRules,
+  mergeValidationIssues,
   integerValue,
   jsonResponse,
   loadArchivoPdfBase64,
@@ -13,9 +15,12 @@ import {
   normalizePunteoPayload,
   normalizeFrrPayload,
   pick,
+  prepareFacturaExtractionPersistence,
   requestIdValue,
   requireRouteUser,
   rpcErrorStatus,
+  sanitizeUntrustedFacturaAccountingFields,
+  sanitizeUntrustedPunteoSelections,
   signJwtHs256,
   text,
   type JsonObject,
@@ -23,12 +28,6 @@ import {
 
 const DEFAULT_WEBHOOK_URL =
   "https://n8nbecarios.srv894901.hstgr.cloud/webhook/campojoyma-factura-extraer";
-
-type ValidationIssue = {
-  field: string;
-  message: string;
-  severity: "error" | "warning";
-};
 
 type NormalizedExtraction = {
   frr: JsonObject;
@@ -99,25 +98,6 @@ const normalizeN8nResponse = (raw: unknown): NormalizedExtraction => {
     metadata,
     warnings: warningTexts(metadata.warnings, extraction.warnings, output.warnings),
   };
-};
-
-const appendWarningIssues = (issues: unknown[], warnings: string[]): ValidationIssue[] => {
-  const normalized = asArray(issues).map((issue) => {
-    const object = asObject(issue);
-    return {
-      field: text(object.field, "extraction")!,
-      message: text(object.message, "Aviso de extraccion")!,
-      severity: object.severity === "warning" ? "warning" : "error",
-    } satisfies ValidationIssue;
-  });
-
-  const existing = new Set(normalized.map((issue) => issue.message));
-  for (const warning of warnings) {
-    if (!existing.has(warning)) {
-      normalized.push({ field: "extraction", message: warning, severity: "warning" });
-    }
-  }
-  return normalized;
 };
 
 const buildWebhookHeaders = async (): Promise<Record<string, string>> => {
@@ -267,8 +247,27 @@ Deno.serve(async (req) => {
     }
 
     const normalized = normalizeN8nResponse(webhookJson);
-    const validationBase = await getValidationErrorsForFactura(serviceClient, normalized.frr);
-    const validationErrors = appendWarningIssues(validationBase, normalized.warnings);
+    const sanitizedExtractedFrr = sanitizeUntrustedFacturaAccountingFields(normalized.frr);
+    const extractionPersistence = prepareFacturaExtractionPersistence({
+      existingFactura,
+      extractedFrr: sanitizedExtractedFrr,
+      ctb: [],
+      punteos: sanitizeUntrustedPunteoSelections(normalized.punteos),
+    });
+    const accountingRules = await loadAndResolveFacturaERPAccountingRules(
+      serviceClient,
+      extractionPersistence.factura,
+    );
+    const resolvedFrr = accountingRules.factura;
+    const persistedFrr = {
+      ...extractionPersistence.persistedFrr,
+      ...accountingRules.applied,
+    };
+    const validationBase = await getValidationErrorsForFactura(resolvedFrr);
+    const validationErrors = mergeValidationIssues(
+      [...accountingRules.issues, ...validationBase],
+      normalized.warnings,
+    );
     const hasBlockingErrors = validationErrors.some((issue) => issue.severity !== "warning");
 
     const duplicateCandidates: string[] = [];
@@ -276,6 +275,8 @@ Deno.serve(async (req) => {
       .from("facturasrecibidas")
       .select("id")
       .eq("archivo_pdf_id", archivoPdfId)
+      .neq("estado", "duplicada")
+      .neq("estado", "descartada")
       .limit(2);
     if (pdfDupError) throw pdfDupError;
     for (const candidate of asArray(pdfDuplicates)) {
@@ -283,15 +284,20 @@ Deno.serve(async (req) => {
       if (id && id !== facturaId) duplicateCandidates.push(id);
     }
 
-    const proveedorId = normalized.frr.FRR_idproveedor;
-    const numeroFactura = text(normalized.frr.FRR_numerofactura, null);
-    if (proveedorId !== null && proveedorId !== undefined && numeroFactura) {
+    const empresaId = integerValue(resolvedFrr.FRR_Idempresa, null);
+    const ejercicio = integerValue(resolvedFrr.FRR_ejercicio, null);
+    const proveedorId = integerValue(resolvedFrr.FRR_idproveedor, null);
+    const numeroFactura = text(resolvedFrr.FRR_numerofactura, null);
+    if (empresaId && ejercicio && proveedorId && numeroFactura) {
       const { data: supplierDuplicates, error: supplierDupError } = await serviceClient
         .from("facturasrecibidas")
         .select("id")
+        .eq("FRR_Idempresa", empresaId)
+        .eq("FRR_ejercicio", ejercicio)
         .eq("FRR_idproveedor", proveedorId)
         .eq("FRR_numerofactura", numeroFactura)
         .neq("estado", "duplicada")
+        .neq("estado", "descartada")
         .limit(2);
       if (supplierDupError) throw supplierDupError;
       for (const candidate of asArray(supplierDuplicates)) {
@@ -320,7 +326,7 @@ Deno.serve(async (req) => {
         : rawConfidence;
 
     const facturaPayload: JsonObject = {
-      ...normalized.frr,
+      ...persistedFrr,
       archivo_pdf_id: archivoPdfId,
       duplicada_de: duplicatedOf,
       estado,
@@ -350,8 +356,8 @@ Deno.serve(async (req) => {
         p_factura_id: facturaId,
         p_expected_version: expectedVersion,
         p_factura: facturaPayload,
-        p_ctb: normalized.ctb,
-        p_punteos: normalized.punteos,
+        p_ctb: extractionPersistence.ctb,
+        p_punteos: extractionPersistence.punteos,
         p_actor: auth.user.id,
         p_request_id: requestId,
         p_change_source: "extract",
@@ -359,8 +365,8 @@ Deno.serve(async (req) => {
       }
       : {
         p_factura: facturaPayload,
-        p_ctb: normalized.ctb,
-        p_punteos: normalized.punteos,
+        p_ctb: extractionPersistence.ctb,
+        p_punteos: extractionPersistence.punteos,
         p_actor: auth.user.id,
         p_request_id: requestId,
         p_change_source: "extract",
@@ -392,8 +398,8 @@ Deno.serve(async (req) => {
       duplicada_de: duplicatedOf,
       validation_errors: validationErrors,
       factura: savedFactura,
-      ctb: result.ctb ?? normalized.ctb,
-      punteos: result.punteos ?? normalized.punteos,
+      ctb: result.ctb ?? extractionPersistence.ctb,
+      punteos: result.punteos ?? extractionPersistence.punteos,
     });
   } catch (error) {
     console.error("factura-recibida-extraer error", error);

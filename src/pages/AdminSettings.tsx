@@ -24,9 +24,15 @@ import { legacySupabase as supabase } from '@/integrations/supabase/legacyClient
 import { getFirstAllowedPath, type UserRole } from '@/config/accessControl';
 import type { Database } from '@/integrations/supabase/types';
 import { ClientCombobox } from '@/components/ClientCombobox';
+import { AcreedorCombobox } from '@/components/AcreedorCombobox';
 import { ShieldCheck, Users, RefreshCw, Save, Trash2, Edit2, Eye, SlidersHorizontal } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { agroirisClients } from '@/services/agroirisClients';
+import {
+  facturasRecibidasErpRules,
+  type FacturaFechaCtbPolicy,
+  type FacturaRecibidaErpRule,
+} from '@/services/facturasRecibidasErpRules';
 import {
   clearClienteBehaviorRuleCache,
   DEFAULT_CLIENT_BEHAVIOR_RULE,
@@ -58,6 +64,38 @@ type ClienteBehaviorRuleConfig = ClienteBehaviorRule & {
   require_name_prefixes_pedidos: string[];
   skip_name_includes_cuentaventa: string[];
   require_name_prefixes_cuentaventa: string[];
+};
+
+type FacturaErpRuleDraft = {
+  id: string | null;
+  empresaId: string;
+  proveedorId: number | null;
+  ejercicioErp: string;
+  tipoFactura: string;
+  regimenId: string;
+  fechaCtbPolicy: FacturaFechaCtbPolicy;
+  activo: boolean;
+  approvalNote: string;
+};
+
+const emptyFacturaErpRuleDraft = (): FacturaErpRuleDraft => ({
+  id: null,
+  empresaId: '1',
+  proveedorId: null,
+  ejercicioErp: '',
+  tipoFactura: '',
+  regimenId: '',
+  fechaCtbPolicy: 'manual',
+  activo: true,
+  approvalNote: '',
+});
+
+const parseOptionalPositiveInteger = (value: string, label: string): number | null => {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} debe ser un entero positivo.`);
+  return parsed;
 };
 
 const CLIENT_BEHAVIOR_TOGGLE_FIELDS: ClienteBehaviorToggleField[] = [
@@ -258,6 +296,10 @@ const AdminSettings = () => {
   const [addingClienteVisible, setAddingClienteVisible] = useState(false);
   const [addingClienteVisibleCuentaVenta, setAddingClienteVisibleCuentaVenta] = useState(false);
   const [visibilityScope, setVisibilityScope] = useState<VisibilityScopeOption>('pedidos');
+  const [facturaErpRules, setFacturaErpRules] = useState<FacturaRecibidaErpRule[]>([]);
+  const [facturaErpRulesLoading, setFacturaErpRulesLoading] = useState(false);
+  const [facturaErpRuleSaving, setFacturaErpRuleSaving] = useState(false);
+  const [facturaErpRuleDraft, setFacturaErpRuleDraft] = useState<FacturaErpRuleDraft>(emptyFacturaErpRuleDraft);
 
   const isEditing = useMemo(() => entries.some((e) => e.user_id === formUserId), [entries, formUserId]);
   const clientesOcultos = useMemo(
@@ -446,6 +488,80 @@ const AdminSettings = () => {
       });
     } finally {
       setClientesLoading(false);
+    }
+  };
+
+  const loadFacturaErpRules = async () => {
+    try {
+      setFacturaErpRulesLoading(true);
+      setFacturaErpRules(await facturasRecibidasErpRules.list());
+    } catch (err: any) {
+      console.error('Error cargando reglas ERP de facturas recibidas:', err);
+      toast({
+        title: 'No se pudieron cargar las reglas de facturas',
+        description: err?.message ?? 'Aplica la migraci\u00f3n y prueba nuevamente.',
+        variant: 'destructive',
+      });
+    } finally {
+      setFacturaErpRulesLoading(false);
+    }
+  };
+
+  const resetFacturaErpRuleDraft = () => {
+    setFacturaErpRuleDraft(emptyFacturaErpRuleDraft());
+  };
+
+  const editFacturaErpRule = (rule: FacturaRecibidaErpRule) => {
+    setFacturaErpRuleDraft({
+      id: rule.id,
+      empresaId: String(rule.empresa_id),
+      proveedorId: rule.proveedor_id,
+      ejercicioErp: rule.ejercicio_erp === null ? '' : String(rule.ejercicio_erp),
+      tipoFactura: rule.tipo_factura ?? '',
+      regimenId: rule.regimen_id === null ? '' : String(rule.regimen_id),
+      fechaCtbPolicy: rule.fecha_ctb_policy,
+      activo: rule.activo,
+      approvalNote: rule.approval_note ?? '',
+    });
+  };
+
+  const saveFacturaErpRule = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    try {
+      setFacturaErpRuleSaving(true);
+      const empresaId = parseOptionalPositiveInteger(facturaErpRuleDraft.empresaId, 'La empresa ERP');
+      if (empresaId === null) throw new Error('La empresa ERP es obligatoria.');
+
+      await facturasRecibidasErpRules.save({
+        id: facturaErpRuleDraft.id,
+        empresa_id: empresaId,
+        proveedor_id: facturaErpRuleDraft.proveedorId,
+        ejercicio_erp: parseOptionalPositiveInteger(facturaErpRuleDraft.ejercicioErp, 'El ejercicio ERP'),
+        tipo_factura: facturaErpRuleDraft.tipoFactura,
+        regimen_id: parseOptionalPositiveInteger(facturaErpRuleDraft.regimenId, 'El r\u00e9gimen IVA'),
+        fecha_ctb_policy: facturaErpRuleDraft.fechaCtbPolicy,
+        activo: facturaErpRuleDraft.activo,
+        approval_note: facturaErpRuleDraft.approvalNote,
+      });
+
+      toast({
+        title: 'Regla de facturas guardada',
+        description: facturaErpRuleDraft.proveedorId
+          ? `Configuraci\u00f3n guardada para empresa ${empresaId} y acreedor ${facturaErpRuleDraft.proveedorId}.`
+          : `Configuraci\u00f3n general guardada para empresa ${empresaId}.`,
+      });
+      resetFacturaErpRuleDraft();
+      await loadFacturaErpRules();
+    } catch (err: any) {
+      console.error('Error guardando regla ERP de facturas recibidas:', err);
+      toast({
+        title: 'No se pudo guardar la regla',
+        description: err?.message ?? 'Revisa los valores e int\u00e9ntalo de nuevo.',
+        variant: 'destructive',
+      });
+    } finally {
+      setFacturaErpRuleSaving(false);
     }
   };
 
@@ -966,7 +1082,7 @@ const AdminSettings = () => {
   };
 
   const handleRefreshAll = async () => {
-    await Promise.all([loadEntries(), loadUsers(), loadClientesConfig()]);
+    await Promise.all([loadEntries(), loadUsers(), loadClientesConfig(), loadFacturaErpRules()]);
   };
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -1015,7 +1131,7 @@ const AdminSettings = () => {
 
   useEffect(() => {
     if (!isAdmin) return;
-    loadClientesConfig();
+    void Promise.all([loadClientesConfig(), loadFacturaErpRules()]);
   }, [isAdmin]);
   const toggleRoute = (route: string, checked: boolean) => {
     setFormRoutes((prev) => {
@@ -1344,6 +1460,235 @@ const AdminSettings = () => {
               Clientes con reglas activas: <span className="font-semibold text-white">{clientesLoading ? '—' : clientesConReglasActivas}</span>
             </div>
           </CardHeader>
+        </Card>
+
+        <Card className="border border-border/60">
+          <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="space-y-1">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-primary" />
+                Reglas ERP de facturas recibidas
+              </CardTitle>
+              <CardDescription>
+                Configuraci\u00f3n por empresa y, cuando exista una aprobaci\u00f3n espec\u00edfica, por acreedor ERP.
+              </CardDescription>
+            </div>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={resetFacturaErpRuleDraft}>
+                Nueva regla
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => void loadFacturaErpRules()}
+                disabled={facturaErpRulesLoading}
+              >
+                <RefreshCw className={`h-4 w-4 ${facturaErpRulesLoading ? 'animate-spin' : ''}`} />
+                Refrescar
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <p className="border-l-2 border-amber-500 pl-3 text-sm text-muted-foreground">
+              Estos valores no se deducen del a\u00f1o, del porcentaje de IVA, del PDF ni del origen de los punteos.
+              Si un dato no tiene una regla aprobada, permanece pendiente para selecci\u00f3n manual.
+            </p>
+
+            <form onSubmit={saveFacturaErpRule} className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-empresa">Empresa ERP</Label>
+                  <Input
+                    id="factura-rule-empresa"
+                    inputMode="numeric"
+                    value={facturaErpRuleDraft.empresaId}
+                    onChange={(event) =>
+                      setFacturaErpRuleDraft((current) => ({ ...current, empresaId: event.target.value }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                    placeholder="1"
+                  />
+                </div>
+                <div className="space-y-2 md:col-span-1 xl:col-span-2">
+                  <Label>Acreedor ERP (opcional)</Label>
+                  <AcreedorCombobox
+                    value={facturaErpRuleDraft.proveedorId}
+                    onChange={(proveedorId) =>
+                      setFacturaErpRuleDraft((current) => ({ ...current, proveedorId }))
+                    }
+                    placeholder="Buscar acreedor por nombre o NIF"
+                    disabled={facturaErpRuleSaving}
+                    className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    source="erp"
+                    minSearchLength={2}
+                    searchLimit={25}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Vac\u00edo aplica la regla general de la empresa.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 pt-7">
+                  <Switch
+                    id="factura-rule-activa"
+                    checked={facturaErpRuleDraft.activo}
+                    onCheckedChange={(activo) =>
+                      setFacturaErpRuleDraft((current) => ({ ...current, activo }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                  />
+                  <Label htmlFor="factura-rule-activa">Regla activa</Label>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-ejercicio">Ejercicio ERP</Label>
+                  <Input
+                    id="factura-rule-ejercicio"
+                    inputMode="numeric"
+                    value={facturaErpRuleDraft.ejercicioErp}
+                    onChange={(event) =>
+                      setFacturaErpRuleDraft((current) => ({ ...current, ejercicioErp: event.target.value }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                    placeholder="Sin regla"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-tipo">Tipo de factura</Label>
+                  <Input
+                    id="factura-rule-tipo"
+                    value={facturaErpRuleDraft.tipoFactura}
+                    onChange={(event) =>
+                      setFacturaErpRuleDraft((current) => ({ ...current, tipoFactura: event.target.value }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                    maxLength={2}
+                    placeholder="Selecci\u00f3n manual"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-regimen">R\u00e9gimen IVA</Label>
+                  <Input
+                    id="factura-rule-regimen"
+                    inputMode="numeric"
+                    value={facturaErpRuleDraft.regimenId}
+                    onChange={(event) =>
+                      setFacturaErpRuleDraft((current) => ({ ...current, regimenId: event.target.value }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                    placeholder="Selecci\u00f3n manual"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-fecha-ctb">Pol\u00edtica de fecha CTB</Label>
+                  <Select
+                    value={facturaErpRuleDraft.fechaCtbPolicy}
+                    onValueChange={(value) =>
+                      setFacturaErpRuleDraft((current) => ({
+                        ...current,
+                        fechaCtbPolicy: value as FacturaFechaCtbPolicy,
+                      }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                  >
+                    <SelectTrigger id="factura-rule-fecha-ctb">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="manual">Revisi\u00f3n manual</SelectItem>
+                      <SelectItem value="invoice_date">Fecha de factura (requiere aprobaci\u00f3n)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="factura-rule-approval-note">Nota o evidencia de aprobaci\u00f3n</Label>
+                <textarea
+                  id="factura-rule-approval-note"
+                  value={facturaErpRuleDraft.approvalNote}
+                  onChange={(event) =>
+                    setFacturaErpRuleDraft((current) => ({ ...current, approvalNote: event.target.value }))
+                  }
+                  disabled={facturaErpRuleSaving}
+                  rows={3}
+                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="Indica qui\u00e9n aprob\u00f3 la regla y la evidencia utilizada."
+                />
+                <p className="text-xs text-muted-foreground">
+                  Es obligatoria si se configura ejercicio, tipo, r\u00e9gimen o una fecha CTB autom\u00e1tica.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                {facturaErpRuleDraft.id ? (
+                  <Button type="button" variant="outline" onClick={resetFacturaErpRuleDraft} disabled={facturaErpRuleSaving}>
+                    Cancelar edici\u00f3n
+                  </Button>
+                ) : null}
+                <Button type="submit" className="gap-2" disabled={facturaErpRuleSaving}>
+                  {facturaErpRuleSaving ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {facturaErpRuleDraft.id ? 'Guardar cambios' : 'Crear regla'}
+                </Button>
+              </div>
+            </form>
+
+            <div className="overflow-x-auto border-t pt-4">
+              {facturaErpRulesLoading ? (
+                <p className="text-sm text-muted-foreground">Cargando reglas de facturas...</p>
+              ) : facturaErpRules.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No hay reglas ERP configuradas para facturas recibidas.</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Empresa</TableHead>
+                      <TableHead>Alcance</TableHead>
+                      <TableHead>Ejercicio</TableHead>
+                      <TableHead>Tipo</TableHead>
+                      <TableHead>R\u00e9gimen</TableHead>
+                      <TableHead>Fecha CTB</TableHead>
+                      <TableHead>Estado</TableHead>
+                      <TableHead>Evidencia</TableHead>
+                      <TableHead className="text-right">Acci\u00f3n</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {facturaErpRules.map((rule) => (
+                      <TableRow key={rule.id}>
+                        <TableCell className="font-mono">{rule.empresa_id}</TableCell>
+                        <TableCell>
+                          {rule.proveedor_id === null ? 'General' : `Acreedor ${rule.proveedor_id}`}
+                        </TableCell>
+                        <TableCell>{rule.ejercicio_erp ?? 'Manual'}</TableCell>
+                        <TableCell>{rule.tipo_factura ?? 'Manual'}</TableCell>
+                        <TableCell>{rule.regimen_id ?? 'Manual'}</TableCell>
+                        <TableCell>
+                          {rule.fecha_ctb_policy === 'invoice_date' ? 'Fecha de factura' : 'Manual'}
+                        </TableCell>
+                        <TableCell>{rule.activo ? 'Activa' : 'Inactiva'}</TableCell>
+                        <TableCell className="max-w-[280px] whitespace-normal text-sm text-muted-foreground">
+                          {rule.approval_note ?? 'Sin valores autom\u00e1ticos'}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="gap-2"
+                            onClick={() => editFacturaErpRule(rule)}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                            Editar
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          </CardContent>
         </Card>
 
         <Card className="border border-border/60">

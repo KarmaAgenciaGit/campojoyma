@@ -36,6 +36,7 @@ export type FacturaRecibidaUpdatePayload = {
   factura: Record<string, unknown>;
   ctb: Array<Record<string, unknown>>;
   punteos?: Array<Record<string, unknown>>;
+  provider_preflight_verified?: boolean;
 };
 
 const blobToBase64 = (blob: Blob): Promise<string> =>
@@ -53,6 +54,11 @@ const getFunctionErrorMessage = (data: unknown): string | null => {
   if (!data || typeof data !== 'object') return null;
   const error = (data as { error?: unknown }).error;
   return typeof error === 'string' ? error : null;
+};
+
+const isReconciliationRequiredResponse = (data: unknown): boolean => {
+  if (!data || typeof data !== 'object') return false;
+  return (data as { reconciliation_required?: unknown }).reconciliation_required === true;
 };
 
 const asValidationErrors = (value: unknown): FacturaValidationIssue[] => {
@@ -86,7 +92,7 @@ const mapCtb = (row: RawCtb): FacturaRecibidaCtb => ({
   updated_at: row.updated_at,
 });
 
-const mapPunteo = (row: RawPunteo): FacturaRecibidaPunteo => ({
+export const mapPunteo = (row: RawPunteo): FacturaRecibidaPunteo => ({
   id: String(row.id),
   factura_id: String(row.factura_id),
   posicion: Number(row.posicion ?? 0),
@@ -101,7 +107,7 @@ const mapPunteo = (row: RawPunteo): FacturaRecibidaPunteo => ({
   Fecha: row.Fecha ?? null,
   'Importe P': row['Importe P'] ?? null,
   Importe: row.Importe ?? null,
-  S: row.S ?? true,
+  S: row.S ?? false,
   Ver: row.Ver ?? false,
   empresa_id: row.empresa_id ?? null,
   proveedor_id: row.proveedor_id ?? null,
@@ -409,20 +415,24 @@ class FacturasRecibidasService {
     return updated;
   }
 
-  async sendToERP(facturaId: string, version?: number | null): Promise<FacturaRecibida> {
+  async sendToERP(
+    facturaId: string,
+    version?: number | null,
+    requestId?: string | null,
+  ): Promise<FacturaRecibida> {
     const expectedVersion = version ?? (await this.getById(facturaId))?.row_version ?? null;
     if (!expectedVersion) throw new Error('No se pudo determinar la versión de la factura antes del envío.');
     const { data, error } = await supabase.functions.invoke('factura-recibida-send-erp', {
       body: {
         contract_version: 2,
-        request_id: crypto.randomUUID(),
+        request_id: requestId ?? crypto.randomUUID(),
         factura_id: facturaId,
         expected_version: expectedVersion,
       },
     });
     if (error) throw error;
     const message = getFunctionErrorMessage(data);
-    if (message) throw new Error(message);
+    if (message && !isReconciliationRequiredResponse(data)) throw new Error(message);
     const updated = await this.getById(facturaId);
     if (!updated) throw new Error('Factura no encontrada tras enviar.');
     return updated;

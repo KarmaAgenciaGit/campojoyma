@@ -275,38 +275,44 @@ export type Database = {
         }
         Relationships: []
       }
-      acreedores_cache: {
+      facturas_recibidas_erp_rules: {
         Row: {
-          ACR_Codigo: number
-          ACR_Cuenta: string | null
-          ACR_Nif: string | null
-          ACR_Nombre: string | null
           activo: boolean
+          approval_note: string | null
           created_at: string
-          raw: Json
-          synced_at: string
+          ejercicio_erp: number | null
+          empresa_id: number
+          fecha_ctb_policy: string
+          id: string
+          proveedor_id: number | null
+          regimen_id: number | null
+          tipo_factura: string | null
           updated_at: string
         }
         Insert: {
-          ACR_Codigo: number
-          ACR_Cuenta?: string | null
-          ACR_Nif?: string | null
-          ACR_Nombre?: string | null
           activo?: boolean
+          approval_note?: string | null
           created_at?: string
-          raw?: Json
-          synced_at?: string
+          ejercicio_erp?: number | null
+          empresa_id: number
+          fecha_ctb_policy?: string
+          id?: string
+          proveedor_id?: number | null
+          regimen_id?: number | null
+          tipo_factura?: string | null
           updated_at?: string
         }
         Update: {
-          ACR_Codigo?: number
-          ACR_Cuenta?: string | null
-          ACR_Nif?: string | null
-          ACR_Nombre?: string | null
           activo?: boolean
+          approval_note?: string | null
           created_at?: string
-          raw?: Json
-          synced_at?: string
+          ejercicio_erp?: number | null
+          empresa_id?: number
+          fecha_ctb_policy?: string
+          id?: string
+          proveedor_id?: number | null
+          regimen_id?: number | null
+          tipo_factura?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -957,6 +963,32 @@ export type Database = {
           p_punteos?: Json
           p_reason?: string | null
           p_request_id?: string | null
+        }
+        Returns: Json
+      }
+      import_factura_recibida_reference_v2: {
+        Args: {
+          p_actor?: string | null
+          p_ctb?: Json
+          p_erp_readback?: Json
+          p_factura: Json
+          p_punteos?: Json
+          p_reason?: string | null
+          p_request_id?: string | null
+        }
+        Returns: Json
+      }
+      replace_factura_recibida_draft_with_reference_v2: {
+        Args: {
+          p_actor: string
+          p_ctb: Json
+          p_draft_id: string
+          p_erp_readback: Json
+          p_expected_version: number
+          p_factura: Json
+          p_punteos: Json
+          p_reason: string
+          p_request_id: string
         }
         Returns: Json
       }

@@ -34,7 +34,6 @@ export function AcreedorCombobox({
   placeholder = 'Seleccionar acreedor...',
   disabled = false,
   className,
-  source = 'cache',
   minSearchLength,
   searchLimit = 25,
 }: AcreedorComboboxProps) {
@@ -48,40 +47,8 @@ export function AcreedorCombobox({
   const [search, setSearch] = React.useState('');
   const [editingSearch, setEditingSearch] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
-  const effectiveMinSearchLength = minSearchLength ?? (source === 'erp' ? 2 : 0);
-
-  React.useEffect(() => {
-    if (source !== 'erp') return;
-    agroirisAcreedores.prefetchAcreedores({ source: 'erp', limit: searchLimit });
-  }, [searchLimit, source]);
-
-  React.useEffect(() => {
-    if (source !== 'cache') return;
-
-    let active = true;
-    setLoading(true);
-    setErrorMessage(null);
-    agroirisAcreedores
-      .getAcreedores()
-      .then((acreedores) => {
-        if (!active) return;
-        setOptions(agroirisAcreedores.formatAcreedoresForSelect(acreedores));
-      })
-      .catch((error) => {
-        console.error('Error cargando acreedores:', error);
-        if (active) {
-          setOptions([]);
-          setErrorMessage(error instanceof Error ? error.message : 'No se pudieron cargar los acreedores.');
-        }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [source]);
+  const effectiveMinSearchLength = minSearchLength ?? 2;
+  const effectiveSearchLimit = Math.min(Math.max(1, Math.trunc(searchLimit)), 50);
 
   const selectedOption = React.useMemo(() => {
     return options.find((option) => option.value === value);
@@ -106,25 +73,34 @@ export function AcreedorCombobox({
 
     let active = true;
     agroirisAcreedores
-      .getAcreedorById(value, source)
+      .getAcreedorById(value)
       .then((acreedor) => {
-        if (!active || !acreedor) return;
+        if (!active) return;
+        if (!acreedor) {
+          setErrorMessage('El acreedor guardado ya no está disponible en el ERP. Busca y selecciona otro proveedor.');
+          return;
+        }
         const [option] = agroirisAcreedores.formatAcreedoresForSelect([acreedor]);
-        if (!option) return;
+        if (!option) {
+          setErrorMessage('El acreedor guardado no está operativo en el ERP. Busca y selecciona otro proveedor.');
+          return;
+        }
+        setErrorMessage(null);
         setOptions((current) => (current.some((item) => item.value === option.value) ? current : [option, ...current]));
       })
       .catch((error) => {
         console.error(`Error obteniendo acreedor ${value}:`, error);
+        if (active) {
+          setErrorMessage(error instanceof Error ? error.message : 'No se pudo consultar el acreedor en el ERP.');
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [selectedOption, source, value]);
+  }, [selectedOption, value]);
 
   React.useEffect(() => {
-    if (source !== 'erp') return;
-
     const requestId = searchRequestRef.current + 1;
     searchRequestRef.current = requestId;
 
@@ -144,7 +120,6 @@ export function AcreedorCombobox({
     if (cleaned.length < effectiveMinSearchLength) {
       setLoading(false);
       keepOnlySelectedOption();
-      setErrorMessage(null);
       return;
     }
 
@@ -154,7 +129,7 @@ export function AcreedorCombobox({
     keepOnlySelectedOption();
     const timeout = window.setTimeout(() => {
       agroirisAcreedores
-        .searchAcreedores(cleaned, { source: 'erp', limit: searchLimit })
+        .searchAcreedores(cleaned, { limit: effectiveSearchLimit, offset: 0 })
         .then((acreedores) => {
           if (!active || requestId !== searchRequestRef.current) return;
           const found = agroirisAcreedores.formatAcreedoresForSelect(acreedores);
@@ -179,7 +154,7 @@ export function AcreedorCombobox({
       active = false;
       window.clearTimeout(timeout);
     };
-  }, [effectiveMinSearchLength, keepOnlySelectedOption, open, search, searchLimit, selectedSearchLabel, source, value]);
+  }, [effectiveMinSearchLength, effectiveSearchLimit, keepOnlySelectedOption, open, search, selectedSearchLabel, value]);
 
   const filteredOptions = React.useMemo(() => {
     if (!search) return options;
@@ -192,7 +167,7 @@ export function AcreedorCombobox({
 
   const emptyText =
     errorMessage ??
-    (source === 'erp' && search.trim().length < effectiveMinSearchLength
+    (search.trim().length < effectiveMinSearchLength
       ? `Escribe al menos ${effectiveMinSearchLength} caracteres.`
       : 'No se encontraron acreedores.');
   const displayValue = open ? (editingSearch ? search : selectedOption?.label ?? '') : selectedOption?.label ?? '';
@@ -211,6 +186,45 @@ export function AcreedorCombobox({
     setOpen(false);
     setSearch('');
     setEditingSearch(false);
+  };
+
+  const selectAcreedor = async (option: AcreedorSelectOption) => {
+    if (option.value === value) {
+      onChange(null);
+      onSelect?.(null);
+      closeSearch();
+      inputRef.current?.blur();
+      return;
+    }
+
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const acreedor = await agroirisAcreedores.getAcreedorById(option.value);
+      if (!acreedor) {
+        throw new Error('El acreedor ya no está disponible en el ERP. Actualiza la búsqueda e inténtalo de nuevo.');
+      }
+
+      const [detailOption] = agroirisAcreedores.formatAcreedoresForSelect([acreedor]);
+      if (!detailOption) {
+        throw new Error('El acreedor no está operativo en el ERP. Selecciona otro proveedor.');
+      }
+
+      selectedOptionRef.current = detailOption;
+      setOptions([detailOption]);
+      onChange(detailOption.value);
+      onSelect?.(acreedor);
+      closeSearch();
+      inputRef.current?.blur();
+    } catch (error) {
+      console.error(`Error validando acreedor ${option.value} en ERP:`, error);
+      setOptions([]);
+      setErrorMessage(error instanceof Error ? error.message : 'No se pudo consultar el acreedor en el ERP.');
+      setOpen(true);
+      setEditingSearch(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   React.useEffect(() => {
@@ -291,13 +305,7 @@ export function AcreedorCombobox({
                   <CommandItem
                     key={option.value}
                     value={option.value.toString()}
-                    onSelect={() => {
-                      const nextValue = option.value === value ? null : option.value;
-                      onChange(nextValue);
-                      onSelect?.(nextValue === null ? null : option.acreedor);
-                      closeSearch();
-                      inputRef.current?.blur();
-                    }}
+                    onSelect={() => void selectAcreedor(option)}
                   >
                     <Check
                       className={cn(

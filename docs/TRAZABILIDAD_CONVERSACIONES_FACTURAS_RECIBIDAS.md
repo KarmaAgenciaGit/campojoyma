@@ -151,7 +151,8 @@ La dirección `217.154.101.108` está confirmada por DNS como host público del 
 - Working tree local de `KarmaAgenciaGit/api-campojoyma`: fuente prevista separada
   de la API hasta que el endurecimiento se revise y publique; el parche de este
   repositorio queda como copia sincronizada del diff runtime.
-- `docs/n8n/campojoyma-factura-recibida-extraccion-final.json`: extracción n8n saneada.
+- `docs/n8n/campojoyma-factura-recibida-extraccion-segura-v2.json`: extracción n8n saneada y reproducible mediante `scripts/generate_safe_factura_workflow.mjs`.
+- `docs/n8n/campojoyma-factura-recibida-extraccion-final.json`: artefacto legacy usado solo como plantilla estructural por el generador; no importar ni activar porque contiene decisiones contables anteriores al saneamiento v2.
 - `docs/n8n/campojoyma-facturas-recibidas-write-v2.disabled.json`: escritura v2 deliberadamente desactivada.
 - `scripts/verify-facturas-recibidas-api.mjs`: verificación del contrato API.
 - `scripts/verify-supabase-target.mjs`: guardarraíl para comprobar el proyecto Supabase correcto.

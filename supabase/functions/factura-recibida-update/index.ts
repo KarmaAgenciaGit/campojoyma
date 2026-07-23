@@ -2,9 +2,12 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   corsHeaders,
+  extractOperationalERPAvailabilityWarnings,
   getValidationErrorsForFactura,
   integerValue,
   jsonResponse,
+  loadAndResolveFacturaERPAccountingRules,
+  mergeValidationIssues,
   normalizeFrcPayload,
   normalizePunteoPayload,
   normalizeFrrPayload,
@@ -60,7 +63,19 @@ Deno.serve(async (req) => {
     }
 
     const validationBase = { ...(current as JsonObject), ...frr };
-    const validationErrors = await getValidationErrorsForFactura(auth.serviceClient, validationBase);
+    const accountingRules = await loadAndResolveFacturaERPAccountingRules(
+      auth.serviceClient,
+      validationBase,
+    );
+    const structuralIssues = await getValidationErrorsForFactura(accountingRules.factura);
+    const preservedOperationalWarnings = extractOperationalERPAvailabilityWarnings(
+      current.validation_errors,
+      { providerPreflightVerified: body.provider_preflight_verified === true },
+    );
+    const validationErrors = mergeValidationIssues(
+      [...accountingRules.issues, ...structuralIssues],
+      preservedOperationalWarnings,
+    );
     const explicitEstado = typeof body.estado === "string"
       ? body.estado
       : typeof facturaInput.estado === "string"
@@ -79,6 +94,7 @@ Deno.serve(async (req) => {
       p_expected_version: expectedVersion,
       p_factura: {
         ...frr,
+        ...accountingRules.applied,
         proveedor_nombre: body.proveedor_nombre ?? facturaInput.proveedor_nombre ?? current.proveedor_nombre ?? null,
         proveedor_nif: body.proveedor_nif ?? facturaInput.proveedor_nif ?? current.proveedor_nif ?? null,
         estado: nextEstado,
