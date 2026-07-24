@@ -439,7 +439,64 @@ contabilizadas. Esto **no** autoriza a enviar `"S"`: el mecanismo oficial de
 contabilización sigue sin estar disponible y la API bloquea ese envío. El default `"N"`
 del código es correcto para un alta nueva.
 
-## 8. Reproducir la medición
+## 8. Consolidación de las dos versiones de la API
+
+Hasta el 23 de julio de 2026 convivían dos versiones de la misma API, resto de una
+migración sin terminar:
+
+- `karma-box:8000` v0.1, servida por el túnel `18000`, con `netagro-api.service`.
+- `karma-box:8001` v0.2, servida por el túnel `18001`, proceso suelto sin systemd.
+
+El workflow n8n `cKy7BuAdpvAN6OmG` («Campojoyma - API CLAVE») repartía por ruta con una
+expresión regular en el nodo `GETs Campojoyma`:
+
+```text
+punteos | asiento | albaranes-gastos/punteables   -> 18001
+todo lo demas                                    -> 18000
+POSTs Campojoyma (cualquier escritura)            -> 18000
+```
+
+Que las escrituras apuntaran a la v0.1 era el riesgo relevante: esa versión tiene
+`POST /facturasrecibidas` **sin** `request_id`, `contract_version`, idempotencia ni
+readback. Solo resultaba inofensivo porque `DB_WRITES_ENABLED=false`. Activar ese flag
+por error habría habilitado la escritura no protegida, en la que un reintento puede
+duplicar facturas en el ERP sin forma de reconciliar.
+
+### Paridad comprobada antes de migrar
+
+Comparación de los dos OpenAPI: **ningún endpoint existe solo en la v0.1**; la v0.2 añade
+`GET /facturasrecibidas/{id}/asiento`. Además se probaron 23 rutas reales contra ambos
+puertos: 22 idénticas y la única diferencia a favor de la v0.2 (`/asiento`, 404 en la
+v0.1 y 200 en la v0.2).
+
+### Migración aplicada
+
+Ambos nodos del workflow apuntan ahora a `18001`:
+
+```text
+={{ 'http://172.19.0.1:18001/' + String($json.query.consulta || '') }}
+```
+
+El backup previo está en
+[`campojoyma-api-clave-backup-pre-migracion-18001.json`](n8n/campojoyma-api-clave-backup-pre-migracion-18001.json)
+y conserva las dos referencias a `18000` para poder revertir.
+
+Detalle operativo a tener en cuenta: `n8n import:workflow` **desactiva** el workflow al
+importarlo, y `n8n update:workflow --active=true` solo escribe la base de datos. El
+webhook no vuelve a registrarse hasta reiniciar el contenedor de n8n, que reactiva los 18
+workflows activos de la instancia. Durante ese hueco el webhook devuelve
+`404 webhook not registered`.
+
+Verificado tras la migración: la raíz del webhook devuelve `version 0.2.1` con
+`writes_enabled` e `idempotency_store`; `npm run verify:facturas-api` pasa; y la búsqueda
+de duplicado con espacios alrededor del número encuentra `FRR_id=49305`, comportamiento
+que la v0.1 no tenía.
+
+La v0.1 sigue levantada como red de seguridad, pero ya no recibe tráfico. Antes de
+apagarla conviene darle una unidad systemd a la v0.2, que hoy es un proceso suelto: si
+muere, nada lo relanza. Eso requiere root en karma-box.
+
+## 9. Reproducir la medición
 
 Los scripts de minado no forman parte del árbol del proyecto; viven en el scratchpad de
 la sesión y se apoyan en `.env` para las credenciales de lectura. El crudo se persiste

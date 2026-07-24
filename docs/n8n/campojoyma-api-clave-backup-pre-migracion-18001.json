@@ -1,0 +1,141 @@
+{
+  "updatedAt": "2026-07-21T10:51:08.168Z",
+  "createdAt": "2026-06-30T09:36:15.625Z",
+  "id": "cKy7BuAdpvAN6OmG",
+  "name": "Campojoyma - API CLAVE",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "path": "apiCampojoyma",
+        "authentication": "jwtAuth",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        -16
+      ],
+      "id": "156b58cb-c2af-4932-bc10-13ad4af9da32",
+      "name": "GET",
+      "webhookId": "b7bfaaa4-7251-45d3-b90a-8141b75cf2d5",
+      "credentials": {
+        "jwtAuth": {
+          "id": "jZeFrYn5MNYdo96W",
+          "name": "jwt-front-campojoyma"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "apiCampojoyma",
+        "authentication": "jwtAuth",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        208
+      ],
+      "id": "849aedc9-d9fd-4c65-ac55-a3727775c7cb",
+      "name": "POST",
+      "webhookId": "b7bfaaa4-7251-45d3-b90a-8141b75cf2d5",
+      "credentials": {
+        "jwtAuth": {
+          "id": "jZeFrYn5MNYdo96W",
+          "name": "jwt-front-campojoyma"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://172.19.0.1:18000/' + $json.query.consulta }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        240,
+        208
+      ],
+      "id": "f984846e-74a6-4160-aa86-b45c98ba06ea",
+      "name": "POSTs Campojoyma"
+    },
+    {
+      "parameters": {
+        "url": "={{ (/^(?:facturasrecibidas\\/\\d+\\/(?:punteos|asiento)|albaranes-gastos\\/punteables)(?:\\?|$)/.test(String($json.query.consulta || '')) ? 'http://172.19.0.1:18001/' : 'http://172.19.0.1:18000/') + String($json.query.consulta || '') }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        240,
+        -16
+      ],
+      "id": "70bc9849-8e8b-415f-b213-0927752fa15c",
+      "name": "GETs Campojoyma"
+    }
+  ],
+  "connections": {
+    "GET": {
+      "main": [
+        [
+          {
+            "node": "GETs Campojoyma",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST": {
+      "main": [
+        [
+          {
+            "node": "POSTs Campojoyma",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "versionId": "4eea0e5a-0e64-47f5-bea1-fd6f0306a8a9",
+  "activeVersionId": "4eea0e5a-0e64-47f5-bea1-fd6f0306a8a9",
+  "versionCounter": 35,
+  "triggerCount": 2,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-30T09:36:15.625Z",
+      "createdAt": "2026-06-30T09:36:15.625Z",
+      "role": "workflow:owner",
+      "workflowId": "cKy7BuAdpvAN6OmG",
+      "projectId": "hMD6U5siki1Gc0Fe",
+      "project": {
+        "updatedAt": "2026-04-28T11:03:37.231Z",
+        "createdAt": "2026-04-28T10:55:58.594Z",
+        "id": "hMD6U5siki1Gc0Fe",
+        "name": "moises ariza <admin@karma-box.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null
+      }
+    }
+  ]
+}
