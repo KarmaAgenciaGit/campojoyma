@@ -1637,6 +1637,25 @@ export const fetchFacturaEmpresas = async (): Promise<FacturaEmpresaOption[]> =>
     .filter((item): item is FacturaEmpresaOption => Boolean(item));
 };
 
+// Descripciones facilitadas por Campojoyma (correo del 07/07/2026, archivado en
+// docs/evidencias/facturas-recibidas/onduspan/). Se conserva su texto literal.
+// FI, CE y GM no llevan descripcion ni en la lista oficial del cliente, y el ERP
+// tampoco la almacena: facturasrecibidastipo existe con cero filas.
+export const TIPO_FACTURA_DESCRIPCIONES: Record<string, string> = {
+  OT: 'OTROS',
+  GE: 'COMPRAS GENERO',
+  MA: 'MATERIALES',
+  GV: 'GASTOS VENTAS',
+  GC: 'GASTOS COMPRAS',
+  FZ: 'FIANZA',
+  CX: 'COSTES EXTERNOS',
+};
+
+export const labelTipoFactura = (value: string): string => {
+  const descripcion = TIPO_FACTURA_DESCRIPCIONES[value.trim().toUpperCase()];
+  return descripcion ? `${value} — ${descripcion}` : value;
+};
+
 export const fetchFacturaTipos = async (): Promise<FacturaTipoOption[]> => {
   const response = await erpRead<ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[] | string[]>(
     'facturasrecibidas/tipos',
@@ -1649,7 +1668,7 @@ export const fetchFacturaTipos = async (): Promise<FacturaTipoOption[]> => {
     })
     .filter((value): value is string => Boolean(value));
 
-  return Array.from(new Set(values)).map((value) => ({ value, label: value }));
+  return Array.from(new Set(values)).map((value) => ({ value, label: labelTipoFactura(value) }));
 };
 
 export const fetchFacturaRegimenes = async (): Promise<FacturaRegimenOption[]> => {

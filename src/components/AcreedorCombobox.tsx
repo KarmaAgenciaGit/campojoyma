@@ -39,10 +39,13 @@ export function AcreedorCombobox({
 }: AcreedorComboboxProps) {
   const rootRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const optionRefs = React.useRef(new Map<number, HTMLDivElement>());
   const selectedOptionRef = React.useRef<AcreedorSelectOption | undefined>(undefined);
   const searchRequestRef = React.useRef(0);
+  const listboxId = `acreedor-options-${React.useId().replace(/:/g, '')}`;
   const [open, setOpen] = React.useState(false);
   const [options, setOptions] = React.useState<AcreedorSelectOption[]>([]);
+  const [activeValue, setActiveValue] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const [editingSearch, setEditingSearch] = React.useState(false);
@@ -165,6 +168,24 @@ export function AcreedorCombobox({
     return options.filter((option) => option.searchText.includes(searchLower));
   }, [options, search]);
 
+  React.useEffect(() => {
+    if (!open || loading || filteredOptions.length === 0) {
+      setActiveValue(null);
+      return;
+    }
+
+    setActiveValue((current) => {
+      if (current !== null && filteredOptions.some((option) => option.value === current)) return current;
+      if (value && filteredOptions.some((option) => option.value === value)) return value;
+      return filteredOptions[0].value;
+    });
+  }, [filteredOptions, loading, open, value]);
+
+  React.useEffect(() => {
+    if (activeValue === null) return;
+    optionRefs.current.get(activeValue)?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeValue]);
+
   const emptyText =
     errorMessage ??
     (search.trim().length < effectiveMinSearchLength
@@ -184,8 +205,22 @@ export function AcreedorCombobox({
 
   const closeSearch = () => {
     setOpen(false);
+    setActiveValue(null);
     setSearch('');
     setEditingSearch(false);
+  };
+
+  const moveActiveOption = (direction: 1 | -1) => {
+    if (filteredOptions.length === 0) return;
+
+    setActiveValue((current) => {
+      const currentIndex = filteredOptions.findIndex((option) => option.value === current);
+      if (currentIndex === -1) {
+        return direction === 1 ? filteredOptions[0].value : filteredOptions[filteredOptions.length - 1].value;
+      }
+      const nextIndex = (currentIndex + direction + filteredOptions.length) % filteredOptions.length;
+      return filteredOptions[nextIndex].value;
+    });
   };
 
   const selectAcreedor = async (option: AcreedorSelectOption) => {
@@ -245,8 +280,6 @@ export function AcreedorCombobox({
   return (
     <div ref={rootRef} className="relative w-full">
       <div
-        role="combobox"
-        aria-expanded={open}
         aria-disabled={disabled}
         className={cn(
           'relative flex w-full items-center',
@@ -268,6 +301,13 @@ export function AcreedorCombobox({
         )}
         <input
           ref={inputRef}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-activedescendant={
+            open && activeValue !== null ? `${listboxId}-option-${activeValue}` : undefined
+          }
           disabled={disabled}
           value={displayValue}
           placeholder={showFieldLoader && !search ? 'Cargando acreedores...' : placeholder}
@@ -275,14 +315,33 @@ export function AcreedorCombobox({
           onFocus={openSearch}
           onChange={(event) => {
             setEditingSearch(true);
+            setActiveValue(null);
             setSearch(event.target.value);
             if (!open) setOpen(true);
           }}
           onKeyDown={(event) => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              openSearch();
+              moveActiveOption(event.key === 'ArrowDown' ? 1 : -1);
+              return;
+            }
+            if (event.key === 'Enter' && open && activeValue !== null) {
+              const activeOption = filteredOptions.find((option) => option.value === activeValue);
+              if (activeOption) {
+                event.preventDefault();
+                void selectAcreedor(activeOption);
+              }
+              return;
+            }
             if (event.key === 'Escape') {
               event.preventDefault();
               closeSearch();
               inputRef.current?.blur();
+              return;
+            }
+            if (event.key === 'Tab' && open) {
+              closeSearch();
             }
           }}
         />
@@ -290,48 +349,62 @@ export function AcreedorCombobox({
       </div>
       {open ? (
         <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border bg-popover p-0 text-popover-foreground shadow-md">
-        <Command shouldFilter={false}>
-          <CommandList>
-            {loading ? (
-              <div className="flex items-center justify-center py-6">
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                <span className="text-sm text-muted-foreground">Cargando...</span>
-              </div>
-            ) : filteredOptions.length === 0 ? (
-              <CommandEmpty>{emptyText}</CommandEmpty>
-            ) : (
-              <CommandGroup>
-                {filteredOptions.map((option) => (
-                  <CommandItem
-                    key={option.value}
-                    value={option.value.toString()}
-                    onSelect={() => void selectAcreedor(option)}
-                  >
-                    <Check
-                      className={cn(
-                        'mr-2 h-4 w-4',
-                        value === option.value ? 'opacity-100' : 'opacity-0',
-                      )}
-                    />
-                    <div className="flex flex-col">
-                      <span className="font-medium">{option.acreedor.nombre_comercial.trim()}</span>
-                      {option.acreedor.identificador_fiscal ? (
-                        <span className="text-xs text-muted-foreground">
-                          NIF: {option.acreedor.identificador_fiscal} - ID: {option.acreedor.acreedorid}
-                        </span>
-                      ) : null}
-                      {option.acreedor.cuenta_contable ? (
-                        <span className="text-xs text-muted-foreground">
-                          Cuenta: {option.acreedor.cuenta_contable}
-                        </span>
-                      ) : null}
-                    </div>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-          </CommandList>
-        </Command>
+          <Command
+            shouldFilter={false}
+            value={activeValue?.toString() ?? ''}
+            onValueChange={(nextValue) => {
+              const parsedValue = Number(nextValue);
+              if (filteredOptions.some((option) => option.value === parsedValue)) {
+                setActiveValue(parsedValue);
+              }
+            }}
+          >
+            <CommandList id={listboxId}>
+              {loading ? (
+                <div className="flex items-center justify-center py-6">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  <span className="text-sm text-muted-foreground">Cargando...</span>
+                </div>
+              ) : filteredOptions.length === 0 ? (
+                <CommandEmpty>{emptyText}</CommandEmpty>
+              ) : (
+                <CommandGroup>
+                  {filteredOptions.map((option) => (
+                    <CommandItem
+                      ref={(node) => {
+                        if (node) optionRefs.current.set(option.value, node);
+                        else optionRefs.current.delete(option.value);
+                      }}
+                      key={option.value}
+                      id={`${listboxId}-option-${option.value}`}
+                      value={option.value.toString()}
+                      onSelect={() => void selectAcreedor(option)}
+                    >
+                      <Check
+                        className={cn(
+                          'mr-2 h-4 w-4',
+                          value === option.value ? 'opacity-100' : 'opacity-0',
+                        )}
+                      />
+                      <div className="flex flex-col">
+                        <span className="font-medium">{option.acreedor.nombre_comercial.trim()}</span>
+                        {option.acreedor.identificador_fiscal ? (
+                          <span className="text-xs text-muted-foreground">
+                            NIF: {option.acreedor.identificador_fiscal} - ID: {option.acreedor.acreedorid}
+                          </span>
+                        ) : null}
+                        {option.acreedor.cuenta_contable ? (
+                          <span className="text-xs text-muted-foreground">
+                            Cuenta: {option.acreedor.cuenta_contable}
+                          </span>
+                        ) : null}
+                      </div>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
+            </CommandList>
+          </Command>
         </div>
       ) : null}
     </div>

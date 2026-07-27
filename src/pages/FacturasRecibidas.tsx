@@ -52,6 +52,7 @@ import {
   fetchFacturaRecibidaERPPayloadPreview,
   fetchFacturaRegimenes,
   fetchFacturaTipos,
+  labelTipoFactura,
   fetchFacturasRecibidasPage,
   getFacturaERPReconciliationRequestId,
   getFacturaERPSendConfirmation,
@@ -76,6 +77,7 @@ import type {
 } from '../services/apiContracts';
 import type { AgroIrisAcreedor } from '../services/agroirisAcreedores';
 import { useConfirmacion } from '../hooks/useConfirmacion';
+import { useToast } from '../hooks/use-toast';
 import {
   calcularSugerencias,
   construirConceptoFactura,
@@ -552,7 +554,7 @@ const buildTipoFacturaOptions = (
   const options: FilterSelectOption[] = [...tipos];
   const current = cleanOptionalString(currentValue);
   if (current && !options.some((option) => option.value === current)) {
-    options.unshift({ value: current, label: current });
+    options.unshift({ value: current, label: labelTipoFactura(current) });
   }
   if (!current) {
     options.unshift({ value: '', label: 'Sin tipo' });
@@ -1042,13 +1044,13 @@ const Facturas = () => {
   const historialRunRef = useRef(0);
   const [ivaTramosExtra, setIvaTramosExtra] = useState(0);
   const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
+  const { toast } = useToast();
   const [cuentas, setCuentas] = useState<FacturaCuentaOption[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [punteosLoading, setPunteosLoading] = useState(false);
   const [punteosLoadError, setPunteosLoadError] = useState<string | null>(null);
   const [preflightIssues, setPreflightIssues] = useState<FacturaValidationIssue[]>([]);
   const [duplicateCandidate, setDuplicateCandidate] = useState<FacturaERPDuplicateCandidate | null>(null);
-  const [providerScopeNotice, setProviderScopeNotice] = useState<string | null>(null);
   const [lastSavedEditorSnapshot, setLastSavedEditorSnapshot] = useState<string | null>(null);
   const [loadedDetailId, setLoadedDetailId] = useState<string | null>(null);
   const erpPayloadPreviewRunRef = useRef(0);
@@ -1141,10 +1143,6 @@ const Facturas = () => {
     }
     activeProviderScopeRef.current = scope;
   }, [draft?.fr_alm, draft?.id, draft?.proveedor_codigo]);
-
-  useEffect(() => {
-    setProviderScopeNotice(null);
-  }, [activeDraftId]);
 
   useEffect(() => {
     if (!saveFeedback) {
@@ -1659,11 +1657,17 @@ const Facturas = () => {
         destructivo: true,
       });
       if (!confirmed) {
-        setProviderScopeNotice('Cambio de empresa cancelado. Los punteos actuales se han conservado.');
+        toast({
+          title: 'Cambio de empresa cancelado',
+          description: 'Los punteos actuales se han conservado.',
+        });
         return;
       }
       clearPunteos = true;
-      setProviderScopeNotice('Se han retirado los punteos de la empresa anterior. Carga y selecciona manualmente los del nuevo ambito.');
+      toast({
+        title: 'Punteos eliminados',
+        description: 'Carga y selecciona los punteos correspondientes a la nueva empresa.',
+      });
     }
 
     if (key === 'fr_alm' || key === 'proveedor_codigo') {
@@ -1695,25 +1699,30 @@ const Facturas = () => {
     const hasDependentData = providerChanged && (hasDependentGastos || dependentPunteos > 0);
 
     if (hasDependentData) {
-      const dependencies = [
-        hasDependentGastos ? 'el desglose de gastos' : null,
-        dependentPunteos > 0 ? `${dependentPunteos} punteo${dependentPunteos === 1 ? '' : 's'}` : null,
-      ].filter(Boolean).join(' y ');
+      const changeDescription =
+        hasDependentGastos && dependentPunteos > 0
+          ? `El desglose de gastos y los ${dependentPunteos} punteos seleccionados pertenecen al acreedor actual. Si cambias de acreedor, se eliminarán para evitar contabilizar la factura con información incorrecta. Después tendrás que seleccionar de nuevo los gastos y punteos correspondientes al nuevo acreedor.`
+          : hasDependentGastos
+            ? 'El desglose de gastos pertenece al acreedor actual. Si cambias de acreedor, se eliminará junto con la cuenta de gasto asociada para evitar contabilizar la factura en una cuenta incorrecta. Después tendrás que seleccionar de nuevo los gastos correspondientes al nuevo acreedor.'
+            : `${dependentPunteos === 1 ? 'El punteo seleccionado pertenece' : `Los ${dependentPunteos} punteos seleccionados pertenecen`} al acreedor actual. Si cambias de acreedor, se ${dependentPunteos === 1 ? 'eliminará' : 'eliminarán'} para evitar contabilizar la factura con información incorrecta. Después tendrás que seleccionar de nuevo los punteos correspondientes al nuevo acreedor.`;
+      const confirmLabel =
+        hasDependentGastos && dependentPunteos > 0
+          ? 'Cambiar y borrar gastos y punteos'
+          : hasDependentGastos
+            ? 'Cambiar y borrar gastos'
+            : 'Cambiar y borrar punteos';
       const confirmed = await confirmar({
         titulo: 'Cambiar de acreedor',
-        descripcion: (
-          <>
-            Vas a cambiar de acreedor, y {dependencies} pertenecen al anterior. La cuenta de gasto
-            depende del proveedor, así que conservarla contabilizaría contra la cuenta equivocada.
-            {' '}Si continúas se limpiarán esos datos y tendrás que revisarlos.
-          </>
-        ),
-        aceptar: 'Cambiar y limpiar',
+        descripcion: changeDescription,
+        aceptar: confirmLabel,
         cancelar: 'Mantener el acreedor',
         destructivo: true,
       });
       if (!confirmed) {
-        setProviderScopeNotice('Cambio de acreedor cancelado. Los gastos y punteos actuales se han conservado.');
+        toast({
+          title: 'Cambio de acreedor cancelado',
+          description: 'Los gastos y punteos actuales se han conservado.',
+        });
         return;
       }
     }
@@ -1753,11 +1762,15 @@ const Facturas = () => {
 
     if (hasDependentData) {
       if (hasDependentGastos) setLineas(createEmptyGastos());
-      setProviderScopeNotice(
-        'Se han limpiado los gastos y punteos vinculados al acreedor anterior tras tu confirmacion. Revisa los datos maestros y selecciona manualmente los nuevos punteos.',
-      );
-    } else {
-      setProviderScopeNotice(null);
+      toast({
+        title: 'Datos del acreedor anterior eliminados',
+        description:
+          hasDependentGastos && dependentPunteos > 0
+            ? 'Selecciona los gastos y punteos correspondientes al nuevo acreedor.'
+            : hasDependentGastos
+              ? 'Selecciona los gastos correspondientes al nuevo acreedor.'
+              : 'Selecciona los punteos correspondientes al nuevo acreedor.',
+      });
     }
 
     if (!acreedor) return;
@@ -2369,8 +2382,6 @@ const Facturas = () => {
   const punteos = draft?.punteos ?? [];
   const getPunteoImporte = (punteo: FacturaRecibidaPunteo) =>
     Number(punteo.importe ?? punteo.importe_factura ?? punteo.importe_punteado ?? 0) || 0;
-  const getPunteoImporteP = (punteo: FacturaRecibidaPunteo) =>
-    Number(punteo.importe_punteado ?? punteo.importe_factura ?? 0) || 0;
   const getPunteoSelected = (punteo: FacturaRecibidaPunteo) => punteo.seleccionado === true;
   const punteosTotal = punteos
     .filter(getPunteoSelected)
@@ -2803,7 +2814,7 @@ const Facturas = () => {
         </div>
       </header>
 
-      {draft.erp_error || visibleErrors.length > 0 || visibleWarnings.length > 0 || providerScopeNotice || catalogError ? (
+      {draft.erp_error || visibleErrors.length > 0 || visibleWarnings.length > 0 || catalogError ? (
         <div className="mx-2 mt-4 space-y-3">
           {draft.erp_error ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
@@ -2839,12 +2850,6 @@ const Facturas = () => {
                   <li key={issue.code ?? `${issue.field}:${issue.message}`}>{issue.message}</li>
                 ))}
               </ul>
-            </div>
-          ) : null}
-          {providerScopeNotice ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
-              <p className="font-bold">Revisa el cambio de ambito</p>
-              <p className="mt-1">{providerScopeNotice}</p>
             </div>
           ) : null}
           {catalogError ? (
@@ -2999,6 +3004,7 @@ const Facturas = () => {
                       sugerencia={sugerenciasHistorial.tipo_factura}
                       actual={draft.fr_sufa}
                       disabled={isReadOnlyDetail}
+                      formatValor={(valor) => labelTipoFactura(String(valor))}
                       onAplicar={(valor) => updateDraft('fr_sufa', valor)}
                     />
                   </Field>
@@ -3291,7 +3297,7 @@ const Facturas = () => {
               <FieldGroup title="Albaranes/Gtos para puntear">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">
-                    Se conservan la tabla e ID de origen y las líneas de material son de solo lectura.
+                    Las líneas de material son de solo lectura.
                   </p>
                   {!isReadOnlyDetail ? (
                     <button
@@ -3325,16 +3331,14 @@ const Facturas = () => {
 
                 {punteos.length > 0 ? (
                   <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
-                    <table className="w-full min-w-[860px] text-left text-sm">
+                    <table className="w-full min-w-[720px] text-left text-sm">
                       <thead>
                         <tr className="bg-slate-50 text-xs font-bold uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
                           <th className="px-3 py-3">Origen</th>
-                          <th className="px-3 py-3">Id origen</th>
                           <th className="px-3 py-3">Serie</th>
                           <th className="px-3 py-3">Albaran</th>
                           <th className="px-3 py-3">Ref</th>
                           <th className="px-3 py-3">Fecha</th>
-                          <th className="px-3 py-3 text-right">Importe P</th>
                           <th className="px-3 py-3 text-right">Importe</th>
                           <th className="px-3 py-3 text-center">Líneas</th>
                           <th className="px-3 py-3 text-center">S</th>
@@ -3345,12 +3349,10 @@ const Facturas = () => {
                         {punteos.map((punteo, index) => (
                           <tr key={punteo.id ?? `${punteo.ref ?? 'punteo'}-${index}`} className="bg-white dark:bg-slate-950">
                             <td className="px-3 py-3">{punteo.origen ?? '-'}</td>
-                            <td className="px-3 py-3">{punteo.source_table && punteo.source_id ? `${punteo.source_table}:${punteo.source_id}` : punteo.remote_id ?? '-'}</td>
                             <td className="px-3 py-3">{punteo.serie ?? '-'}</td>
                             <td className="px-3 py-3">{punteo.albaran ?? '-'}</td>
                             <td className="px-3 py-3">{punteo.ref ?? '-'}</td>
                             <td className="px-3 py-3">{formatDate(punteo.fecha)}</td>
-                            <td className="px-3 py-3 text-right">{formatMoney(getPunteoImporteP(punteo))}</td>
                             <td className="px-3 py-3 text-right">{formatMoney(getPunteoImporte(punteo))}</td>
                             <td className="px-3 py-3 text-center">{punteo.line_count ?? punteo.lines?.length ?? 0}</td>
                             <td className="px-3 py-3 text-center">
@@ -3372,14 +3374,14 @@ const Facturas = () => {
                       </tbody>
                       <tfoot>
                         <tr className="border-t border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
-                          <td className="px-3 py-3" colSpan={7}>
+                          <td className="px-3 py-3" colSpan={5}>
                             Total seleccionado: {punteosSeleccionados}
                           </td>
                           <td className="px-3 py-3 text-right">{formatMoney(punteosTotal)}</td>
                           <td colSpan={3} />
                         </tr>
                         <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-                          <td className="px-3 pb-3" colSpan={11}>
+                          <td className="px-3 pb-3" colSpan={9}>
                             Diferencia frente a base: {formatMoney(punteosBaseDifference)} · Diferencia frente a gastos:{' '}
                             {formatMoney(punteosGastosDifference)}
                           </td>

@@ -57,6 +57,23 @@ null     1   1900-01-01
 
 `FZ` y `CX` están **descatalogados de hecho**: ninguno posterior a 2021.
 
+Descripciones confirmadas por Campojoyma (correo del 07/07/2026, texto literal;
+reconfirmadas por el usuario el 24/07/2026). El cliente dejó FI, CE y GM **sin
+descripción incluso en su lista oficial**, y el ERP tampoco la almacena
+(`facturasrecibidastipo` existe con cero filas):
+
+```text
+OT - OTROS            GE - COMPRAS GENERO   MA - MATERIALES
+GV - GASTOS VENTAS    GC - GASTOS COMPRAS   FZ - FIANZA
+CX - COSTES EXTERNOS  FI - (sin descripcion) CE - (sin descripcion)
+GM - (sin descripcion)
+```
+
+Estas etiquetas se muestran en el desplegable y en las sugerencias mediante
+`labelTipoFactura()` en `src/services/facturas.ts`. Describen el código, no aportan la
+regla de elección: cuándo usar cada tipo sigue dependiendo del historico del proveedor y
+de la persona que revisa (ver 5.1).
+
 `FRR_idregimen`, 18 valores. Los relevantes:
 
 ```text
@@ -496,7 +513,72 @@ La v0.1 sigue levantada como red de seguridad, pero ya no recibe tráfico. Antes
 apagarla conviene darle una unidad systemd a la v0.2, que hoy es un proceso suelto: si
 muere, nada lo relanza. Eso requiere root en karma-box.
 
-## 9. Reproducir la medición
+## 9. Patrones de los campos que genera el ERP
+
+Medidos el 23 de julio de 2026 sobre 18 facturas completas (cabecera + CTB + punteos con
+líneas + asiento), estratificadas por tipo e incluyendo abono, retención 19%, agricultor
+GE, multi-IVA y el caso de duplicados legítimos del proveedor 1673.
+
+### 9.1 Entrada (`FRR_numero`): secuencia por ejercicio
+
+Sobre el listado completo, `FRR_numero` es **estrictamente creciente con `FRR_id` dentro
+de cada ejercicio** (100,0% en ej24 n=6.824 y ej25 n=5.104; mínimos 1–2 y máximos
+ligeramente por encima de n por huecos de borrado).
+
+Es un contador por ejercicio que asigna el alta. La herramienta puede mostrar «se
+asignará automáticamente» con total confianza; nunca se teclea.
+
+### 9.2 `FRR_IdAsientoNet`: contador independiente, no derivable
+
+Presente en **18/18**, siempre mayor que `FRR_id` y con delta creciente (143.321 →
+341.000). Es el auto-incremento de otra tabla que crece más deprisa. No existe fórmula:
+solo lo devuelve el ERP al contabilizar.
+
+Del asiento leído, en 18/18: `status=reference_only`, `date == FRR_fechactb` y
+`concept` empieza por `FRA`. La fecha del asiento ES la fecha CTB.
+
+### 9.3 La fuente de punteos se predice por el tipo
+
+| Tipo | Fuente observada |
+|---|---|
+| `MA` | `albmaterial` (2/2) |
+| `GV` | `albsalida_gastos` (2/2) |
+| `GC` | `albentrada_hisgastos` |
+| `CE` | `albarancoste` |
+| `GM` | `albaranescompra_gastos` |
+| `OT` | variable (ONDUSPAN usa `albmaterial`) |
+| `GE`, `FI`, abonos | sin punteos |
+
+Uso correcto: **preseleccionar el filtro de candidatos** por tipo. No autoenlazar.
+
+La suma de punteos solo cuadra con la base en 4/8 casos con punteos (todas las MA y
+ONDUSPAN). GC quedó a 4,19 de la base; GM cubre 600 de 2.580; CE es parcial. La
+diferencia debe mostrarse, nunca bloquear.
+
+### 9.4 CTB: práctica antigua, abandonada en los ejercicios recientes
+
+**14/18 tienen CTB real**, pero el corte es temporal: todas las de 2023 lo tienen y las
+cuatro más recientes (2024–2026, incluida ONDUSPAN) tienen cero. Las filas CTB replican
+esencialmente los gastos de cabecera (mismos importes y cuentas), a veces con dimensiones
+analíticas (`FRC_IdActividad=501` en CE).
+
+Enviar `ctb: []` en altas nuevas **coincide con la práctica actual del ERP**. Sigue sin
+fabricarse CTB desde gastos; si el cliente quiere recuperar la analítica, es una decisión
+de negocio explícita.
+
+En GE de agricultor, el CTB confirma el patrón de liquidación con datos reales:
+`40090001680` (cuenta del agricultor) + `60202000002` (comisión), exactamente la
+estructura descrita en el correo de Campojoyma.
+
+### 9.5 Consecuencia para el flujo PDF → validación → envío
+
+Todo lo que el usuario ve vacío en un borrador y relleno en el ERP es **generado en el
+alta o en la contabilización**: Entrada (secuencia), ID técnico (contador), asiento
+visible, fecha de asiento (= fecha CTB) y punteos enlazados. La API v2 ya genera
+`FRR_id`/`FRR_numero` en el alta; el resto llega con el mecanismo oficial de
+contabilización cuando exista.
+
+## 10. Reproducir la medición
 
 Los scripts de minado no forman parte del árbol del proyecto; viven en el scratchpad de
 la sesión y se apoyan en `.env` para las credenciales de lectura. El crudo se persiste

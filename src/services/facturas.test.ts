@@ -25,6 +25,7 @@ import {
   mapProveedorERPDetail,
   getFunctionInvokeErrorMessage,
   isERPReferenceFactura,
+  labelTipoFactura,
   isERPReadOnlyFactura,
   localizarProveedorERP,
   mapFacturaToUi,
@@ -820,5 +821,24 @@ describe('validacion ERP autoritativa', () => {
       proveedorId: 17,
       numeroFactura: 'A-00748886',
     });
+  });
+});
+
+describe('labelTipoFactura', () => {
+  it('usa el texto literal confirmado por Campojoyma', () => {
+    expect(labelTipoFactura('OT')).toBe('OT — OTROS');
+    expect(labelTipoFactura('GE')).toBe('GE — COMPRAS GENERO');
+    expect(labelTipoFactura('FZ')).toBe('FZ — FIANZA');
+  });
+
+  it('deja el codigo pelado cuando el cliente no dio descripcion', () => {
+    // FI, CE y GM aparecen sin descripcion incluso en la lista oficial.
+    expect(labelTipoFactura('FI')).toBe('FI');
+    expect(labelTipoFactura('CE')).toBe('CE');
+    expect(labelTipoFactura('GM')).toBe('GM');
+  });
+
+  it('no inventa descripciones para codigos desconocidos', () => {
+    expect(labelTipoFactura('ZZ')).toBe('ZZ');
   });
 });
