@@ -44,6 +44,7 @@ import {
   type FacturaCuentaOption,
   type FacturaRegimenOption,
   type FacturaTipoOption,
+  deleteFacturaRecibida,
   fetchFacturaCuentas,
   fetchFacturaEmpresas,
   fetchFacturaPunteables,
@@ -2285,7 +2286,21 @@ const Facturas = () => {
     }
   };
 
-  const handleDiscard = async () => {
+  const deleteErrorMessage = (error: unknown, fallback: string) => {
+    const raw = getErrorMessage(error, fallback);
+    if (/FACTURA_LOCKED/i.test(raw)) {
+      return 'Esta factura ya está registrada en el ERP o tiene un envío en curso, así que no se puede eliminar.';
+    }
+    if (/VERSION_CONFLICT/i.test(raw)) {
+      return 'La factura ha cambiado desde que la abriste. Recarga la lista y vuelve a intentarlo.';
+    }
+    if (/NOT_FOUND/i.test(raw)) {
+      return 'La factura ya no existe.';
+    }
+    return raw;
+  };
+
+  const handleDelete = async () => {
     if (isERPReadOnlyFactura(draft)) {
       setModalMessage({ type: 'info', text: 'Esta factura viene de ERP y se muestra en modo solo lectura.' });
       return;
@@ -2296,22 +2311,32 @@ const Facturas = () => {
       return;
     }
 
+    const confirmed = await confirmar({
+      titulo: 'Eliminar factura',
+      descripcion:
+        'Se borra de la base de datos, no se archiva. Queda una revisión en el historial para auditoría, pero la factura no se puede recuperar desde la aplicación.',
+      aceptar: 'Eliminar',
+      cancelar: 'Cancelar',
+      destructivo: true,
+    });
+    if (!confirmed) return;
+
     setSaving(true);
     setModalMessage(null);
 
     try {
-      const saved = await saveFacturaRecibida({ ...draft, estado: 'descartada' }, lineas, false);
-      setFacturas((current) => current.filter((factura) => factura.id !== saved.id));
+      await deleteFacturaRecibida(draft.id);
+      setFacturas((current) => current.filter((factura) => factura.id !== draft.id));
       setFacturasTotal((current) => Math.max(0, current - 1));
       closeDetail();
     } catch (error) {
-      setModalMessage({ type: 'error', text: getErrorMessage(error, 'No se pudo descartar la factura.') });
+      setModalMessage({ type: 'error', text: deleteErrorMessage(error, 'No se pudo eliminar la factura.') });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDiscardFromList = async (factura: FacturaRecibida) => {
+  const handleDeleteFromList = async (factura: FacturaRecibida) => {
     if (isERPReadOnlyFactura(factura)) {
       return;
     }
@@ -2320,11 +2345,12 @@ const Facturas = () => {
     setLoadError(null);
 
     try {
-      const saved = await saveFacturaRecibida({ ...factura, estado: 'descartada' }, getLineas(factura), false);
-      setFacturas((current) => current.filter((item) => item.id !== saved.id));
+      await deleteFacturaRecibida(factura.id);
+      setFacturas((current) => current.filter((item) => item.id !== factura.id));
       setFacturasTotal((current) => Math.max(0, current - 1));
+      if (draft?.id === factura.id) closeDetail();
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : 'No se pudo descartar la factura.');
+      setLoadError(deleteErrorMessage(error, 'No se pudo eliminar la factura.'));
     } finally {
       setBusyFacturaId(null);
     }
@@ -2518,7 +2544,7 @@ const Facturas = () => {
             onClick={openNewFactura}
           >
             <Plus className="h-4 w-4" />
-            Subir PDF
+            Subir factura
           </button>
         </div>
       </div>
@@ -2659,7 +2685,7 @@ const Facturas = () => {
                 erpRegistrationState={erpRegistrationByFacturaId[factura.id]}
                 loadingFacturaId={busyFacturaId}
                 onOpen={openFactura}
-                onDelete={handleDiscardFromList}
+                onDelete={handleDeleteFromList}
               />
             ))}
           </div>
@@ -2745,7 +2771,7 @@ const Facturas = () => {
                   type="button"
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
                   disabled={saving || sending}
-                  onClick={() => void handleDiscard()}
+                  onClick={() => void handleDelete()}
                 >
                   <Trash2 size={15} />
                   Eliminar

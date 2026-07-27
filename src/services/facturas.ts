@@ -1239,6 +1239,17 @@ export const sendFacturaRecibidaToERP = async (
   return mapFacturaToUi(sent);
 };
 
+export const deleteFacturaRecibida = async (
+  id: string,
+  version?: number | null,
+): Promise<void> => {
+  if (erpIdFromUiId(id)) {
+    throw new Error('Esta factura viene de ERP y se muestra en modo solo lectura.');
+  }
+
+  await facturasRecibidas.delete(id, version);
+};
+
 export type FacturaERPPayloadPreview = {
   ok: boolean;
   can_send: boolean;

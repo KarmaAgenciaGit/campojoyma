@@ -1,84 +1,50 @@
 {
-  "id": "FIO92NfGcsWYsHC5",
+  "name": "CAMPOJOYMA - Entrada segura de facturas recibidas v2",
   "nodes": [
     {
       "parameters": {
-        "jsCode": "const isWebhookRequest = $json.webhookUrl !== undefined || (\n  Object.prototype.hasOwnProperty.call($json, 'body') &&\n  Object.prototype.hasOwnProperty.call($json, 'headers') &&\n  Object.prototype.hasOwnProperty.call($json, 'query')\n);\nconst trigger_channel = isWebhookRequest ? 'webhook' : 'email';\nconst raw = isWebhookRequest ? $json : { body: $json };\nconst body = raw.body ?? $json;\nif (trigger_channel === 'webhook' && Number(body.contract_version) !== 2) {\n  throw new Error('contract_version=2 es obligatorio para el webhook de extraccion.');\n}\n\nconst cleanBase64 = (value) => {\n  const rawValue = typeof value === 'string' ? value.trim() : '';\n  return rawValue ? rawValue.replace(/^data:.*;base64,/i, '').replace(/\\s/g, '') : null;\n};\nconst readText = (value) => {\n  if (value === null || value === undefined) return null;\n  const parsed = String(value).trim();\n  return parsed || null;\n};\nconst rawEmail = body.email && typeof body.email === 'object' ? body.email : {};\nconst email = {\n  from: readText(rawEmail.from ?? rawEmail.from_email ?? body.email_remitente ?? body.from),\n  subject: readText(rawEmail.subject ?? rawEmail.asunto ?? body.asunto_email ?? body.subject),\n  date: readText(rawEmail.date ?? rawEmail.received_at ?? body.email_received_at ?? body.date),\n  message_id: readText(rawEmail.message_id ?? rawEmail.messageId ?? body.message_id ?? body.messageId),\n};\nconst rawPdfBase64 = cleanBase64(body.pdf_base64 ?? body.b64_contenido ?? body.data ?? body.pdf);\nif (!rawPdfBase64) throw new Error('Falta pdf_base64. Debe llegar un unico PDF desde la Edge Function o desde el correo.');\nif (!/^[A-Za-z0-9+/]*={0,2}$/.test(rawPdfBase64) || rawPdfBase64.length % 4 === 1) {\n  throw new Error('El contenido recibido no es base64 valido.');\n}\nconst unpaddedBase64 = rawPdfBase64.replace(/=+$/, '');\nconst paddedBase64 = unpaddedBase64 + '='.repeat((4 - (unpaddedBase64.length % 4)) % 4);\nconst pdfBuffer = Buffer.from(paddedBase64, 'base64');\nconst pdf_base64 = pdfBuffer.toString('base64');\nif (pdf_base64.replace(/=+$/, '') !== unpaddedBase64) {\n  throw new Error('El contenido base64 no supera la validacion de ida y vuelta.');\n}\nif (pdfBuffer.subarray(0, 5).toString('ascii') !== '%PDF-') {\n  throw new Error('El adjunto no tiene una cabecera PDF valida.');\n}\n\nconst estimatedSize = pdfBuffer.length;\nconst configuredMaxPdfBytes = typeof $vars === 'undefined' ? NaN : Number($vars?.CAMPOJOYMA_MAX_PDF_BYTES);\nconst maxPdfBytes = Number.isFinite(configuredMaxPdfBytes) && configuredMaxPdfBytes > 0\n  ? Math.trunc(configuredMaxPdfBytes)\n  : 20 * 1024 * 1024;\nif (estimatedSize === 0 || estimatedSize > maxPdfBytes) {\n  throw new Error('El PDF esta vacio o supera el limite configurado de ' + maxPdfBytes + ' bytes.');\n}\n\nconst security_warnings = [];\nconst mimeType = readText(body.pdf_mime_type) || 'application/pdf';\nif (!/pdf/i.test(mimeType)) security_warnings.push('El MIME declarado no era PDF; se ha validado mediante la cabecera %PDF-.');\nconst declaredSize = Number(body.pdf_size);\nif (Number.isFinite(declaredSize) && declaredSize > 0 && Math.abs(declaredSize - estimatedSize) > 8) {\n  security_warnings.push('El tamano declarado no coincide con el contenido base64 recibido.');\n}\n\nconst uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;\nconst providedRequestId = readText(body.request_id);\nif (providedRequestId && !uuidPattern.test(providedRequestId)) {\n  throw new Error('request_id debe ser un UUID valido.');\n}\n\nconst pdfNombre = readText(body.pdf_nombre ?? body.nombreArchivo ?? body.file_name) || 'factura.pdf';\nreturn {\n  json: {\n  contract_version: 2,\n  request_id: providedRequestId,\n  trigger_channel,\n  source: trigger_channel === 'email' ? 'campojoyma-email' : 'xfuego-front',\n  factura_id: body.factura_id ?? null,\n  archivo_pdf_id: body.archivo_pdf_id ?? null,\n  pdf_base64,\n  pdf_nombre: pdfNombre,\n  pdf_mime_type: 'application/pdf',\n  pdf_size: estimatedSize,\n  email,\n  requested_at: readText(body.requested_at) || new Date().toISOString(),\n  security_warnings,\n  },\n  binary: {\n    pdf_hash_input: {\n      data: pdf_base64,\n      mimeType: 'application/pdf',\n      fileName: pdfNombre,\n      fileExtension: 'pdf',\n    },\n  },\n};",
-        "mode": "runOnceForEachItem"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const isWebhookRequest = $json.webhookUrl !== undefined || (\n  Object.prototype.hasOwnProperty.call($json, 'body') &&\n  Object.prototype.hasOwnProperty.call($json, 'headers') &&\n  Object.prototype.hasOwnProperty.call($json, 'query')\n);\nconst trigger_channel = isWebhookRequest ? 'webhook' : 'email';\nconst raw = isWebhookRequest ? $json : { body: $json };\nconst body = raw.body ?? $json;\nif (trigger_channel === 'webhook' && Number(body.contract_version) !== 2) {\n  throw new Error('contract_version=2 es obligatorio para el webhook de extraccion.');\n}\n\nconst cleanBase64 = (value) => {\n  const rawValue = typeof value === 'string' ? value.trim() : '';\n  return rawValue ? rawValue.replace(/^data:.*;base64,/i, '').replace(/\\s/g, '') : null;\n};\nconst readText = (value) => {\n  if (value === null || value === undefined) return null;\n  const parsed = String(value).trim();\n  return parsed || null;\n};\nconst rawEmail = body.email && typeof body.email === 'object' ? body.email : {};\nconst email = {\n  from: readText(rawEmail.from ?? rawEmail.from_email ?? body.email_remitente ?? body.from),\n  subject: readText(rawEmail.subject ?? rawEmail.asunto ?? body.asunto_email ?? body.subject),\n  date: readText(rawEmail.date ?? rawEmail.received_at ?? body.email_received_at ?? body.date),\n  message_id: readText(rawEmail.message_id ?? rawEmail.messageId ?? body.message_id ?? body.messageId),\n};\nconst rawPdfBase64 = cleanBase64(body.pdf_base64 ?? body.b64_contenido ?? body.data ?? body.pdf);\nif (!rawPdfBase64) throw new Error('Falta pdf_base64. Debe llegar un unico PDF desde la Edge Function o desde el correo.');\nif (!/^[A-Za-z0-9+/]*={0,2}$/.test(rawPdfBase64) || rawPdfBase64.length % 4 === 1) {\n  throw new Error('El contenido recibido no es base64 valido.');\n}\nconst unpaddedBase64 = rawPdfBase64.replace(/=+$/, '');\nconst paddedBase64 = unpaddedBase64 + '='.repeat((4 - (unpaddedBase64.length % 4)) % 4);\nconst pdfBuffer = Buffer.from(paddedBase64, 'base64');\nconst pdf_base64 = pdfBuffer.toString('base64');\nif (pdf_base64.replace(/=+$/, '') !== unpaddedBase64) {\n  throw new Error('El contenido base64 no supera la validacion de ida y vuelta.');\n}\nif (pdfBuffer.subarray(0, 5).toString('ascii') !== '%PDF-') {\n  throw new Error('El adjunto no tiene una cabecera PDF valida.');\n}\n\nconst estimatedSize = pdfBuffer.length;\nconst configuredMaxPdfBytes = typeof $vars === 'undefined' ? NaN : Number($vars?.CAMPOJOYMA_MAX_PDF_BYTES);\nconst maxPdfBytes = Number.isFinite(configuredMaxPdfBytes) && configuredMaxPdfBytes > 0\n  ? Math.trunc(configuredMaxPdfBytes)\n  : 20 * 1024 * 1024;\nif (estimatedSize === 0 || estimatedSize > maxPdfBytes) {\n  throw new Error('El PDF esta vacio o supera el limite configurado de ' + maxPdfBytes + ' bytes.');\n}\n\nconst security_warnings = [];\nconst mimeType = readText(body.pdf_mime_type) || 'application/pdf';\nif (!/pdf/i.test(mimeType)) security_warnings.push('El MIME declarado no era PDF; se ha validado mediante la cabecera %PDF-.');\nconst declaredSize = Number(body.pdf_size);\nif (Number.isFinite(declaredSize) && declaredSize > 0 && Math.abs(declaredSize - estimatedSize) > 8) {\n  security_warnings.push('El tamano declarado no coincide con el contenido base64 recibido.');\n}\n\nconst uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;\nconst providedRequestId = readText(body.request_id);\nif (providedRequestId && !uuidPattern.test(providedRequestId)) {\n  throw new Error('request_id debe ser un UUID valido.');\n}\n\nconst pdfNombre = readText(body.pdf_nombre ?? body.nombreArchivo ?? body.file_name) || 'factura.pdf';\nreturn {\n  json: {\n  contract_version: 2,\n  request_id: providedRequestId,\n  trigger_channel,\n  source: trigger_channel === 'email' ? 'campojoyma-email' : 'xfuego-front',\n  factura_id: body.factura_id ?? null,\n  archivo_pdf_id: body.archivo_pdf_id ?? null,\n  pdf_base64,\n  pdf_nombre: pdfNombre,\n  pdf_mime_type: 'application/pdf',\n  pdf_size: estimatedSize,\n  email,\n  requested_at: readText(body.requested_at) || new Date().toISOString(),\n  security_warnings,\n  },\n  binary: {\n    pdf_hash_input: {\n      data: pdf_base64,\n      mimeType: 'application/pdf',\n      fileName: pdfNombre,\n      fileExtension: 'pdf',\n    },\n  },\n};"
       },
-      "id": "f629be04-456b-4c4e-90b7-3d0328d44c27",
+      "id": "954d4133-01ac-450d-bf58-5a61d02c55b3",
       "name": "Normalizar entrada",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2144,
-        80
-      ]
+        -2048,
+        1408
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "jsCode": "const response = $json;\nconst source = $('PDF a base64').item.json;\nconst parseJsonLike = (value) => {\n  if (typeof value !== 'string') return value;\n  const cleaned = value.trim().replace(/^\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`$/i, '').trim();\n  try { return JSON.parse(cleaned); } catch { throw new Error('La respuesta de la IA no tiene un JSON valido.'); }\n};\nconst readNumber = (value, fallback = null) => {\n  if (typeof value === 'number' && Number.isFinite(value)) return value;\n  if (typeof value === 'string' && value.trim()) {\n    const normalized = value.replace(/\\s/g, '').replace(/\\.(?=\\d{3}(\\D|$))/g, '').replace(',', '.');\n    const parsed = Number(normalized);\n    return Number.isFinite(parsed) ? parsed : fallback;\n  }\n  return fallback;\n};\nconst readString = (value) => {\n  if (value === null || value === undefined) return null;\n  const parsed = String(value).trim();\n  return parsed || null;\n};\nconst readArray = (value) => Array.isArray(value) ? value : [];\nconst parsed = parseJsonLike(response.output ?? response);\nconst payload = parsed?.output ?? parsed ?? {};\nconst extraction = payload.extraction ?? {};\nconst metadata = payload.metadata ?? {};\n\nconst kindRaw = (readString(extraction.document_kind ?? extraction.tipo_documento) || 'no_factura').toLowerCase();\nconst kindAliases = {\n  factura: 'factura',\n  invoice: 'factura',\n  abono: 'abono',\n  factura_rectificativa: 'factura_rectificativa',\n  rectificativa: 'factura_rectificativa',\n  nota_credito: 'abono',\n  credit_note: 'abono',\n  multiple: 'multiple_documentos',\n  multiple_documentos: 'multiple_documentos',\n  varias: 'multiple_documentos',\n  no_factura: 'no_factura',\n  ilegible: 'ilegible',\n  other: 'no_factura',\n};\nconst document_kind = kindAliases[kindRaw] ?? 'no_factura';\n\nlet tramos_iva = readArray(extraction.tramos_iva).slice(0, 5).map((tramo) => ({\n  base: readNumber(tramo?.base),\n  porcentaje: readNumber(tramo?.porcentaje),\n  cuota: readNumber(tramo?.cuota),\n}));\nif (tramos_iva.length === 0) {\n  tramos_iva = [1, 2, 3, 4, 5]\n    .map((index) => ({\n      base: readNumber(extraction['FRR_base' + index]),\n      porcentaje: readNumber(extraction['FRR_iva' + index]),\n      cuota: readNumber(extraction['FRR_cuota' + index]),\n    }))\n    .filter((tramo) => tramo.base !== null || tramo.porcentaje !== null || tramo.cuota !== null);\n}\n\nconst retencionSource = extraction.retencion && typeof extraction.retencion === 'object' ? extraction.retencion : {};\nconst retencion = {\n  base: readNumber(retencionSource.base ?? extraction.FRR_baseret ?? extraction.retencion_base),\n  porcentaje: readNumber(retencionSource.porcentaje ?? extraction.FRR_ret ?? extraction.retencion_porcentaje),\n  cuota: readNumber(retencionSource.cuota ?? extraction.FRR_cuotaret ?? extraction.retencion_importe),\n};\nconst lineas = readArray(extraction.lineas).slice(0, 200).map((linea) => ({\n  descripcion: readString(linea?.descripcion),\n  referencia: readString(linea?.referencia),\n  importe: readNumber(linea?.importe),\n}));\nconst referencias = [...readArray(extraction.referencias), ...readArray(extraction.referencias_punteo), ...lineas.map((linea) => linea.referencia)]\n  .map(readString)\n  .filter(Boolean);\nlet vencimientos = readArray(extraction.vencimientos).slice(0, 4).map((item) => ({\n  fecha: readString(item?.fecha),\n  importe: readNumber(item?.importe),\n}));\nconst evidencias = readArray(extraction.evidencias).slice(0, 100).map((item) => ({\n  campo: readString(item?.campo),\n  pagina: readNumber(item?.pagina),\n  texto: readString(item?.texto),\n}));\nconst warnings = [\n  ...readArray(metadata.warnings),\n  ...readArray(extraction.warnings),\n  ...readArray(source.security_warnings),\n].map(readString).filter(Boolean);\n\nconst normalizeIsoDate = (value, field) => {\n  const parsed = readString(value);\n  if (!parsed) return null;\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(parsed)) {\n    warnings.push(field + ' no tiene formato ISO YYYY-MM-DD; se deja pendiente.');\n    return null;\n  }\n  const [year, month, day] = parsed.split('-').map(Number);\n  const date = new Date(Date.UTC(year, month - 1, day));\n  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {\n    warnings.push(field + ' no es una fecha valida; se deja pendiente.');\n    return null;\n  }\n  return parsed;\n};\nvencimientos = vencimientos.map((item, index) => ({\n  ...item,\n  fecha: normalizeIsoDate(item.fecha, 'vencimientos[' + index + '].fecha'),\n}));\n\nconst literal = {\n  document_kind,\n  proveedor_nombre: readString(extraction.proveedor_nombre),\n  proveedor_nif: readString(extraction.proveedor_nif),\n  numero_factura: readString(extraction.numero_factura ?? extraction.FRR_numerofactura),\n  fecha_factura: normalizeIsoDate(extraction.fecha_factura ?? extraction.FRR_fechafactura, 'fecha_factura'),\n  moneda: readString(extraction.moneda),\n  tramos_iva,\n  retencion,\n  total: readNumber(extraction.total ?? extraction.FRR_totalfac),\n  concepto: readString(extraction.concepto ?? extraction.FRR_Concepto ?? extraction.resumen),\n  observaciones_visibles: readString(extraction.observaciones_visibles ?? extraction.FRR_Observaciones),\n  referencias: [...new Set(referencias)],\n  vencimientos,\n  lineas,\n  evidencias,\n};\n\nfor (const [index, tramo] of tramos_iva.entries()) {\n  if (tramo.base !== null && tramo.porcentaje !== null && tramo.cuota !== null) {\n    const expected = Math.round(((tramo.base * tramo.porcentaje) / 100 + Number.EPSILON) * 100) / 100;\n    if (Math.abs(expected - tramo.cuota) > 0.05) {\n      warnings.push('El tramo de IVA ' + (index + 1) + ' no cuadra con base por porcentaje; no se corrige automaticamente.');\n    }\n  }\n}\nif (literal.total !== null && tramos_iva.length > 0) {\n  const computed = tramos_iva.reduce((sum, tramo) => sum + (tramo.base ?? 0) + (tramo.cuota ?? 0), 0) - (retencion.cuota ?? 0);\n  if (Math.abs(computed - literal.total) > 0.05) {\n    warnings.push('La suma de bases, cuotas y retencion no cuadra con el total visible; no se corrigen importes.');\n  }\n}\n\nreturn { json: {\n  source,\n  ai: {\n    ok: payload.ok !== false && ['factura', 'factura_rectificativa', 'abono'].includes(document_kind),\n    extraction: literal,\n    metadata: {\n      confidence: readNumber(metadata.confidence),\n      warnings: [...new Set(warnings)],\n      raw_text_summary: readString(metadata.raw_text_summary),\n    },\n  },\n} };",
-        "mode": "runOnceForEachItem"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const response = $json;\nconst source = $('PDF a base64').item.json;\nconst parseJsonLike = (value) => {\n  if (typeof value !== 'string') return value;\n  const cleaned = value.trim().replace(/^\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`$/i, '').trim();\n  try { return JSON.parse(cleaned); } catch { throw new Error('La respuesta de la IA no tiene un JSON valido.'); }\n};\nconst readNumber = (value, fallback = null) => {\n  if (typeof value === 'number' && Number.isFinite(value)) return value;\n  if (typeof value === 'string' && value.trim()) {\n    const normalized = value.replace(/\\s/g, '').replace(/\\.(?=\\d{3}(\\D|$))/g, '').replace(',', '.');\n    const parsed = Number(normalized);\n    return Number.isFinite(parsed) ? parsed : fallback;\n  }\n  return fallback;\n};\nconst readString = (value) => {\n  if (value === null || value === undefined) return null;\n  const parsed = String(value).trim();\n  return parsed || null;\n};\nconst readArray = (value) => Array.isArray(value) ? value : [];\nconst parsed = parseJsonLike(response.output ?? response);\nconst payload = parsed?.output ?? parsed ?? {};\nconst extraction = payload.extraction ?? {};\nconst metadata = payload.metadata ?? {};\n\nconst kindRaw = (readString(extraction.document_kind ?? extraction.tipo_documento) || 'no_factura').toLowerCase();\nconst kindAliases = {\n  factura: 'factura',\n  invoice: 'factura',\n  abono: 'abono',\n  factura_rectificativa: 'factura_rectificativa',\n  rectificativa: 'factura_rectificativa',\n  nota_credito: 'abono',\n  credit_note: 'abono',\n  multiple: 'multiple_documentos',\n  multiple_documentos: 'multiple_documentos',\n  varias: 'multiple_documentos',\n  no_factura: 'no_factura',\n  ilegible: 'ilegible',\n  other: 'no_factura',\n};\nconst document_kind = kindAliases[kindRaw] ?? 'no_factura';\n\nlet tramos_iva = readArray(extraction.tramos_iva).slice(0, 5).map((tramo) => ({\n  base: readNumber(tramo?.base),\n  porcentaje: readNumber(tramo?.porcentaje),\n  cuota: readNumber(tramo?.cuota),\n}));\nif (tramos_iva.length === 0) {\n  tramos_iva = [1, 2, 3, 4, 5]\n    .map((index) => ({\n      base: readNumber(extraction['FRR_base' + index]),\n      porcentaje: readNumber(extraction['FRR_iva' + index]),\n      cuota: readNumber(extraction['FRR_cuota' + index]),\n    }))\n    .filter((tramo) => tramo.base !== null || tramo.porcentaje !== null || tramo.cuota !== null);\n}\n\nconst retencionSource = extraction.retencion && typeof extraction.retencion === 'object' ? extraction.retencion : {};\nconst retencion = {\n  base: readNumber(retencionSource.base ?? extraction.FRR_baseret ?? extraction.retencion_base),\n  porcentaje: readNumber(retencionSource.porcentaje ?? extraction.FRR_ret ?? extraction.retencion_porcentaje),\n  cuota: readNumber(retencionSource.cuota ?? extraction.FRR_cuotaret ?? extraction.retencion_importe),\n};\nconst lineas = readArray(extraction.lineas).slice(0, 200).map((linea) => ({\n  descripcion: readString(linea?.descripcion),\n  referencia: readString(linea?.referencia),\n  importe: readNumber(linea?.importe),\n}));\nconst referencias = [...readArray(extraction.referencias), ...readArray(extraction.referencias_punteo), ...lineas.map((linea) => linea.referencia)]\n  .map(readString)\n  .filter(Boolean);\nlet vencimientos = readArray(extraction.vencimientos).slice(0, 4).map((item) => ({\n  fecha: readString(item?.fecha),\n  importe: readNumber(item?.importe),\n}));\nconst evidencias = readArray(extraction.evidencias).slice(0, 100).map((item) => ({\n  campo: readString(item?.campo),\n  pagina: readNumber(item?.pagina),\n  texto: readString(item?.texto),\n}));\nconst warnings = [\n  ...readArray(metadata.warnings),\n  ...readArray(extraction.warnings),\n  ...readArray(source.security_warnings),\n].map(readString).filter(Boolean);\n\nconst normalizeIsoDate = (value, field) => {\n  const parsed = readString(value);\n  if (!parsed) return null;\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(parsed)) {\n    warnings.push(field + ' no tiene formato ISO YYYY-MM-DD; se deja pendiente.');\n    return null;\n  }\n  const [year, month, day] = parsed.split('-').map(Number);\n  const date = new Date(Date.UTC(year, month - 1, day));\n  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {\n    warnings.push(field + ' no es una fecha valida; se deja pendiente.');\n    return null;\n  }\n  return parsed;\n};\nvencimientos = vencimientos.map((item, index) => ({\n  ...item,\n  fecha: normalizeIsoDate(item.fecha, 'vencimientos[' + index + '].fecha'),\n}));\n\nconst literal = {\n  document_kind,\n  proveedor_nombre: readString(extraction.proveedor_nombre),\n  proveedor_nif: readString(extraction.proveedor_nif),\n  numero_factura: readString(extraction.numero_factura ?? extraction.FRR_numerofactura),\n  fecha_factura: normalizeIsoDate(extraction.fecha_factura ?? extraction.FRR_fechafactura, 'fecha_factura'),\n  moneda: readString(extraction.moneda),\n  tramos_iva,\n  retencion,\n  total: readNumber(extraction.total ?? extraction.FRR_totalfac),\n  concepto: readString(extraction.concepto ?? extraction.FRR_Concepto ?? extraction.resumen),\n  observaciones_visibles: readString(extraction.observaciones_visibles ?? extraction.FRR_Observaciones),\n  referencias: [...new Set(referencias)],\n  vencimientos,\n  lineas,\n  evidencias,\n};\n\nfor (const [index, tramo] of tramos_iva.entries()) {\n  if (tramo.base !== null && tramo.porcentaje !== null && tramo.cuota !== null) {\n    const expected = Math.round(((tramo.base * tramo.porcentaje) / 100 + Number.EPSILON) * 100) / 100;\n    if (Math.abs(expected - tramo.cuota) > 0.05) {\n      warnings.push('El tramo de IVA ' + (index + 1) + ' no cuadra con base por porcentaje; no se corrige automaticamente.');\n    }\n  }\n}\nif (literal.total !== null && tramos_iva.length > 0) {\n  const computed = tramos_iva.reduce((sum, tramo) => sum + (tramo.base ?? 0) + (tramo.cuota ?? 0), 0) - (retencion.cuota ?? 0);\n  if (Math.abs(computed - literal.total) > 0.05) {\n    warnings.push('La suma de bases, cuotas y retencion no cuadra con el total visible; no se corrigen importes.');\n  }\n}\n\nreturn { json: {\n  source,\n  ai: {\n    ok: payload.ok !== false && ['factura', 'factura_rectificativa', 'abono'].includes(document_kind),\n    extraction: literal,\n    metadata: {\n      confidence: readNumber(metadata.confidence),\n      warnings: [...new Set(warnings)],\n      raw_text_summary: readString(metadata.raw_text_summary),\n    },\n  },\n} };"
       },
-      "id": "e18baaed-6f6e-406b-965e-d2257543e5fe",
+      "id": "2f662c97-f351-4d03-a6e8-aae58d12036a",
       "name": "Normalizar salida IA literal",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3552,
-        80
-      ]
+        -336,
+        592
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "jsCode": "const source = $json;\nreturn {\n  json: {\n    ...source,\n    nombreArchivo: source.pdf_nombre || 'factura.pdf',\n    data: source.pdf_base64,\n  },\n};",
-        "mode": "runOnceForEachItem"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const source = $json;\nreturn {\n  json: {\n    ...source,\n    nombreArchivo: source.pdf_nombre || 'factura.pdf',\n    data: source.pdf_base64,\n  },\n};"
       },
-      "id": "4d0c2ed0-3e0b-4497-bee5-24251349c028",
+      "id": "9e1446dd-5ee5-41e5-ba34-bea070aef14f",
       "name": "PDF a base64",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2816,
-        80
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://n8n.srv792815.hstgr.cloud/webhook/pdf-imagen",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "putupau234_"
-            }
-          ]
-        },
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "nombreArchivo",
-              "value": "={{ $json.nombreArchivo }}"
-            },
-            {
-              "name": "data",
-              "value": "={{ $json.data }}"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "036a4f5b-0c4c-4897-8b76-ce1969b042b8",
-      "name": "apipdfimagefri",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.3,
-      "position": [
-        3040,
-        80
-      ]
+        -1376,
+        1200
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -93,11 +59,12 @@
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 3,
       "position": [
-        3264,
-        80
+        -704,
+        704
       ],
-      "id": "69bb0641-9a20-4167-b92d-b3ef531ecbba",
-      "name": "AI Agent"
+      "id": "d58667b2-e98c-448b-a188-45ed42d0738a",
+      "name": "AI Agent",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -113,10 +80,10 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1.3,
       "position": [
-        3264,
-        320
+        -688,
+        928
       ],
-      "id": "65bb097d-1da6-4885-a35b-6cd30a52647d",
+      "id": "28d99c26-dac2-4a65-8896-e35398aa59cb",
       "name": "OpenAI Chat Model",
       "credentials": {
         "openAiApi": {
@@ -133,24 +100,24 @@
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.3,
       "position": [
-        3440,
-        320
+        -560,
+        928
       ],
-      "id": "597876c1-bc94-4b8f-b8b2-0f641bf7d1d1",
+      "id": "46f1bb6a-05c3-4973-b177-5977f232b79d",
       "name": "Structured Output Parser"
     },
     {
       "parameters": {
-        "jsCode": "if ($json.should_ingest !== true) {\n  throw new Error('El documento no esta autorizado para ingesta.');\n}\nif (!$json.output?.extraction) {\n  throw new Error('El resolver no devolvio output.extraction.');\n}\nif (!$json.ingest_payload?.request_id) {\n  throw new Error('El resolver no devolvio un ingest_payload con request_id.');\n}\nreturn { json: $json };",
-        "mode": "runOnceForEachItem"
+        "mode": "runOnceForEachItem",
+        "jsCode": "if ($json.should_ingest !== true) {\n  throw new Error('El documento no esta autorizado para ingesta.');\n}\nif (!$json.output?.extraction) {\n  throw new Error('El resolver no devolvio output.extraction.');\n}\nif (!$json.ingest_payload?.request_id) {\n  throw new Error('El resolver no devolvio un ingest_payload con request_id.');\n}\nreturn { json: $json };"
       },
-      "id": "60020607-7d4b-4d0c-8e2a-7ac01644d24d",
+      "id": "ad812b6e-3261-46b0-8312-b112a977fbae",
       "name": "Preparar respuesta Edge",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4224,
-        0
+        320,
+        544
       ]
     },
     {
@@ -181,10 +148,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4448,
-        0
+        544,
+        544
       ],
-      "id": "0894f75f-f26f-413c-9028-749026c29f2a",
+      "id": "f5f95143-0585-494b-9f0a-b15dd110eb07",
       "name": "Es email?"
     },
     {
@@ -204,10 +171,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        4672,
-        -96
+        768,
+        448
       ],
-      "id": "5138c5d9-7b10-4b7f-ba99-98c17f1665e6",
+      "id": "58c520f7-b383-46c3-a0e8-877fcdb2ffc1",
       "name": "Enviar email a Edge ingest",
       "credentials": {
         "httpHeaderAuth": {
@@ -224,13 +191,13 @@
           "responseCode": 200
         }
       },
-      "id": "7eee41b9-9861-428b-b61c-9d1a548f7f94",
+      "id": "55aa97e2-1e52-4c9c-8967-3ef2d9821f74",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        4672,
-        96
+        768,
+        640
       ]
     },
     {
@@ -241,42 +208,42 @@
       "type": "n8n-nodes-base.emailReadImap",
       "typeVersion": 2.1,
       "position": [
-        1472,
-        -16
+        -2496,
+        1312
       ],
-      "id": "0b6bc8f5-75b9-40eb-9c73-4931369d4eee",
+      "id": "bf190fdb-96ad-4bb3-91ee-5ce7df5e0f9e",
       "name": "Email Trigger (IMAP)",
       "disabled": true
     },
     {
       "parameters": {
-        "jsCode": "const binaries = $binary ?? {};\nconst pdfEntries = Object.entries(binaries).filter(([, binary]) => {\n  const mime = String(binary?.mimeType ?? '').toLowerCase();\n  const fileName = String(binary?.fileName ?? '').toLowerCase();\n  const extension = String(binary?.fileExtension ?? '').toLowerCase();\n  const fileType = String(binary?.fileType ?? '').toLowerCase();\n  return mime.includes('pdf') || fileName.endsWith('.pdf') || extension === 'pdf' || fileType === 'pdf';\n});\n\nif (pdfEntries.length === 0) throw new Error('El correo no contiene ningun adjunto PDF.');\nif (pdfEntries.length > 1) throw new Error('El correo contiene mas de un PDF. Debe revisarse manualmente.');\n\nconst [binaryKey, binary] = pdfEntries[0];\nconst buffer = await this.helpers.getBinaryDataBuffer(0, binaryKey);\nif (buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {\n  throw new Error('El adjunto marcado como PDF no tiene una cabecera %PDF- valida.');\n}\n\nconst fromValue = typeof $json.from === 'object'\n  ? ($json.from?.value?.[0]?.address ?? $json.from?.text ?? null)\n  : ($json.from ?? null);\nconst headers = $json.headers && typeof $json.headers === 'object' ? $json.headers : {};\nconst messageId = $json.messageId ?? $json.message_id ?? headers['message-id'] ?? headers['Message-ID'] ?? null;\n\nreturn {\n  json: {\n    source: 'campojoyma-email',\n    pdf_base64: buffer.toString('base64'),\n    pdf_nombre: binary.fileName || 'factura-email.pdf',\n    pdf_mime_type: binary.mimeType || 'application/pdf',\n    pdf_size: buffer.length,\n    email: {\n      from: fromValue,\n      subject: $json.subject ?? null,\n      date: $json.date ?? null,\n      message_id: messageId,\n    },\n  },\n};",
-        "mode": "runOnceForEachItem"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const binaries = $binary ?? {};\nconst pdfEntries = Object.entries(binaries).filter(([, binary]) => {\n  const mime = String(binary?.mimeType ?? '').toLowerCase();\n  const fileName = String(binary?.fileName ?? '').toLowerCase();\n  const extension = String(binary?.fileExtension ?? '').toLowerCase();\n  const fileType = String(binary?.fileType ?? '').toLowerCase();\n  return mime.includes('pdf') || fileName.endsWith('.pdf') || extension === 'pdf' || fileType === 'pdf';\n});\n\nif (pdfEntries.length === 0) throw new Error('El correo no contiene ningun adjunto PDF.');\nif (pdfEntries.length > 1) throw new Error('El correo contiene mas de un PDF. Debe revisarse manualmente.');\n\nconst [binaryKey, binary] = pdfEntries[0];\nconst buffer = await this.helpers.getBinaryDataBuffer(0, binaryKey);\nif (buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {\n  throw new Error('El adjunto marcado como PDF no tiene una cabecera %PDF- valida.');\n}\n\nconst fromValue = typeof $json.from === 'object'\n  ? ($json.from?.value?.[0]?.address ?? $json.from?.text ?? null)\n  : ($json.from ?? null);\nconst headers = $json.headers && typeof $json.headers === 'object' ? $json.headers : {};\nconst messageId = $json.messageId ?? $json.message_id ?? headers['message-id'] ?? headers['Message-ID'] ?? null;\n\nreturn {\n  json: {\n    source: 'campojoyma-email',\n    pdf_base64: buffer.toString('base64'),\n    pdf_nombre: binary.fileName || 'factura-email.pdf',\n    pdf_mime_type: binary.mimeType || 'application/pdf',\n    pdf_size: buffer.length,\n    email: {\n      from: fromValue,\n      subject: $json.subject ?? null,\n      date: $json.date ?? null,\n      message_id: messageId,\n    },\n  },\n};"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1920,
-        -16
+        -2272,
+        1312
       ],
-      "id": "84e326a0-8ba5-4fa9-99b8-df2cbe1f8baf",
+      "id": "0e205fec-1ad2-4d30-b9c3-829cbf0b1685",
       "name": "Extraer PDF del email"
     },
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "campojoyma-factura-extraer",
+        "authentication": "jwtAuth",
         "responseMode": "responseNode",
-        "options": {},
-        "authentication": "jwtAuth"
+        "options": {}
       },
-      "id": "cc57389c-e420-4f92-b616-cf28eb6f3dac",
+      "id": "a4146a6f-1bef-4375-83d9-4f7ca9a106e8",
       "name": "Webhook Factura Campojoyma",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
       "position": [
-        1696,
-        176
+        -2272,
+        1504
       ],
       "webhookId": "9d7d23d7-651d-4447-848f-8a1679077195",
       "credentials": {
@@ -288,48 +255,50 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nconst source = input.source ?? {};\nconst triggerChannel = source.trigger_channel === 'email' ? 'email' : 'webhook';\nconst ai = input.ai ?? {};\nconst literal = ai.extraction ?? {};\nconst metadata = ai.metadata ?? {};\nconst warnings = [...(Array.isArray(metadata.warnings) ? metadata.warnings : [])];\nconst evidence = { api: { attempts: [] } };\n\nconst getVar = (name) => {\n  if (typeof $vars === 'undefined') return null;\n  const value = $vars?.[name];\n  return value === undefined || value === null || String(value).trim() === '' ? null : value;\n};\nconst readString = (value) => {\n  if (value === null || value === undefined) return null;\n  const parsed = String(value).trim();\n  return parsed || null;\n};\nconst readNumber = (value, fallback = null) => {\n  if (typeof value === 'number' && Number.isFinite(value)) return value;\n  if (typeof value === 'string' && value.trim()) {\n    const parsed = Number(value.replace(/\\s/g, '').replace(/\\.(?=\\d{3}(\\D|$))/g, '').replace(',', '.'));\n    return Number.isFinite(parsed) ? parsed : fallback;\n  }\n  return fallback;\n};\nconst readInteger = (value, fallback = null) => {\n  const parsed = readNumber(value, fallback);\n  return parsed === null || parsed === undefined ? fallback : Math.trunc(parsed);\n};\nconst readPositiveInteger = (value) => {\n  const parsed = readInteger(value, null);\n  return parsed !== null && parsed > 0 ? parsed : null;\n};\nconst firstValue = (object, keys) => {\n  if (!object || typeof object !== 'object') return null;\n  for (const key of keys) {\n    const value = object[key];\n    if (value !== undefined && value !== null && String(value).trim() !== '') return value;\n  }\n  return null;\n};\nconst itemsFromResponse = (value) => {\n  if (Array.isArray(value)) return value;\n  if (!value || typeof value !== 'object') return [];\n  if (Array.isArray(value.items)) return value.items;\n  if (Array.isArray(value.data)) return value.data;\n  if (Array.isArray(value.datos)) return value.datos;\n  return [];\n};\nconst normalizeNif = (value) => readString(value)?.toUpperCase().replace(/[^A-Z0-9]/g, '') ?? null;\nconst normalizeText = (value) => readString(value)?.toLocaleLowerCase('es-ES').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' ') ?? null;\nconst normalizeReference = (value) => normalizeText(value)?.replace(/[^a-z0-9]/g, '') ?? null;\n\nconst isValidIpv6Host = (value) => {\n  if (!/^[0-9a-f:]+$/i.test(value)) return false;\n  const compressed = value.includes('::');\n  if (compressed && value.indexOf('::') !== value.lastIndexOf('::')) return false;\n  const groups = value.split(':').filter(Boolean);\n  if (groups.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) return false;\n  return compressed ? groups.length < 8 : groups.length === 8;\n};\n\nconst normalizeHttpBase = (value) => {\n  const raw = readString(value);\n  if (!raw) return null;\n  const match = raw.match(/^(https?):\\/\\/([^/?#\\s]+)(\\/[^?#\\s]*)?(?:\\?[^#\\s]*)?(?:#[^\\s]*)?$/i);\n  if (!match) return null;\n\n  const protocol = match[1].toLowerCase();\n  const authority = match[2];\n  const path = match[3] ?? '';\n  let host = null;\n  let portText = null;\n\n  const ipv6Match = authority.match(/^\\[([0-9a-f:.]+)\\](?::(\\d{1,5}))?$/i);\n  if (ipv6Match) {\n    if (!isValidIpv6Host(ipv6Match[1])) return null;\n    host = '[' + ipv6Match[1].toLowerCase() + ']';\n    portText = ipv6Match[2] ?? null;\n  } else {\n    const hostMatch = authority.match(/^([a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)(?::(\\d{1,5}))?$/i);\n    if (!hostMatch) return null;\n    host = hostMatch[1].toLowerCase();\n    portText = hostMatch[2] ?? null;\n    if (/^\\d+(?:\\.\\d+){3}$/.test(host)) {\n      const octets = host.split('.').map(Number);\n      if (octets.some((octet) => octet < 0 || octet > 255)) return null;\n    }\n  }\n\n  const port = portText === null ? null : Number(portText);\n  if (port !== null && (!Number.isInteger(port) || port < 0 || port > 65535)) return null;\n  const isDefaultPort = (protocol === 'http' && port === 80) || (protocol === 'https' && port === 443);\n  const normalizedPort = port === null || isDefaultPort ? '' : ':' + port;\n  return protocol + '://' + host + normalizedPort + path.replace(/\\/$/, '');\n};\n\nconst configuredApiBaseValue = readString(getVar('CAMPOJOYMA_API_BASE_URL'));\nconst apiBaseValue = configuredApiBaseValue || 'http://172.19.0.1:18001';\nconst apiBase = normalizeHttpBase(apiBaseValue);\nif (apiBaseValue && !apiBase) {\n  warnings.push('CAMPOJOYMA_API_BASE_URL no es una URL HTTP(S) valida; no se hacen consultas ERP.');\n}\nconst apiBearer = readString(getVar('CAMPOJOYMA_API_BEARER_TOKEN'));\nevidence.api.base_configured = Boolean(configuredApiBaseValue);\nevidence.api.base_source = configuredApiBaseValue ? 'n8n_variable' : 'workflow_default';\nevidence.api.base_valid = Boolean(apiBase);\n\nconst apiGetResult = async (path, params = {}) => {\n  if (!apiBase) return { ok: false, data: null, skipped: true };\n  const pathname = '/' + String(path).replace(/^\\/+/, '');\n  const query = Object.entries(params)\n    .filter(([, value]) => value !== null && value !== undefined && String(value) !== '')\n    .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value)))\n    .join('&');\n  const url = apiBase.replace(/\\/$/, '') + pathname + (query ? '?' + query : '');\n  const attempt = { path: pathname, ok: false };\n  evidence.api.attempts.push(attempt);\n  try {\n    const headers = { Accept: 'application/json' };\n    if (apiBearer) headers.Authorization = 'Bearer ' + apiBearer;\n    const data = await this.helpers.httpRequest({\n      method: 'GET',\n      url,\n      json: true,\n      headers,\n      timeout: 10000,\n      maxRedirects: 0,\n      followRedirect: false,\n    });\n    attempt.ok = true;\n    return { ok: true, data, skipped: false };\n  } catch (error) {\n    const message = error instanceof Error ? error.message : String(error);\n    attempt.error = message.slice(0, 300);\n    warnings.push('No se pudo consultar ' + pathname + '. La resolucion queda pendiente.');\n    return { ok: false, data: null, skipped: false };\n  }\n};\n\nconst normalizeAcreedor = (item) => {\n  if (!item || typeof item !== 'object') return null;\n  const bloqueo = readString(firstValue(item, ['bloqueado', 'ACR_Bloqueado']))?.toUpperCase() ?? null;\n  const inactivo = readString(firstValue(item, ['inactivo_rgpd', 'ACR_InactivoRGPD']))?.toUpperCase() ?? null;\n  return {\n    id: readPositiveInteger(firstValue(item, ['id', 'codigo', 'acreedor_id', 'ACR_Codigo'])),\n    nombre: readString(firstValue(item, ['nombre', 'proveedor_nombre', 'ACR_Nombre'])),\n    nif: readString(firstValue(item, ['nif', 'proveedor_nif', 'ACR_Nif'])),\n    cuenta_id: readString(firstValue(item, ['cuenta_id', 'ACR_IdCuenta', 'ACR_Cuenta'])),\n    cuenta_gasto: readString(firstValue(item, ['cuenta_gasto', 'ACR_Cuentagasto'])),\n    forma_pago_id: readInteger(firstValue(item, ['forma_pago_id', 'ACR_IdFormaPago'])),\n    banco_id: readInteger(firstValue(item, ['banco_id', 'ACR_IdBanco'])),\n    cuenta_cartera: readString(firstValue(item, ['cuenta_cartera', 'ACR_CtaCartera'])),\n    bloqueo,\n    inactivo_rgpd: inactivo,\n    operativo: bloqueo === 'N' && inactivo === 'N',\n  };\n};\n\nconst providerAttempts = [];\nlet provider = null;\nlet providerReason = 'not_found';\nconst nif = normalizeNif(literal.proveedor_nif);\nconst nombre = readString(literal.proveedor_nombre);\n\nif (nif && apiBase) {\n  const result = await apiGetResult('/acreedores', { nif, activo: true, limit: 200, offset: 0 });\n  const responseItems = result.ok && Array.isArray(result.data?.items) ? result.data.items : [];\n  const responseTotal = readInteger(result.data?.total, null);\n  const complete = result.ok && responseTotal !== null && responseTotal >= 0 && responseTotal <= responseItems.length;\n  const candidates = complete ? responseItems.map(normalizeAcreedor).filter(Boolean) : [];\n  let exact = candidates.filter((candidate) => candidate.operativo && normalizeNif(candidate.nif) === nif);\n  if (exact.length > 1 && nombre) {\n    const exactName = normalizeText(nombre);\n    exact = exact.filter((candidate) => normalizeText(candidate.nombre) === exactName);\n  }\n  providerAttempts.push({ by: 'nif', exact_count: exact.length, returned: responseItems.length, total: responseTotal, complete });\n  if (!complete) {\n    providerReason = 'nif_catalog_incomplete';\n    warnings.push('La busqueda de acreedores por NIF no devolvio un conjunto completo y verificable; no se resuelve automaticamente.');\n  } else if (exact.length === 1) {\n    provider = exact[0];\n    providerReason = 'exact_nif';\n  } else if (exact.length > 1) {\n    providerReason = 'ambiguous_nif';\n    warnings.push('Hay varios acreedores activos con el mismo NIF; no se elige uno automaticamente.');\n  } else {\n    providerReason = 'nif_not_found';\n    warnings.push('El NIF visible no coincide exactamente con ningun acreedor activo; no se hace fallback por nombre.');\n  }\n}\n\nif (!provider && !nif && nombre && apiBase) {\n  const result = await apiGetResult('/acreedores', { nombre, activo: true, limit: 200, offset: 0 });\n  const responseItems = result.ok && Array.isArray(result.data?.items) ? result.data.items : [];\n  const responseTotal = readInteger(result.data?.total, null);\n  const complete = result.ok && responseTotal !== null && responseTotal >= 0 && responseTotal <= responseItems.length;\n  const candidates = complete ? responseItems.map(normalizeAcreedor).filter(Boolean) : [];\n  const expectedName = normalizeText(nombre);\n  const exact = candidates.filter((candidate) => candidate.operativo && normalizeText(candidate.nombre) === expectedName);\n  providerAttempts.push({ by: 'nombre', exact_count: exact.length, returned: responseItems.length, total: responseTotal, complete });\n  if (!complete) {\n    providerReason = 'name_catalog_incomplete';\n    warnings.push('La busqueda de acreedores por nombre no devolvio un conjunto completo y verificable; no se resuelve automaticamente.');\n  } else if (exact.length === 1) {\n    provider = exact[0];\n    providerReason = 'exact_name';\n  } else if (exact.length > 1) {\n    providerReason = 'ambiguous_name';\n    warnings.push('Hay varios acreedores activos con el mismo nombre; no se elige uno automaticamente.');\n  }\n}\n\nif (provider?.id && apiBase) {\n  const detailResult = await apiGetResult('/acreedores/' + provider.id);\n  if (detailResult.ok) {\n    const detail = normalizeAcreedor(detailResult.data);\n    const detailIdentityMatches = providerReason === 'exact_nif'\n      ? normalizeNif(detail?.nif) === nif\n      : normalizeText(detail?.nombre) === normalizeText(nombre);\n    if (!detail || detail.id !== provider.id || !detail.operativo || !detailIdentityMatches) {\n      warnings.push('El detalle del acreedor no confirma que este operativo. Se deja pendiente.');\n      provider = null;\n      providerReason = 'detail_not_operational';\n    } else {\n      provider = detail;\n    }\n  } else {\n    provider = null;\n    providerReason = 'detail_unavailable';\n  }\n}\nif (!provider) warnings.push('Proveedor no resuelto de forma exacta y operativa; requiere revision manual.');\n\nconst empresaVariableId = readPositiveInteger(getVar('CAMPOJOYMA_EMPRESA_ID'));\nconst configuredEmpresaId = empresaVariableId ?? 1;\nlet empresaId = null;\nlet empresaValidated = false;\nif (!configuredEmpresaId) {\n  warnings.push('Falta CAMPOJOYMA_EMPRESA_ID; no se inventa una empresa.');\n} else if (apiBase) {\n  const empresaResult = await apiGetResult('/empresas/' + configuredEmpresaId);\n  const returnedEmpresaId = readInteger(firstValue(empresaResult.data, ['id', 'empresa_id', 'EMP_idempresa']));\n  if (empresaResult.ok && returnedEmpresaId === configuredEmpresaId) {\n    empresaId = configuredEmpresaId;\n    empresaValidated = true;\n  } else {\n    warnings.push('CAMPOJOYMA_EMPRESA_ID no se pudo validar contra /empresas/{id}.');\n  }\n}\n\n// Las reglas contables son autoridad de Supabase/Edge, nunca variables de n8n.\nconst ejercicio = null;\nconst regimenId = null;\nconst tipoFactura = null;\nconst fechaCtb = null;\n\nconst numeroFactura = readString(literal.numero_factura);\nconst providerId = readPositiveInteger(provider?.id);\nlet duplicateCount = 0;\nlet duplicateCandidates = [];\nlet duplicateCheckStatus = 'skipped';\nif (empresaId && ejercicio && providerId && numeroFactura && apiBase) {\n  duplicateCheckStatus = 'failed';\n  const duplicateResult = await apiGetResult('/facturasrecibidas/buscar', {\n    empresa_id: empresaId,\n    ejercicio,\n    proveedor_id: providerId,\n    numero_factura: numeroFactura,\n    limit: 10,\n  });\n  if (duplicateResult.ok && Array.isArray(duplicateResult.data?.items)) {\n    const items = itemsFromResponse(duplicateResult.data);\n    duplicateCount = readInteger(duplicateResult.data?.total, items.length) ?? items.length;\n    duplicateCandidates = items.slice(0, 5).map((item) => ({\n      FRR_id: readInteger(item?.FRR_id),\n      FRR_numero: readInteger(item?.FRR_numero),\n      FRR_numerofactura: readString(item?.FRR_numerofactura),\n    }));\n    duplicateCheckStatus = 'ok';\n    if (duplicateCount > 0) warnings.push('Existe una posible factura duplicada en ERP para empresa, ejercicio, proveedor y numero.');\n  } else if (duplicateResult.ok) {\n    warnings.push('La respuesta de duplicados no respeta el contrato {items,total}; no se considera comprobada.');\n  }\n}\n\nconst visibleReferences = new Set((Array.isArray(literal.referencias) ? literal.referencias : []).map(normalizeReference).filter(Boolean));\nconst punteosVariable = getVar('CAMPOJOYMA_CARGAR_PUNTEOS');\nconst loadPunteos = punteosVariable === null\n  ? true\n  : String(punteosVariable).toLowerCase() === 'true';\nconst allowedPunteoSources = new Set([\n  'albsalida_gastos',\n  'albentrada_hisgastos',\n  'albaranescompra_gastos',\n  'facturas_gastos',\n  'albarancoste',\n  'albmaterial',\n]);\nlet punteoSuggestions = [];\nlet punteoCandidateCount = 0;\nif (loadPunteos && visibleReferences.size > 0 && empresaId && providerId && apiBase) {\n  const punteosResult = await apiGetResult('/albaranes-gastos/punteables', {\n    empresa_id: empresaId,\n    proveedor_id: providerId,\n    solo_pendientes: true,\n    limit: 100,\n  });\n  if (punteosResult.ok) {\n    const allCandidates = itemsFromResponse(punteosResult.data);\n    punteoCandidateCount = allCandidates.length;\n    punteoSuggestions = allCandidates.filter((item) => {\n      if (!allowedPunteoSources.has(readString(item?.source_table)) || !readPositiveInteger(item?.source_id)) return false;\n      if (\n        readPositiveInteger(item?.empresa) !== empresaId ||\n        readPositiveInteger(item?.acreedor_id) !== providerId\n      ) return false;\n      const candidates = [item?.Ref, item?.Albaran].map(normalizeReference).filter(Boolean);\n      return candidates.some((candidate) => visibleReferences.has(candidate));\n    }).slice(0, 25).map((item, index) => ({\n      posicion: index + 1,\n      remote_id: readString(item?.id_interno_estable),\n      source_table: readString(item?.source_table),\n      source_id: readPositiveInteger(item?.source_id),\n      importe_factura: null,\n      Origen: readString(item?.Origen),\n      Serie: readString(item?.Serie),\n      Albaran: readInteger(item?.Albaran),\n      Ref: readString(item?.Ref),\n      Fecha: readString(item?.Fecha),\n      'Importe P': readNumber(item?.['Importe P'], 0) ?? 0,\n      Importe: readNumber(item?.Importe, 0) ?? 0,\n      S: false,\n      Ver: true,\n      empresa_id: readInteger(item?.empresa),\n      proveedor_id: readInteger(item?.acreedor_id),\n      cuenta_gasto: readString(item?.cuenta_gasto),\n    }));\n    if (punteoSuggestions.length > 0) {\n      warnings.push('Se han encontrado punteos candidatos por referencia; solo se guardan como evidencia y no se envian como punteos.');\n    }\n  }\n}\n\nconst tramos = Array.isArray(literal.tramos_iva) ? literal.tramos_iva.slice(0, 5) : [];\nconst extraction = {\n  document_kind: readString(literal.document_kind),\n  moneda: readString(literal.moneda),\n  proveedor_nombre: provider?.nombre ?? readString(literal.proveedor_nombre),\n  proveedor_nif: provider?.nif ?? readString(literal.proveedor_nif),\n  FRR_idproveedor: providerId,\n  FRR_idcuenta: readString(provider?.cuenta_id),\n  FRR_numerofactura: numeroFactura,\n  FRR_fechafactura: readString(literal.fecha_factura),\n  FRR_fechactb: fechaCtb,\n  FRR_ejercicio: ejercicio,\n  FRR_Idempresa: empresaId,\n  FRR_idregimen: regimenId,\n  FRR_tipofactura: tipoFactura,\n  FRR_baseret: readNumber(literal.retencion?.base),\n  FRR_ret: readNumber(literal.retencion?.porcentaje),\n  FRR_cuotaret: readNumber(literal.retencion?.cuota),\n  FRR_totalfac: readNumber(literal.total),\n  FRR_Concepto: readString(literal.concepto),\n  FRR_Observaciones: readString(literal.observaciones_visibles),\n  FRR_Contabilizar: 'N',\n  lineas: Array.isArray(literal.lineas) ? literal.lineas : [],\n  referencias_punteo: Array.isArray(literal.referencias) ? literal.referencias : [],\n  evidencias: Array.isArray(literal.evidencias) ? literal.evidencias : [],\n  vencimientos: Array.isArray(literal.vencimientos) ? literal.vencimientos : [],\n};\nfor (let index = 1; index <= 5; index += 1) {\n  const tramo = tramos[index - 1] ?? {};\n  extraction['FRR_base' + index] = readNumber(tramo.base);\n  extraction['FRR_iva' + index] = readNumber(tramo.porcentaje);\n  extraction['FRR_cuota' + index] = readNumber(tramo.cuota);\n}\nevidence.empresa = {\n  configured_id: configuredEmpresaId,\n  source: empresaVariableId ? 'n8n_variable' : 'workflow_default',\n  validated: empresaValidated,\n};\nevidence.ejercicio = { source: 'edge_rule', resolved: false, value: null };\nevidence.acreedor = {\n  resolution: providerReason,\n  matched: Boolean(provider),\n  provider_id: providerId,\n  attempts: providerAttempts,\n};\nevidence.duplicado = {\n  attempted: duplicateCheckStatus !== 'skipped',\n  checked: duplicateCheckStatus === 'ok',\n  status: duplicateCheckStatus,\n  count: duplicateCheckStatus === 'ok' ? duplicateCount : null,\n  candidates: duplicateCandidates,\n};\nevidence.punteos = {\n  enabled: loadPunteos,\n  source: punteosVariable === null ? 'workflow_default' : 'n8n_variable',\n  returned: punteoCandidateCount,\n  suggested: punteoSuggestions.length,\n  selected: 0,\n  candidates: punteoSuggestions,\n};\nevidence.regimen = { source: 'edge_rule', resolved: false, value: null };\nevidence.tipo_factura = { source: 'edge_rule', resolved: false, value: null };\nevidence.fecha_ctb = { source: 'edge_rule_or_manual', policy: 'manual', resolved: false, value: null };\n\nconst documentKind = readString(literal.document_kind);\nconst shouldIngest = ai.ok !== false && ['factura', 'factura_rectificativa', 'abono'].includes(documentKind);\nconst readyForErp = false;\nevidence.erp_rules = { source: 'supabase_edge', required: true, resolved: false };\nconst finalWarnings = [...new Set(warnings.map(readString).filter(Boolean))];\nconst finalMetadata = {\n  confidence: readNumber(metadata.confidence),\n  warnings: finalWarnings,\n  raw_text_summary: readString(metadata.raw_text_summary),\n  document_kind: documentKind,\n  pdf_sha256: readString(source.pdf_sha256),\n  extraction_ok: shouldIngest,\n  ready_for_review: shouldIngest,\n  ready_for_erp: readyForErp,\n  match_evidence: evidence,\n};\nconst output = { extraction, gastos: [], ctb: [], punteos: [], metadata: finalMetadata };\n\nreturn { json: {\n  ok: shouldIngest,\n  should_ingest: shouldIngest,\n  request_id: source.request_id,\n  trigger_channel: triggerChannel,\n  output,\n  ingest_payload: shouldIngest ? {\n    contract_version: 2,\n    request_id: source.request_id,\n    trigger_channel: triggerChannel,\n    source: triggerChannel === 'email' ? 'campojoyma-email' : 'xfuego-front',\n    pdf_base64: source.pdf_base64,\n    pdf_nombre: source.pdf_nombre,\n    pdf_mime_type: source.pdf_mime_type,\n    pdf_size: source.pdf_size,\n    email: source.email ?? {},\n    extraction,\n    gastos: [],\n    ctb: [],\n    punteos: [],\n    metadata: finalMetadata,\n  } : null,\n} };",
-        "mode": "runOnceForEachItem"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $json;\nconst source = input.source ?? {};\nconst triggerChannel = source.trigger_channel === 'email' ? 'email' : 'webhook';\nconst ai = input.ai ?? {};\nconst literal = ai.extraction ?? {};\nconst metadata = ai.metadata ?? {};\nconst warnings = [...(Array.isArray(metadata.warnings) ? metadata.warnings : [])];\nconst requiresConfirmation = [];\nconst evidence = { api: { attempts: [] } };\n\nconst getVar = (name) => {\n  if (typeof $vars === 'undefined') return null;\n  const value = $vars?.[name];\n  return value === undefined || value === null || String(value).trim() === '' ? null : value;\n};\nconst readString = (value) => {\n  if (value === null || value === undefined) return null;\n  const parsed = String(value).trim();\n  return parsed || null;\n};\nconst readNumber = (value, fallback = null) => {\n  if (typeof value === 'number' && Number.isFinite(value)) return value;\n  if (typeof value === 'string' && value.trim()) {\n    const parsed = Number(value.replace(/\\s/g, '').replace(/\\.(?=\\d{3}(\\D|$))/g, '').replace(',', '.'));\n    return Number.isFinite(parsed) ? parsed : fallback;\n  }\n  return fallback;\n};\nconst readInteger = (value, fallback = null) => {\n  const parsed = readNumber(value, fallback);\n  return parsed === null || parsed === undefined ? fallback : Math.trunc(parsed);\n};\nconst readPositiveInteger = (value) => {\n  const parsed = readInteger(value, null);\n  return parsed !== null && parsed > 0 ? parsed : null;\n};\nconst readNonNegativeInteger = (value) => {\n  const parsed = readInteger(value, null);\n  return parsed !== null && parsed >= 0 ? parsed : null;\n};\nconst firstValue = (object, keys) => {\n  if (!object || typeof object !== 'object') return null;\n  for (const key of keys) {\n    const value = object[key];\n    if (value !== undefined && value !== null && String(value).trim() !== '') return value;\n  }\n  return null;\n};\nconst itemsFromResponse = (value) => {\n  if (Array.isArray(value)) return value;\n  if (!value || typeof value !== 'object') return [];\n  if (Array.isArray(value.items)) return value.items;\n  if (Array.isArray(value.data)) return value.data;\n  if (Array.isArray(value.datos)) return value.datos;\n  return [];\n};\nconst normalizeNif = (value) => readString(value)?.toUpperCase().replace(/[^A-Z0-9]/g, '') ?? null;\nconst normalizeText = (value) => readString(value)?.toLocaleLowerCase('es-ES').normalize('NFD').replace(new RegExp('[\\\\u0300-\\\\u036f]', 'g'), '').replace(/\\s+/g, ' ') ?? null;\nconst normalizeReference = (value) => normalizeText(value)?.replace(/[^a-z0-9]/g, '') ?? null;\n\nconst isValidIpv6Host = (value) => {\n  if (!/^[0-9a-f:]+$/i.test(value)) return false;\n  const compressed = value.includes('::');\n  if (compressed && value.indexOf('::') !== value.lastIndexOf('::')) return false;\n  const groups = value.split(':').filter(Boolean);\n  if (groups.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) return false;\n  return compressed ? groups.length < 8 : groups.length === 8;\n};\n\nconst normalizeHttpBase = (value) => {\n  const raw = readString(value);\n  if (!raw) return null;\n  const match = raw.match(/^(https?):\\/\\/([^/?#\\s]+)(\\/[^?#\\s]*)?(?:\\?[^#\\s]*)?(?:#[^\\s]*)?$/i);\n  if (!match) return null;\n\n  const protocol = match[1].toLowerCase();\n  const authority = match[2];\n  const path = match[3] ?? '';\n  let host = null;\n  let portText = null;\n\n  const ipv6Match = authority.match(/^\\[([0-9a-f:.]+)\\](?::(\\d{1,5}))?$/i);\n  if (ipv6Match) {\n    if (!isValidIpv6Host(ipv6Match[1])) return null;\n    host = '[' + ipv6Match[1].toLowerCase() + ']';\n    portText = ipv6Match[2] ?? null;\n  } else {\n    const hostMatch = authority.match(/^([a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)(?::(\\d{1,5}))?$/i);\n    if (!hostMatch) return null;\n    host = hostMatch[1].toLowerCase();\n    portText = hostMatch[2] ?? null;\n    if (/^\\d+(?:\\.\\d+){3}$/.test(host)) {\n      const octets = host.split('.').map(Number);\n      if (octets.some((octet) => octet < 0 || octet > 255)) return null;\n    }\n  }\n\n  const port = portText === null ? null : Number(portText);\n  if (port !== null && (!Number.isInteger(port) || port < 0 || port > 65535)) return null;\n  const isDefaultPort = (protocol === 'http' && port === 80) || (protocol === 'https' && port === 443);\n  const normalizedPort = port === null || isDefaultPort ? '' : ':' + port;\n  return protocol + '://' + host + normalizedPort + path.replace(/\\/$/, '');\n};\n\n// La API v0.2 atiende en 18001. La v0.1 (18000) no tiene /asiento ni idempotencia.\nconst configuredApiBaseValue = readString(getVar('CAMPOJOYMA_API_BASE_URL'));\nconst apiBaseValue = configuredApiBaseValue || 'http://172.19.0.1:18001';\nconst apiBase = normalizeHttpBase(apiBaseValue);\nif (apiBaseValue && !apiBase) {\n  warnings.push('CAMPOJOYMA_API_BASE_URL no es una URL HTTP(S) valida; no se hacen consultas ERP.');\n}\nconst apiBearer = readString(getVar('CAMPOJOYMA_API_BEARER_TOKEN'));\nevidence.api.base_configured = Boolean(configuredApiBaseValue);\nevidence.api.base_source = configuredApiBaseValue ? 'n8n_variable' : 'workflow_default';\nevidence.api.base_valid = Boolean(apiBase);\n\n// El limite maximo verificado de la API es 200; 201 devuelve HTTP 500.\nconst API_MAX_LIMIT = 200;\n\nconst apiGetResult = async (path, params = {}) => {\n  if (!apiBase) return { ok: false, data: null, skipped: true };\n  const pathname = '/' + String(path).replace(/^\\/+/, '');\n  const query = Object.entries(params)\n    .filter(([, value]) => value !== null && value !== undefined && String(value) !== '')\n    .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value)))\n    .join('&');\n  const url = apiBase.replace(/\\/$/, '') + pathname + (query ? '?' + query : '');\n  const attempt = { path: pathname, ok: false };\n  evidence.api.attempts.push(attempt);\n  try {\n    const headers = { Accept: 'application/json' };\n    if (apiBearer) headers.Authorization = 'Bearer ' + apiBearer;\n    const data = await this.helpers.httpRequest({\n      method: 'GET',\n      url,\n      json: true,\n      headers,\n      timeout: 10000,\n      maxRedirects: 0,\n      followRedirect: false,\n    });\n    attempt.ok = true;\n    return { ok: true, data, skipped: false };\n  } catch (error) {\n    const message = error instanceof Error ? error.message : String(error);\n    attempt.error = message.slice(0, 300);\n    warnings.push('No se pudo consultar ' + pathname + '. La resolucion queda pendiente.');\n    return { ok: false, data: null, skipped: false };\n  }\n};\n\nconst normalizeAcreedor = (item) => {\n  if (!item || typeof item !== 'object') return null;\n  const bloqueo = readString(firstValue(item, ['bloqueado', 'ACR_Bloqueado']))?.toUpperCase() ?? null;\n  const inactivo = readString(firstValue(item, ['inactivo_rgpd', 'ACR_InactivoRGPD']))?.toUpperCase() ?? null;\n  return {\n    id: readPositiveInteger(firstValue(item, ['id', 'codigo', 'acreedor_id', 'ACR_Codigo'])),\n    nombre: readString(firstValue(item, ['nombre', 'proveedor_nombre', 'ACR_Nombre'])),\n    nif: readString(firstValue(item, ['nif', 'proveedor_nif', 'ACR_Nif'])),\n    cuenta_id: readString(firstValue(item, ['cuenta_id', 'ACR_IdCuenta', 'ACR_Cuenta'])),\n    cuenta_gasto: readString(firstValue(item, ['cuenta_gasto', 'ACR_Cuentagasto'])),\n    cuenta_cartera: readString(firstValue(item, ['cuenta_cartera', 'ACR_CtaCartera'])),\n    forma_pago_id: readInteger(firstValue(item, ['forma_pago_id', 'ACR_IdFormaPago'])),\n    banco_id: readInteger(firstValue(item, ['banco_id', 'ACR_IdBanco'])),\n    // El detalle expone actividad/seccion y el porcentaje de retencion del maestro.\n    actividad_id: readNonNegativeInteger(item.actividad_id),\n    seccion_id: readNonNegativeInteger(item.seccion_id),\n    porcentaje_retencion: readNumber(item.porcentaje_retencion),\n    bloqueo,\n    inactivo_rgpd: inactivo,\n    operativo: bloqueo === 'N' && inactivo === 'N',\n  };\n};\n\n// ---------------------------------------------------------------- proveedor\nconst providerAttempts = [];\nlet provider = null;\nlet providerReason = 'not_found';\nconst nif = normalizeNif(literal.proveedor_nif);\nconst nombre = readString(literal.proveedor_nombre);\n\nif (nif && apiBase) {\n  const result = await apiGetResult('/acreedores', { nif, activo: true, limit: API_MAX_LIMIT, offset: 0 });\n  const responseItems = result.ok && Array.isArray(result.data?.items) ? result.data.items : [];\n  const responseTotal = readInteger(result.data?.total, null);\n  const complete = result.ok && responseTotal !== null && responseTotal >= 0 && responseTotal <= responseItems.length;\n  const candidates = complete ? responseItems.map(normalizeAcreedor).filter(Boolean) : [];\n  let exact = candidates.filter((candidate) => candidate.operativo && normalizeNif(candidate.nif) === nif);\n  if (exact.length > 1 && nombre) {\n    const exactName = normalizeText(nombre);\n    exact = exact.filter((candidate) => normalizeText(candidate.nombre) === exactName);\n  }\n  providerAttempts.push({ by: 'nif', exact_count: exact.length, returned: responseItems.length, total: responseTotal, complete });\n  if (!complete) {\n    providerReason = 'nif_catalog_incomplete';\n    warnings.push('La busqueda de acreedores por NIF no devolvio un conjunto completo y verificable; no se resuelve automaticamente.');\n  } else if (exact.length === 1) {\n    provider = exact[0];\n    providerReason = 'exact_nif';\n  } else if (exact.length > 1) {\n    providerReason = 'ambiguous_nif';\n    warnings.push('Hay varios acreedores activos con el mismo NIF; no se elige uno automaticamente.');\n  } else {\n    providerReason = 'nif_not_found';\n    warnings.push('El NIF visible no coincide exactamente con ningun acreedor activo; no se hace fallback por nombre.');\n  }\n}\n\nif (!provider && !nif && nombre && apiBase) {\n  const result = await apiGetResult('/acreedores', { nombre, activo: true, limit: API_MAX_LIMIT, offset: 0 });\n  const responseItems = result.ok && Array.isArray(result.data?.items) ? result.data.items : [];\n  const responseTotal = readInteger(result.data?.total, null);\n  const complete = result.ok && responseTotal !== null && responseTotal >= 0 && responseTotal <= responseItems.length;\n  const candidates = complete ? responseItems.map(normalizeAcreedor).filter(Boolean) : [];\n  const expectedName = normalizeText(nombre);\n  const exact = candidates.filter((candidate) => candidate.operativo && normalizeText(candidate.nombre) === expectedName);\n  providerAttempts.push({ by: 'nombre', exact_count: exact.length, returned: responseItems.length, total: responseTotal, complete });\n  if (!complete) {\n    providerReason = 'name_catalog_incomplete';\n    warnings.push('La busqueda de acreedores por nombre no devolvio un conjunto completo y verificable; no se resuelve automaticamente.');\n  } else if (exact.length === 1) {\n    provider = exact[0];\n    providerReason = 'exact_name';\n  } else if (exact.length > 1) {\n    providerReason = 'ambiguous_name';\n    warnings.push('Hay varios acreedores activos con el mismo nombre; no se elige uno automaticamente.');\n  }\n}\n\nif (provider?.id && apiBase) {\n  const detailResult = await apiGetResult('/acreedores/' + provider.id);\n  if (detailResult.ok) {\n    const detail = normalizeAcreedor(detailResult.data?.item ?? detailResult.data);\n    const detailIdentityMatches = providerReason === 'exact_nif'\n      ? normalizeNif(detail?.nif) === nif\n      : normalizeText(detail?.nombre) === normalizeText(nombre);\n    if (!detail || detail.id !== provider.id || !detail.operativo || !detailIdentityMatches) {\n      warnings.push('El detalle del acreedor no confirma que este operativo. Se deja pendiente.');\n      provider = null;\n      providerReason = 'detail_not_operational';\n    } else {\n      provider = detail;\n    }\n  } else {\n    provider = null;\n    providerReason = 'detail_unavailable';\n  }\n}\nif (!provider) warnings.push('Proveedor no resuelto de forma exacta y operativa; requiere revision manual.');\n\nconst providerId = readPositiveInteger(provider?.id);\n\n// ---------------------------------------------------------------- empresa y ejercicio\nconst empresaVariableId = readPositiveInteger(getVar('CAMPOJOYMA_EMPRESA_ID'));\nconst configuredEmpresaId = empresaVariableId ?? 1;\nlet empresaId = null;\nlet empresaValidated = false;\nif (apiBase) {\n  const empresaResult = await apiGetResult('/empresas/' + configuredEmpresaId);\n  const empresaBody = empresaResult.data?.item ?? empresaResult.data;\n  const returnedEmpresaId = readInteger(firstValue(empresaBody, ['id', 'empresa_id', 'EMP_idempresa']));\n  if (empresaResult.ok && returnedEmpresaId === configuredEmpresaId) {\n    empresaId = configuredEmpresaId;\n    empresaValidated = true;\n  } else {\n    warnings.push('CAMPOJOYMA_EMPRESA_ID no se pudo validar contra /empresas/{id}.');\n  }\n}\n\nconst ejercicio = readPositiveInteger(getVar('CAMPOJOYMA_EJERCICIO'));\nif (!ejercicio) warnings.push('Falta CAMPOJOYMA_EJERCICIO; no se deriva desde el ano natural ni desde la fecha de factura.');\n\n// ---------------------------------------------------------------- historico del proveedor\n// Medido el 27/07/2026 sobre el ejercicio 25 (5.323 facturas):\n//   regimen por proveedor+iva1 -> 99,3% ; por proveedor -> 98,2%\n//   tipo de factura por proveedor -> 97,6%\n// Se usa como SUGERENCIA con su denominador. Solo se rellena el campo cuando el\n// historial del proveedor es unanime; en cualquier otro caso queda pendiente.\nconst ivaPrincipal = readNumber(literal.tramos_iva?.[0]?.porcentaje);\nlet historia = [];\nlet historiaTotal = null;\nif (providerId && apiBase) {\n  const histResult = await apiGetResult('/facturasrecibidas', {\n    proveedor_id: providerId,\n    limit: API_MAX_LIMIT,\n    offset: 0,\n  });\n  if (histResult.ok) {\n    historia = itemsFromResponse(histResult.data);\n    historiaTotal = readInteger(histResult.data?.total, historia.length);\n  }\n}\n\n// Umbral: se rellena el campo cuando el proveedor tiene al menos 5 facturas\n// previas y el valor dominante cubre el 90%. Por debajo queda pendiente. Aun\n// rellenado, el campo entra en requires_confirmation: es una sugerencia con su\n// denominador visible, nunca un valor cerrado.\nconst MIN_MUESTRA = 5;\nconst MIN_CONFIANZA = 90;\nconst sugerirDesdeHistoria = (campo, filtro) => {\n  const muestra = historia.filter((row) => filtro(row));\n  const counts = new Map();\n  for (const row of muestra) {\n    const value = campo === 'tipo' ? readString(row.tipo_factura) : readPositiveInteger(row.regimen_id);\n    if (value === null || value === undefined) continue;\n    counts.set(value, (counts.get(value) ?? 0) + 1);\n  }\n  const ranking = [...counts.entries()].sort((a, b) => b[1] - a[1]);\n  const total = ranking.reduce((sum, [, count]) => sum + count, 0);\n  if (total === 0) return { value: null, aplicable: false, unanime: false, confianza: null, total: 0, ranking: [] };\n  const [topValue, topCount] = ranking[0];\n  const confianza = Math.round((topCount / total) * 1000) / 10;\n  return {\n    value: topValue,\n    confianza,\n    total,\n    unanime: ranking.length === 1,\n    aplicable: total >= MIN_MUESTRA && confianza >= MIN_CONFIANZA,\n    ranking: ranking.slice(0, 4).map(([value, count]) => ({ value, count })),\n  };\n};\n\nconst tipoSugerido = sugerirDesdeHistoria('tipo', () => true);\nconst mismoIva = (row) => ivaPrincipal === null || Math.abs((readNumber(row.iva1) ?? -1) - ivaPrincipal) < 0.001;\nconst regimenPorPar = sugerirDesdeHistoria('regimen', mismoIva);\nconst regimenPorProveedor = sugerirDesdeHistoria('regimen', () => true);\n\n// El regimen del ERP sigue a FRR_iva1, el PRIMER hueco de la escalera de IVA,\n// que no siempre es el tipo que lleva la base imponible. Medido sobre las 120\n// altas mas recientes: 21 de 120 (17,5%) tienen la base en un hueco distinto\n// del 1. Ejemplos reales: proveedor 1469 con FRR_iva1=4% y la base al 21% en el\n// hueco 3 recibe el regimen 2115 (el del 4%); proveedor 413 con FRR_iva1=21% y\n// la base al 10% recibe 2110 (el del 21%).\n//\n// Desde un PDF no se puede reproducir en que hueco colocara el operador cada\n// tipo, asi que el par (proveedor, IVA visible) no es reconstruible. Por eso el\n// regimen solo se rellena cuando TODO el historial del proveedor coincide en un\n// unico valor: ahi la colocacion de huecos es irrelevante.\nconst ivasEnHistoria = new Set(\n  historia.map((row) => readNumber(row.iva1)).filter((value) => value !== null),\n);\nconst proveedorMultiIva = ivasEnHistoria.size > 1;\nconst historiaDesalineada = historia.filter((row) => (readNumber(row.base1) ?? 0) === 0).length;\nconst regimenSugerido = {\n  ...regimenPorProveedor,\n  aplicable: regimenPorProveedor.unanime && regimenPorProveedor.total >= MIN_MUESTRA,\n};\n\n// Relleno de ultimo recurso, decidido con el cliente: ningun borrador sale con\n// tipo o regimen vacios. Son los valores dominantes de Campojoyma (OT 78,5% y\n// 2110 64,9% del ejercicio 25), pero solo se aplican cuando el historial del\n// proveedor no da una respuesta mejor. Siempre entran en requires_confirmation.\nconst DEFAULT_TIPO_FACTURA = 'OT';\nconst DEFAULT_REGIMEN_ID = 2110;\n\nconst tipoVariable = readString(getVar('CAMPOJOYMA_TIPO_FACTURA'));\nconst regimenVariable = readPositiveInteger(getVar('CAMPOJOYMA_REGIMEN_ID'));\n\nlet tipoFactura = null;\nlet tipoOrigen = 'pending';\nif (tipoVariable) {\n  tipoFactura = tipoVariable;\n  tipoOrigen = 'n8n_variable';\n} else if (tipoSugerido.aplicable) {\n  tipoFactura = tipoSugerido.value;\n  tipoOrigen = tipoSugerido.unanime ? 'historico_unanime' : 'historico_mayoritario';\n  requiresConfirmation.push('FRR_tipofactura');\n} else {\n  tipoFactura = DEFAULT_TIPO_FACTURA;\n  tipoOrigen = 'default_campojoyma';\n  requiresConfirmation.push('FRR_tipofactura');\n  warnings.push('FRR_tipofactura se rellena con el default ' + DEFAULT_TIPO_FACTURA\n    + ' porque el historial del proveedor no alcanza ' + MIN_CONFIANZA + '% con al menos '\n    + MIN_MUESTRA + ' facturas (observado ' + (tipoSugerido.confianza ?? 0) + '% sobre '\n    + tipoSugerido.total + '). Requiere confirmacion.');\n}\n\nlet regimenId = null;\nlet regimenOrigen = 'pending';\nif (regimenVariable) {\n  regimenId = regimenVariable;\n  regimenOrigen = 'n8n_variable';\n} else if (regimenSugerido.aplicable) {\n  regimenId = regimenSugerido.value;\n  regimenOrigen = 'historico_proveedor_unanime';\n  requiresConfirmation.push('FRR_idregimen');\n} else {\n  regimenId = DEFAULT_REGIMEN_ID;\n  regimenOrigen = 'default_campojoyma';\n  requiresConfirmation.push('FRR_idregimen');\n  warnings.push('FRR_idregimen se rellena con el default ' + DEFAULT_REGIMEN_ID + ' porque '\n    + (proveedorMultiIva\n      ? 'el proveedor usa ' + ivasEnHistoria.size + ' tipos de IVA distintos en el hueco 1 y el regimen sigue a ese hueco, que no se puede deducir del PDF'\n      : 'el historial del proveedor no es unanime o no llega a ' + MIN_MUESTRA + ' facturas')\n    + ' (dominante ' + (regimenSugerido.confianza ?? 0) + '% sobre ' + regimenSugerido.total + '). Requiere confirmacion.');\n}\n\n// ---------------------------------------------------------------- fecha contable\n// Medido sobre las 120 altas mas recientes: fechactb == fechafactura solo en el\n// 8,3% y ninguna cae en fin de mes. Los valores se agrupan en fechas de tanda\n// contable. No es derivable: se deja siempre pendiente salvo regla explicita.\nconst fechaCtbMode = (readString(getVar('CAMPOJOYMA_FECHA_CTB_MODE')) || '').toLowerCase();\nconst fechaCtb = fechaCtbMode === 'fecha_factura' ? readString(literal.fecha_factura) : null;\nif (!fechaCtb) {\n  warnings.push('FRR_fechactb requiere seleccion manual: en el historico reciente no se deriva de la fecha de factura ni del fin de mes.');\n  requiresConfirmation.push('FRR_fechactb');\n}\n\n// ---------------------------------------------------------------- duplicado\nconst numeroFactura = readString(literal.numero_factura);\nlet duplicateCount = 0;\nlet duplicateCandidates = [];\nlet duplicateCheckStatus = 'skipped';\nif (empresaId && ejercicio && providerId && numeroFactura && apiBase) {\n  duplicateCheckStatus = 'failed';\n  const duplicateResult = await apiGetResult('/facturasrecibidas/buscar', {\n    empresa_id: empresaId,\n    ejercicio,\n    proveedor_id: providerId,\n    numero_factura: numeroFactura,\n    limit: 10,\n  });\n  if (duplicateResult.ok && Array.isArray(duplicateResult.data?.items)) {\n    const items = itemsFromResponse(duplicateResult.data);\n    duplicateCount = readInteger(duplicateResult.data?.total, items.length) ?? items.length;\n    duplicateCandidates = items.slice(0, 5).map((item) => ({\n      FRR_id: readInteger(item?.FRR_id),\n      FRR_numero: readInteger(item?.FRR_numero),\n      FRR_numerofactura: readString(item?.FRR_numerofactura),\n    }));\n    duplicateCheckStatus = 'ok';\n    if (duplicateCount > 0) warnings.push('Existe una posible factura duplicada en ERP para empresa, ejercicio, proveedor y numero.');\n  } else if (duplicateResult.ok) {\n    warnings.push('La respuesta de duplicados no respeta el contrato {items,total}; no se considera comprobada.');\n  }\n}\n\n// ---------------------------------------------------------------- punteos candidatos\n// La fuente dominante en las altas recientes es albentrada_hisgastos, cuyo campo\n// Ref viene vacio. Por eso se cruza tambien por Albaran y por importe.\nconst visibleReferences = new Set((Array.isArray(literal.referencias) ? literal.referencias : []).map(normalizeReference).filter(Boolean));\nconst lineAmounts = (Array.isArray(literal.lineas) ? literal.lineas : [])\n  .map((linea) => readNumber(linea?.importe))\n  .filter((value) => value !== null && value !== 0);\nconst punteosVariable = getVar('CAMPOJOYMA_CARGAR_PUNTEOS');\nconst loadPunteos = punteosVariable === null ? true : String(punteosVariable).toLowerCase() === 'true';\nconst allowedPunteoSources = new Set([\n  'albsalida_gastos',\n  'albentrada_hisgastos',\n  'albaranescompra_gastos',\n  'facturas_gastos',\n  'albarancoste',\n  'albmaterial',\n]);\nlet punteoSuggestions = [];\nlet punteoCandidateCount = 0;\nif (loadPunteos && empresaId && providerId && apiBase && (visibleReferences.size > 0 || lineAmounts.length > 0)) {\n  const punteosResult = await apiGetResult('/albaranes-gastos/punteables', {\n    empresa_id: empresaId,\n    proveedor_id: providerId,\n    solo_pendientes: true,\n    limit: 100,\n  });\n  if (punteosResult.ok) {\n    const allCandidates = itemsFromResponse(punteosResult.data);\n    punteoCandidateCount = allCandidates.length;\n    const scored = [];\n    for (const item of allCandidates) {\n      if (!allowedPunteoSources.has(readString(item?.source_table)) || !readPositiveInteger(item?.source_id)) continue;\n      if (readPositiveInteger(item?.empresa) !== empresaId || readPositiveInteger(item?.acreedor_id) !== providerId) continue;\n      const refs = [item?.Ref, item?.Albaran, item?.source_id].map(normalizeReference).filter(Boolean);\n      const porReferencia = refs.some((candidate) => visibleReferences.has(candidate));\n      const importe = readNumber(item?.Importe);\n      const porImporte = importe !== null && lineAmounts.some((value) => Math.abs(value - importe) <= 0.01);\n      if (!porReferencia && !porImporte) continue;\n      scored.push({ item, motivo: porReferencia ? 'referencia' : 'importe', peso: porReferencia ? 2 : 1 });\n    }\n    scored.sort((a, b) => b.peso - a.peso);\n    punteoSuggestions = scored.slice(0, 25).map((entry, index) => ({\n      posicion: index + 1,\n      motivo: entry.motivo,\n      remote_id: readString(entry.item?.id_interno_estable),\n      source_table: readString(entry.item?.source_table),\n      source_id: readPositiveInteger(entry.item?.source_id),\n      importe_factura: null,\n      Origen: readString(entry.item?.Origen),\n      Serie: readString(entry.item?.Serie),\n      Albaran: readInteger(entry.item?.Albaran),\n      Ref: readString(entry.item?.Ref),\n      Fecha: readString(entry.item?.Fecha),\n      'Importe P': readNumber(entry.item?.['Importe P'], 0) ?? 0,\n      Importe: readNumber(entry.item?.Importe, 0) ?? 0,\n      S: false,\n      Ver: true,\n      empresa_id: readInteger(entry.item?.empresa),\n      proveedor_id: readInteger(entry.item?.acreedor_id),\n      gasto_id: readInteger(entry.item?.gasto_id),\n      gasto_nombre: readString(entry.item?.gasto_nombre),\n      cuenta_gasto: readString(entry.item?.cuenta_gasto),\n    }));\n    if (punteoSuggestions.length > 0) {\n      warnings.push('Se han encontrado punteos candidatos; solo se guardan como evidencia y no se envian como punteos.');\n    }\n  }\n}\n\n// ---------------------------------------------------------------- cabecera ERP\nconst tramos = Array.isArray(literal.tramos_iva) ? literal.tramos_iva.slice(0, 5) : [];\nconst baseTotal = tramos.reduce((sum, tramo) => sum + (readNumber(tramo?.base) ?? 0), 0);\n\n// Convencion medida en 120/120: el concepto empieza por \"FRA\" y en el 85,8% es\n// exactamente \"FRA. \" + nombre del acreedor, cortado a 50 caracteres.\nconst conceptoErp = provider?.nombre ? ('FRA. ' + provider.nombre).slice(0, 50) : null;\nconst conceptoPdf = readString(literal.concepto);\nif (!conceptoErp && conceptoPdf) {\n  warnings.push('No se pudo componer FRR_Concepto desde el maestro; queda pendiente de revision.');\n}\n\n// Retencion: el porcentaje del maestro coincide con FRR_ret en 69/69 cabeceras\n// recientes. El PDF solo sirve para contrastar.\nconst retencionMaestro = readNumber(provider?.porcentaje_retencion);\nconst retencionPdf = readNumber(literal.retencion?.porcentaje);\nconst retencionPct = retencionMaestro !== null ? retencionMaestro : null;\nif (retencionMaestro !== null && retencionPdf !== null && Math.abs(retencionMaestro - retencionPdf) > 0.001) {\n  warnings.push('El porcentaje de retencion del PDF (' + retencionPdf + '%) no coincide con el del maestro (' + retencionMaestro + '%); se conserva el del maestro.');\n}\nconst baseRet = readNumber(literal.retencion?.base);\nconst cuotaRet = readNumber(literal.retencion?.cuota);\n\n// Seccion y actividad: coinciden con el maestro en 92,8%; las discrepancias\n// observadas son todas de tipo GE, que usa 0/0.\nconst esGenero = tipoFactura === 'GE';\nconst seccionId = esGenero ? 0 : readNonNegativeInteger(provider?.seccion_id);\nconst actividadId = esGenero ? 0 : readNonNegativeInteger(provider?.actividad_id);\n\n// En compras de genero la cuenta del proveedor pertenece a la familia 400...,\n// no a la 410... del maestro. Se avisa en vez de reescribirla.\nconst cuentaProveedor = readString(provider?.cuenta_id);\nif (esGenero && cuentaProveedor && cuentaProveedor.startsWith('410')) {\n  warnings.push('En compras de genero la cuenta del proveedor suele ser de la familia 400...; el maestro devuelve ' + cuentaProveedor + '. Confirmar antes de enviar.');\n  requiresConfirmation.push('FRR_idcuenta');\n}\n\nconst extraction = {\n  document_kind: readString(literal.document_kind),\n  moneda: readString(literal.moneda),\n  proveedor_nombre: provider?.nombre ?? readString(literal.proveedor_nombre),\n  proveedor_nif: provider?.nif ?? readString(literal.proveedor_nif),\n  FRR_idproveedor: providerId,\n  FRR_idcuenta: readString(provider?.cuenta_id),\n  FRR_numerofactura: numeroFactura,\n  FRR_fechafactura: readString(literal.fecha_factura),\n  FRR_fechactb: fechaCtb,\n  FRR_ejercicio: ejercicio,\n  FRR_Idempresa: empresaId,\n  FRR_idregimen: regimenId,\n  FRR_tipofactura: tipoFactura,\n  FRR_baseret: baseRet,\n  FRR_ret: retencionPct,\n  FRR_cuotaret: cuotaRet,\n  FRR_totalfac: readNumber(literal.total),\n  FRR_Concepto: conceptoErp,\n  FRR_ObservacionesAEAT: conceptoErp,\n  FRR_Observaciones: readString(literal.observaciones_visibles),\n  FRR_Contabilizar: 'N',\n  // Constantes verificadas en las 120 cabeceras mas recientes (valor unico).\n  FRR_idcentro: 1,\n  FRR_idpuntoventa: 1,\n  FRR_Modificable: '',\n  FRR_CancelarporCtb: 'N',\n  FRR_IdTipoDoc: 0,\n  FRR_IdAgricultorDto: 0,\n  FRR_idpago: 0,\n  FRR_IdfacturaRec: 0,\n  FRR_CuotaNoDeducible: 0,\n  FRR_IdSeccion: seccionId,\n  FRR_IdActividad: actividadId,\n  lineas: Array.isArray(literal.lineas) ? literal.lineas : [],\n  referencias_punteo: Array.isArray(literal.referencias) ? literal.referencias : [],\n  evidencias: Array.isArray(literal.evidencias) ? literal.evidencias : [],\n};\nfor (let index = 1; index <= 5; index += 1) {\n  const tramo = tramos[index - 1] ?? {};\n  extraction['FRR_base' + index] = readNumber(tramo.base);\n  extraction['FRR_iva' + index] = readNumber(tramo.porcentaje);\n  extraction['FRR_cuota' + index] = readNumber(tramo.cuota);\n}\n\n// Vencimientos: el ERP no los almacena. Medido en 120/120 cabeceras recientes,\n// FechaVto=\"0000-00-00\", FRR_FechaVto1..3=\"1900-01-01\" e importes a 0. Se\n// conservan como evidencia y NO se escriben en los campos ERP.\nconst vencimientosPdf = (Array.isArray(literal.vencimientos) ? literal.vencimientos : []).slice(0, 4).map((item) => ({\n  fecha: readString(item?.fecha),\n  importe: readNumber(item?.importe),\n}));\nif (vencimientosPdf.some((item) => item.fecha || item.importe)) {\n  warnings.push('El PDF declara vencimientos; se guardan como evidencia porque el ERP no los almacena en FechaVto/ImporteVto.');\n}\n\n// Gastos de cabecera: el ERP rellena FRR_igasto1 en 120/120, y coincide con la\n// base en el 69,2%. Se propone como candidato con evidencia, nunca como valor\n// definitivo, porque la cuenta correcta depende del tipo (en GE es la del\n// agricultor, no la del maestro).\nconst cuentaGastoMaestro = readString(provider?.cuenta_gasto);\nconst gastoCandidato = baseTotal > 0\n  ? { posicion: 1, importe: Math.round(baseTotal * 100) / 100, cuenta: cuentaGastoMaestro, origen: cuentaGastoMaestro ? 'maestro_acreedor' : 'pendiente' }\n  : null;\nif (gastoCandidato && !cuentaGastoMaestro) {\n  warnings.push('El acreedor no tiene cuenta de gasto en el maestro; FRR_ctagasto1 requiere seleccion manual.');\n}\nif (esGenero && gastoCandidato) {\n  warnings.push('En compras de genero (GE) la cuenta de gasto suele ser la del agricultor (4009...), no la del maestro; requiere confirmacion.');\n}\n\n// ---------------------------------------------------------------- evidencia\nevidence.empresa = {\n  configured_id: configuredEmpresaId,\n  source: empresaVariableId ? 'n8n_variable' : 'workflow_default',\n  validated: empresaValidated,\n};\nevidence.ejercicio = { configured: Boolean(ejercicio), value: ejercicio };\nevidence.acreedor = {\n  resolution: providerReason,\n  matched: Boolean(provider),\n  provider_id: providerId,\n  attempts: providerAttempts,\n  cuenta_id: readString(provider?.cuenta_id),\n  cuenta_gasto: cuentaGastoMaestro,\n  actividad_id: readNonNegativeInteger(provider?.actividad_id),\n  seccion_id: readNonNegativeInteger(provider?.seccion_id),\n  porcentaje_retencion: retencionMaestro,\n};\nevidence.historico_proveedor = {\n  consultado: Boolean(providerId && apiBase),\n  facturas_leidas: historia.length,\n  facturas_totales: historiaTotal,\n  truncado: historiaTotal !== null && historia.length < historiaTotal,\n  iva_principal: ivaPrincipal,\n  ivas_observados: [...ivasEnHistoria].sort((a, b) => a - b),\n  multi_iva: proveedorMultiIva,\n  // Facturas del proveedor cuya base NO esta en el hueco 1: indican que el\n  // operador reordena la escalera de IVA y que el regimen no es reconstruible.\n  con_base_fuera_del_hueco1: historiaDesalineada,\n};\nevidence.tipo_factura = {\n  source: tipoOrigen,\n  value: tipoFactura,\n  es_default: tipoOrigen === 'default_campojoyma',\n  default_aplicado: DEFAULT_TIPO_FACTURA,\n  sugerencia: tipoSugerido.value,\n  confianza: tipoSugerido.confianza ?? null,\n  muestra: tipoSugerido.total,\n  ranking: tipoSugerido.ranking,\n};\nevidence.regimen = {\n  source: regimenOrigen,\n  value: regimenId,\n  es_default: regimenOrigen === 'default_campojoyma',\n  default_aplicado: DEFAULT_REGIMEN_ID,\n  sugerencia: regimenSugerido.value,\n  confianza: regimenSugerido.confianza ?? null,\n  muestra: regimenSugerido.total,\n  ranking: regimenSugerido.ranking,\n  por_proveedor_iva: { value: regimenPorPar.value, muestra: regimenPorPar.total, confianza: regimenPorPar.confianza ?? null },\n  por_proveedor: { value: regimenPorProveedor.value, muestra: regimenPorProveedor.total, confianza: regimenPorProveedor.confianza ?? null },\n};\nevidence.fecha_ctb = { source: fechaCtb ? 'n8n_variable' : 'pending', value: fechaCtb };\nevidence.duplicado = {\n  attempted: duplicateCheckStatus !== 'skipped',\n  checked: duplicateCheckStatus === 'ok',\n  status: duplicateCheckStatus,\n  count: duplicateCheckStatus === 'ok' ? duplicateCount : null,\n  candidates: duplicateCandidates,\n};\nevidence.punteos = {\n  enabled: loadPunteos,\n  source: punteosVariable === null ? 'workflow_default' : 'n8n_variable',\n  returned: punteoCandidateCount,\n  suggested: punteoSuggestions.length,\n  selected: 0,\n  candidates: punteoSuggestions,\n};\nevidence.gastos = { candidato: gastoCandidato, aplicado: false };\nevidence.vencimientos_pdf = vencimientosPdf;\nevidence.concepto = { erp: conceptoErp, pdf: conceptoPdf, convencion: 'FRA. <acreedor> cortado a 50' };\n\n// ---------------------------------------------------------------- salida\nconst documentKind = readString(literal.document_kind);\nconst shouldIngest = ai.ok !== false && ['factura', 'factura_rectificativa', 'abono'].includes(documentKind);\nconst readyForErp = Boolean(\n  shouldIngest && providerId && empresaId && ejercicio && regimenId && tipoFactura && fechaCtb &&\n  numeroFactura && extraction.FRR_fechafactura && extraction.FRR_totalfac !== null &&\n  duplicateCheckStatus === 'ok' && duplicateCount === 0 && requiresConfirmation.length === 0\n);\nconst finalWarnings = [...new Set(warnings.map(readString).filter(Boolean))];\nconst finalMetadata = {\n  confidence: readNumber(metadata.confidence),\n  warnings: finalWarnings,\n  raw_text_summary: readString(metadata.raw_text_summary),\n  document_kind: documentKind,\n  pdf_sha256: readString(source.pdf_sha256),\n  extraction_ok: shouldIngest,\n  ready_for_review: shouldIngest,\n  ready_for_erp: readyForErp,\n  requires_confirmation: [...new Set(requiresConfirmation)],\n  match_evidence: evidence,\n};\nconst output = { extraction, gastos: [], ctb: [], punteos: [], metadata: finalMetadata };\n\nreturn { json: {\n  ok: shouldIngest,\n  should_ingest: shouldIngest,\n  request_id: source.request_id,\n  trigger_channel: triggerChannel,\n  output,\n  ingest_payload: shouldIngest ? {\n    contract_version: 2,\n    request_id: source.request_id,\n    trigger_channel: triggerChannel,\n    source: triggerChannel === 'email' ? 'campojoyma-email' : 'xfuego-front',\n    pdf_base64: source.pdf_base64,\n    pdf_nombre: source.pdf_nombre,\n    pdf_mime_type: source.pdf_mime_type,\n    pdf_size: source.pdf_size,\n    email: source.email ?? {},\n    extraction,\n    gastos: [],\n    ctb: [],\n    punteos: [],\n    metadata: finalMetadata,\n  } : null,\n} };\n"
       },
-      "id": "8f7d8be5-2dd7-43ea-bad0-57f92c1702bd",
+      "id": "b555f818-5e46-41cf-ba4f-e3ead0b2f1b4",
       "name": "Enriquecer por API Campojoyma",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3776,
-        80
-      ]
+        -112,
+        576
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "content": "# Facturas recibidas Campojoyma - flujo seguro\n\n1. El PDF se valida, se calcula SHA-256 sobre sus bytes y la IA solo extrae datos visibles.\n2. La API resuelve el acreedor operativo por coincidencia exacta; Edge aplica las reglas contables y comprueba duplicados.\n3. n8n no inventa ni decide ejercicio, regimen, fecha CTB, cuenta gasto ni tipo ERP.\n4. Los candidatos de punteo quedan solo en metadata.match_evidence; punteos se envia siempre vacio.\n5. Frontend: n8n responde a factura-recibida-extraer y esa Edge guarda la factura.\n6. Email: n8n llama directamente a factura-recibida-ingest.\n7. Nunca se escribe en Netagro desde este workflow.\n\nDependencia: debe estar activa la API POST /webhook/pdf-imagen y aceptar el header Authorization configurado en apipdfimagefri.\n\nReglas contables: ejercicio, regimen, tipo de factura y politica de fecha CTB se resuelven exclusivamente en Supabase/Edge. El workflow envia esos campos a null para su resolucion autoritativa o revision manual.\nFallbacks no secretos por limitacion de licencia de Variables n8n: API de lectura http://172.19.0.1:18001, empresa 1 validada contra /empresas/1 y sugerencias de punteo activas. Si las variables se habilitan, CAMPOJOYMA_API_BASE_URL, CAMPOJOYMA_EMPRESA_ID y CAMPOJOYMA_CARGAR_PUNTEOS sobrescriben esos valores.\nVariables opcionales no contables: CAMPOJOYMA_API_BEARER_TOKEN y CAMPOJOYMA_MAX_PDF_BYTES.\n\nEl Email Trigger queda desactivado por seguridad. No habilitarlo hasta configurar credencial IMAP, prueba controlada, tratamiento de errores/dead-letter y politica explicita de lectura, movimiento y reintento del correo."
+        "content": "## Entrada segura de facturas recibidas v2\n\nReglas medidas contra el ERP el 27/07/2026 sobre las 120 altas mas\nrecientes del ejercicio 25 (FRR_id 49499-49619) y el listado completo\nde 5.323 facturas.\n\n- Constantes verificadas 120/120: idcentro=1, idpuntoventa=1,\n  Modificable=\"\", CancelarporCtb=N, IdTipoDoc=0, IdAgricultorDto=0,\n  idpago=0, IdfacturaRec=0, CuotaNoDeducible=0.\n- Concepto: \"FRA. \" + nombre del acreedor, cortado a 50.\n  ObservacionesAEAT == Concepto en 120/120.\n- Retencion: el porcentaje sale del maestro (coincide 69/69).\n- Seccion y actividad salen del maestro (92,8%); GE fuerza 0/0.\n- Vencimientos: el ERP no los guarda (120/120 a cero). Solo evidencia.\n\nTIPO Y REGIMEN, orden de prioridad:\n  1. Variable n8n, si existe una regla aprobada.\n  2. Historico del proveedor. Tipo con >=90% y >=5 facturas (validado\n     23/23). Regimen solo si TODO el historial coincide (validado 7/7).\n  3. Default de Campojoyma: OT y 2110. Cubre el 78,5% y el 64,9% del\n     ejercicio 25, por eso es el ultimo recurso y no la primera opcion.\nLos tres casos entran en requires_confirmation salvo el 1.\n\nEl regimen del ERP sigue a FRR_iva1, el PRIMER hueco de la escalera, que\nen 21 de 120 altas recientes NO es el tipo que lleva la base. Desde un\nPDF no se puede saber esa colocacion: por eso el listado 2 es estricto.\n\nFecha CTB: no derivable. Solo 8,3% coincide con la fecha de factura y\nninguna cae en fin de mes. Siempre manual.\n\nNo se selecciona ningun punteo automaticamente y FRR_Contabilizar=N.",
+        "height": 760,
+        "width": 540
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1440,
-        -416
+        -3200,
+        1120
       ],
-      "id": "44ace6b5-0ce9-4a3c-90be-1c6212191495",
+      "id": "e360316d-df32-4935-be0f-831eb19c0968",
       "name": "Notas revision"
     },
     {
       "parameters": {
-        "action": "hash",
         "type": "SHA256",
         "binaryData": true,
         "binaryPropertyName": "pdf_hash_input",
-        "dataPropertyName": "pdf_sha256",
-        "encoding": "hex"
+        "dataPropertyName": "pdf_sha256"
       },
       "type": "n8n-nodes-base.crypto",
       "typeVersion": 1,
       "position": [
-        2368,
-        80
+        -1824,
+        1344
       ],
-      "id": "30d7a410-8437-46a5-bf39-7ea44f274ba7",
-      "name": "Calcular SHA-256 PDF"
+      "id": "31b9c7d2-4d14-4652-ade3-d58b7316142b",
+      "name": "Calcular SHA-256 PDF",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -339,11 +308,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2592,
-        80
+        -1600,
+        1264
       ],
-      "id": "8fa28472-3bda-44cf-bddf-b92f53fd78e7",
-      "name": "Derivar request_id estable"
+      "id": "3ec0d2f0-d01d-4a6e-b3bb-27e8042a7f66",
+      "name": "Derivar request_id estable",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -353,11 +323,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3264,
-        -128
+        -928,
+        1056
       ],
-      "id": "a8435028-e806-4728-a867-2bd8c05a741b",
-      "name": "Reconstruir imagenes binarias"
+      "id": "884f646e-70e1-4af9-af89-8780513820fe",
+      "name": "Reconstruir imagenes binarias",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -387,10 +358,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4000,
-        80
+        96,
+        688
       ],
-      "id": "b4bfa132-9b2d-4c1c-91ab-0e3f3d6159f2",
+      "id": "b21a1e7d-8898-408b-ba05-1e5a9249b34c",
       "name": "Documento procesable?"
     },
     {
@@ -421,10 +392,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4224,
-        240
+        320,
+        832
       ],
-      "id": "745431ac-9af1-4239-a7f6-977e6d6d61fc",
+      "id": "6c2f5654-f1f5-46d8-ab66-ce9f994d7ece",
       "name": "Es email no procesable?"
     },
     {
@@ -435,10 +406,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4448,
-        192
+        544,
+        736
       ],
-      "id": "5d6e7410-ad3e-443f-90ab-2cc40f72f68d",
+      "id": "1fe66948-25f8-437b-a9ef-8327372ffc28",
       "name": "Detener email no procesable"
     },
     {
@@ -452,10 +423,10 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        4448,
-        288
+        544,
+        928
       ],
-      "id": "925d3b1d-5b79-4934-b18e-beb1a33cb17f",
+      "id": "9569681b-4612-46f4-bc6f-ad869f09d2a7",
       "name": "Respond documento rechazado"
     },
     {
@@ -466,19 +437,144 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4896,
-        -96
+        992,
+        448
       ],
-      "id": "bc9547a1-4776-47e0-aed8-65f56d13a49a",
+      "id": "5532c7e8-2b8e-4b3c-9b03-2c349b05a0b4",
       "name": "Validar respuesta Edge"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $json ?? {};\nconst raw = item.error ?? item.message ?? item;\nconst message = typeof raw === 'string'\n  ? raw\n  : (raw?.message ?? raw?.description ?? 'Fallo no identificado durante la extraccion.');\nconst canal = item.trigger_channel\n  ?? item.source?.trigger_channel\n  ?? (item.source === 'campojoyma-email' ? 'email' : 'webhook');\nreturn { json: {\n  contract_version: 2,\n  ok: false,\n  request_id: item.request_id ?? item.source?.request_id ?? null,\n  trigger_channel: canal,\n  error: String(message).slice(0, 500),\n  node: item.node ?? null,\n} };"
+      },
+      "id": "05a40e02-4177-4a0c-bdfb-50fc6d75d634",
+      "name": "Construir error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        1504
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c3f8b1a7-7d24-4e93-8a15-2b6c0f4d9e78",
+              "leftValue": "={{ $json.trigger_channel }}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ba67790a-7735-4454-80a3-accd1d3d27ba",
+      "name": "Error en email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        320,
+        1504
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "throw new Error('Extraccion de email fallida: ' + ($json.error ?? 'sin detalle'));"
+      },
+      "id": "5c6d1b35-41e2-4f07-8a96-41b02c0e8348",
+      "name": "Detener error de email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { contract_version: 2, request_id: $json.request_id, ok: false, error: $json.error } }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "6e80500e-03ae-4b53-a777-ecd2f1030492",
+      "name": "Respond error extraccion",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        544,
+        1696
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8n.srv792815.hstgr.cloud/webhook/pdf-imagen",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "putupau234_"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "nombreArchivo",
+              "value": "={{ $json.nombreArchivo }}"
+            },
+            {
+              "name": "data",
+              "value": "={{ $json.data }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9c261f38-b2aa-40f3-8cdf-e033f7116edc",
+      "name": "PDF a imagenes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -1152,
+        1088
+      ],
+      "onError": "continueErrorOutput"
     }
   ],
+  "pinData": {},
   "connections": {
     "Normalizar entrada": {
       "main": [
         [
           {
             "node": "Calcular SHA-256 PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Construir error",
             "type": "main",
             "index": 0
           }
@@ -493,6 +589,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Construir error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -501,6 +604,13 @@
         [
           {
             "node": "PDF a base64",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Construir error",
             "type": "main",
             "index": 0
           }
@@ -515,6 +625,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Construir error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -522,18 +639,14 @@
       "main": [
         [
           {
-            "node": "apipdfimagefri",
+            "node": "PDF a imagenes",
             "type": "main",
             "index": 0
           }
-        ]
-      ]
-    },
-    "apipdfimagefri": {
-      "main": [
+        ],
         [
           {
-            "node": "Reconstruir imagenes binarias",
+            "node": "Construir error",
             "type": "main",
             "index": 0
           }
@@ -548,6 +661,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Construir error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -556,6 +676,13 @@
         [
           {
             "node": "Normalizar salida IA literal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Construir error",
             "type": "main",
             "index": 0
           }
@@ -589,6 +716,13 @@
         [
           {
             "node": "Documento procesable?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Construir error",
             "type": "main",
             "index": 0
           }
@@ -703,21 +837,67 @@
           }
         ]
       ]
+    },
+    "Construir error": {
+      "main": [
+        [
+          {
+            "node": "Error en email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error en email?": {
+      "main": [
+        [
+          {
+            "node": "Detener error de email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond error extraccion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF a imagenes": {
+      "main": [
+        [
+          {
+            "node": "Reconstruir imagenes binarias",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Construir error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "pinData": {},
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "1293ef43-2150-4227-936b-c88be883600d",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "b993ecc02c692f52f4919458d55f486199bfb18f7fb468dfef32344174b00f44"
   },
-  "name": "CAMPOJOYMA - Entrada segura de facturas recibidas v2",
-  "active": false,
-  "settings": {
-    "executionOrder": "v1",
-    "saveDataErrorExecution": "none",
-    "saveDataSuccessExecution": "none",
-    "saveManualExecutions": false,
-    "saveExecutionProgress": false
-  },
-  "versionId": "campojoyma-facturas-recibidas-segura-v2-2026-07-21-api-pdf"
+  "id": "FIO92NfGcsWYsHC5",
+  "tags": []
 }
