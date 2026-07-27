@@ -1,145 +1,181 @@
-# Guía de Despliegue en Producción - AgroIris
+# Guía de despliegue del frontend - Campojoyma
+
+Este documento describe el despliegue del frontend de **este** repositorio.
+
+- Dominio público: `https://campojoyma.multiplicaxfuego.com`
+- Contenedor: `campojoyma`
+- Proyecto Supabase: `CAMPOJOYMA` (`adbprpemmbspntbttziz`)
+
+Nota sobre nombres: la clave del servicio en los ficheros compose sigue siendo
+`agroiris`, resto del repositorio del que nació este proyecto. El contenedor y el
+router de Traefik sí se llaman `campojoyma`. Los comandos de `docker compose` que
+reciben un servicio usan `agroiris`; no se renombra porque arrastraría a
+`nginx.conf`, `vite.config.ts` y los servicios `src/services/agroiris*.ts`.
+
+Esta guía cubre solo el frontend. Las Edge Functions de Supabase, los workflows de
+n8n y la API de Netagro se despliegan aparte; su estado está en `docs/`.
+
+---
 
 ## Requisitos previos (1 vez)
 
 1. **DNS configurado:**
-   - Crear un A record: `agroiris.karmaia.app → 217.154.101.108`
+   - `campojoyma.multiplicaxfuego.com` apuntando al servidor de producción.
 
 2. **Red Docker de Traefik:**
    ```bash
    docker network ls | grep proxy || docker network create proxy
    ```
 
-3. **Traefik debe estar corriendo** con:
-   - Cert resolver `le` configurado
-   - Red `proxy` disponible
+3. **Traefik corriendo** con:
+   - cert resolver `le` configurado;
+   - red `proxy` disponible.
+
+4. **`.env` en la raíz del repositorio**, a partir de `.env.example`.
 
 ---
 
-## Archivos de Configuración
+## Archivos de configuración
 
-### 1. docker-compose.yml ✅
-- Servicio: `agroiris`
-- Contenedor: `agroiris`
-- Host: `agroiris.karmaia.app`
-- Logging configurado (10MB, 3 archivos)
+### 1. `docker-compose.yml`
+- Servicio: `agroiris` · contenedor: `campojoyma`
+- Red externa `proxy`, sin puertos publicados: Traefik enruta el tráfico.
+- `restart: unless-stopped` y rotación de logs (10 MB × 3 archivos).
 
-### 2. nginx.conf ✅
-- Proxy `/agroiris-api/` → `http://46.24.40.100:7000/api/`
-- Proxy `/agroiris-api-cuentaventa/` → `http://46.24.40.100:8000/api/` (temporal)
-- Proxy `/agroiris-config/` → `http://46.24.40.100:7001/api/`
-- Proxy `/agroiris-login/` → `http://46.24.40.100:7001/api/login/`
-- Proxy `/agroiris-login-cuentaventa/` → `http://46.24.40.100:8001/api/login/` (temporal)
-- Proxy `/agroiris-divisa/` → `http://46.24.40.100:7001/api/divisa/`
-- Proxy `/agroiris-serie/` → `http://46.24.40.100:7001/api/serie/`
-- Cache de estáticos configurado (excepto index.html)
-- SPA fallback para rutas de React Router
+### 2. `docker-compose.traefik.yml`
+- Overlay con las etiquetas de Traefik.
+- Router `campojoyma`: `Host(campojoyma.multiplicaxfuego.com)`, entrypoint
+  `websecure`, TLS con resolver `le`, servicio hacia el puerto `80` del contenedor.
 
-### 3. Dockerfile ✅
-- Build stage con Node 20 Alpine
-- Runtime stage con Nginx Alpine
-- Healthcheck incluido
+### 3. `docker-compose.windows.yml`
+- Overlay alternativo **para pruebas locales**. No lleva Traefik ni red externa:
+  publica `8080:80`.
 
-### 4. .env
-- Variables ya configuradas con rutas relativas
-- `VITE_AGROIRIS_API_URL="/agroiris-api"`
-- `VITE_AGROIRIS_LOGIN_URL="/agroiris-login/Login"`
-- `VITE_AGROIRIS_CUENTAVENTA_API_URL="/agroiris-api-cuentaventa"` (temporal)
-- `VITE_AGROIRIS_CUENTAVENTA_LOGIN_URL="/agroiris-login-cuentaventa/login/Login"` (temporal)
-- `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` configurados
+### 4. `Dockerfile`
+- Build stage con Node 20 Alpine (`npm ci --legacy-peer-deps` + `npm run build`).
+- Runtime stage con Nginx Alpine: copia `dist/` y `nginx.conf`.
+- **No define `HEALTHCHECK`.** El estado se comprueba con `docker ps` y con los
+  logs o una petición al frontend.
+
+### 5. `nginx.conf`
+- SPA fallback para las rutas de React Router.
+- `index.html` sin caché; estáticos con caché de un año (`immutable`).
+- Proxies a la API externa `46.24.40.100`:
+
+  | Ruta pública | Reescritura | Destino |
+  |---|---|---|
+  | `/agroiris-api/` | `/api/$1` | `:7000` |
+  | `/agroiris-api-cuentaventa/` | `/api/$1` | `:7000` |
+  | `/agroiris-config/` | `/api/$1` | `:7001` |
+  | `/agroiris-login/` | `/api/$1` | `:7001` |
+  | `/agroiris-login-cuentaventa/` | `/api/$1` | `:7001` |
+  | `/agroiris-divisa/` y `/agroiris-divisa` | `/api/divisa/` | `:7001` |
+  | `/agroiris-serie/` y `/agroiris-serie` | `/api/serie/` | `:7001` |
+
+  Las variantes sin barra final existen porque parte del código hace `fetch` sin
+  ella. Estas rutas deben coincidir con las de `vite.config.ts`, que es lo que usa
+  el servidor de desarrollo.
+
+### 6. `.env`
+Solo las variables `VITE_*` se inyectan como `ARG` en el build y, por definición,
+acaban en el bundle público:
+
+```text
+VITE_SUPABASE_PROJECT_ID
+VITE_SUPABASE_PUBLISHABLE_KEY
+VITE_SUPABASE_URL
+VITE_AGROIRIS_API_URL
+VITE_AGROIRIS_LOGIN_URL
+VITE_AGROIRIS_CUENTAVENTA_API_URL
+VITE_AGROIRIS_CUENTAVENTA_LOGIN_URL
+VITE_AGROIRIS_LOGIN
+VITE_AGROIRIS_PASSWORD
+```
+
+El resto de `.env` (`SUPABASE_SERVICE_ROLE_KEY`, `N8N_*`) es server-side y **no
+entra en el contexto de Docker**. No añadir esos valores como `ARG`.
 
 ---
 
 ## Despliegue
 
-### Comando completo (desde el servidor):
+### Producción (servidor Linux)
+
 ```bash
-cd ~/agroiris/AgroIris && \
-git pull && \
-docker compose build && \
-docker compose up -d && \
-docker logs -n 100 agroiris
+./deploy-front.sh
 ```
 
-### Paso a paso:
+El script hace `git pull --ff-only`, valida la configuración y ejecuta:
 
-1. **Construir e iniciar:**
-   ```bash
-   cd ~/agroiris/AgroIris
-   docker compose up -d --build
-   ```
+```bash
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+```
 
-2. **Ver logs:**
-   ```bash
-   # Logs del contenedor agroiris
-   docker logs -f agroiris
-   
-   # Logs de Traefik (certificado SSL)
-   docker logs -f traefik
-   ```
+Después muestra el estado del servicio y las últimas 100 líneas de log. Falla de
+forma explícita si faltan `git`, `docker`, `docker compose` o alguno de los dos
+ficheros compose.
 
-3. **Verificar estado:**
-   ```bash
-   docker ps | grep agroiris
-   docker inspect agroiris
-   ```
+### Local (Windows)
+
+```powershell
+./deploy-front.ps1
+```
+
+Arranca Docker Desktop si hace falta, construye con `docker-compose.windows.yml` y
+espera hasta 20 intentos a que `http://localhost:8080` responda `200`.
+
+### Manual
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+```
 
 ---
 
 ## Verificación
 
-### Checklist de verificación:
-
-- [ ] DNS `agroiris.karmaia.app` apunta a `217.154.101.108`
+- [ ] DNS de `campojoyma.multiplicaxfuego.com` resuelve al servidor
 - [ ] Red docker `proxy` existe
-- [ ] Contenedor `agroiris` corriendo: `docker ps`
-- [ ] Sin errores en logs: `docker logs agroiris`
-- [ ] Certificado TLS emitido (candado en navegador)
-- [ ] App accesible en `https://agroiris.karmaia.app`
-- [ ] Llamadas a `/agroiris-api/*` funcionan sin CORS
-- [ ] Login funciona correctamente
+- [ ] Contenedor corriendo: `docker ps | grep campojoyma`
+- [ ] Sin errores en logs: `docker logs campojoyma`
+- [ ] Certificado TLS emitido (candado en el navegador)
+- [ ] App accesible en `https://campojoyma.multiplicaxfuego.com`
+- [ ] Las llamadas a `/agroiris-*` responden sin errores CORS
+- [ ] Login y bandeja de facturas recibidas cargan
 
-### URLs de prueba:
+### En la consola del navegador
 
-- **Frontend:** https://agroiris.karmaia.app
-- **API (proxy):** https://agroiris.karmaia.app/agroiris-api/...
-- **Config API (proxy):** https://agroiris.karmaia.app/agroiris-config/...
-- **Login (proxy):** https://agroiris.karmaia.app/agroiris-login/Login
-
-### Verificar en consola del navegador:
-
-1. Abrir DevTools (F12)
-2. Ir a la pestaña Network
-3. Filtrar por XHR
-4. Verificar que las llamadas a `/agroiris-api/` devuelven 200
-5. No deben aparecer errores CORS
+1. DevTools (F12) → pestaña Network → filtrar por XHR.
+2. Comprobar que las llamadas a `/agroiris-api/` y `/agroiris-config/` devuelven `200`.
+3. No deben aparecer errores CORS.
 
 ---
 
 ## Comandos útiles
 
-### Reiniciar el contenedor:
+Con `docker compose`, el servicio se llama `agroiris`; con `docker` a secas, el
+contenedor se llama `campojoyma`.
+
 ```bash
-docker restart agroiris
+docker restart campojoyma
 ```
 
-### Ver logs en tiempo real:
 ```bash
-docker logs -f agroiris
+docker logs -f campojoyma
 ```
 
-### Reconstruir sin caché:
 ```bash
-docker compose build --no-cache
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml logs --tail=100 agroiris
 ```
 
-### Detener y eliminar:
 ```bash
-docker compose down
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml build --no-cache
 ```
 
-### Limpiar imágenes huérfanas:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml down
+```
+
 ```bash
 docker image prune -f
 ```
@@ -153,66 +189,73 @@ docker image prune -f
 docker network create proxy
 ```
 
-### Certificado SSL no se emite
-- Verificar DNS apunta correctamente
-- Ver logs de Traefik: `docker logs traefik | grep agroiris`
-- Esperar 2-3 minutos para propagación DNS
+### El certificado SSL no se emite
+- Verificar que el DNS apunta correctamente.
+- Ver logs de Traefik: `docker logs traefik | grep campojoyma`.
+- Esperar a la propagación DNS.
 
 ### Error 502 Bad Gateway
-- Verificar que el contenedor está corriendo: `docker ps`
-- Ver logs: `docker logs agroiris`
-- Verificar nginx: `docker exec agroiris nginx -t`
+- Comprobar que el contenedor está corriendo: `docker ps`.
+- Ver logs: `docker logs campojoyma`.
+- Validar nginx: `docker exec campojoyma nginx -t`.
 
-### API retorna CORS errors
-- Verificar que las rutas en `nginx.conf` son correctas
-- Verificar que las IPs y puertos de la API son accesibles desde el servidor
-- Probar manualmente: `curl http://46.24.40.100:7000/api/calibre`
+### La API devuelve errores CORS
+- Revisar que las rutas de `nginx.conf` siguen coincidiendo con las de `vite.config.ts`.
+- Comprobar que `46.24.40.100` es accesible desde el servidor:
+  `curl http://46.24.40.100:7000/api/calibre`.
 
-### App no carga estilos o JS
-- Limpiar caché del navegador
-- Verificar que el build generó los archivos: `docker exec agroiris ls /usr/share/nginx/html`
-- Reconstruir sin caché
+### La app no carga estilos o JS
+- Limpiar la caché del navegador.
+- Verificar el build: `docker exec campojoyma ls /usr/share/nginx/html`.
+- Reconstruir sin caché.
+
+### El frontend público no refleja el último build
+Comparar el nombre del bundle servido con el que genera `npm run build`. Si
+difieren, el contenedor no se reconstruyó: repetir con `--build`.
 
 ---
 
 ## Arquitectura de producción
 
-```
+```text
 Internet
     ↓
-217.154.101.108 (VPS)
+Traefik (443, red proxy)
     ↓
-Traefik (puerto 443)
+campojoyma.multiplicaxfuego.com
     ↓
-agroiris.karmaia.app
-    ↓
-Contenedor agroiris (puerto 80)
+Contenedor campojoyma (puerto 80)
     ↓
 Nginx
-    ├─ / → SPA (React + Vite)
-    ├─ /agroiris-api/ → http://46.24.40.100:7000/api/
-    ├─ /agroiris-api-cuentaventa/ → http://46.24.40.100:8000/api/ (temporal)
-    ├─ /agroiris-config/ → http://46.24.40.100:7001/api/
-    ├─ /agroiris-login/ → http://46.24.40.100:7001/api/login/
-    ├─ /agroiris-login-cuentaventa/ → http://46.24.40.100:8001/api/login/ (temporal)
-    ├─ /agroiris-divisa/ → http://46.24.40.100:7001/api/divisa/
-    └─ /agroiris-serie/ → http://46.24.40.100:7001/api/serie/
+    ├─ /                             → SPA (React + Vite)
+    ├─ /agroiris-api/                → http://46.24.40.100:7000/api/
+    ├─ /agroiris-api-cuentaventa/    → http://46.24.40.100:7000/api/
+    ├─ /agroiris-config/             → http://46.24.40.100:7001/api/
+    ├─ /agroiris-login/              → http://46.24.40.100:7001/api/
+    ├─ /agroiris-login-cuentaventa/  → http://46.24.40.100:7001/api/
+    ├─ /agroiris-divisa/             → http://46.24.40.100:7001/api/divisa/
+    └─ /agroiris-serie/              → http://46.24.40.100:7001/api/serie/
 ```
+
+Supabase y la API de Netagro no pasan por este Nginx: el frontend habla con
+Supabase directamente y con Netagro a través de las Edge Functions.
 
 ---
 
 ## Notas importantes
 
-1. **No exponer puertos externos** en `docker-compose.yml` - Traefik maneja todo
-2. **Las APIs externas** (46.24.40.100) deben ser accesibles desde el VPS
-3. **El certificado SSL** se renueva automáticamente vía Let's Encrypt
-4. **Los logs rotan** automáticamente (max 10MB x 3 archivos)
-5. **El healthcheck** verifica que Nginx responde cada 30 segundos
+1. **No publicar puertos** en `docker-compose.yml`: de eso se encarga Traefik. El
+   único overlay que publica puerto es `docker-compose.windows.yml`, y es local.
+2. **Las APIs externas** (`46.24.40.100`) deben ser accesibles desde el servidor.
+3. **El certificado SSL** lo renueva Traefik vía Let's Encrypt.
+4. **Los logs rotan** automáticamente (10 MB × 3 archivos).
+5. **No meter secretos server-side en el build.** Todo lo que se pase como `ARG`
+   acaba siendo público en el bundle.
 
 ---
 
-## Contacto y soporte
+## Referencias
 
-- Repositorio: KarmaAgenciaGit/AgroIris
-- Branch: agroiris
-- Supabase Project: adbprpemmbspntbttziz
+- Repositorio: este mismo
+- Proyecto Supabase: `CAMPOJOYMA` (`adbprpemmbspntbttziz`)
+- Estado funcional de facturas recibidas: `docs/`
