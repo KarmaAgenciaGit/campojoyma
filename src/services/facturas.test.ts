@@ -19,7 +19,10 @@ import {
   buildFacturaDuplicateConsulta,
   buildFacturaPayload,
   buildPunteosPayload,
+  fetchAlbaranEntradaLineas,
+  fetchAlbaranMaterialLineas,
   fetchFacturaPunteables,
+  fetchFacturaPunteosLive,
   getFacturaERPSendConfirmation,
   getFacturaERPReconciliationRequestId,
   mapProveedorERPDetail,
@@ -174,6 +177,44 @@ describe('reintentos ERP', () => {
 });
 
 describe('modelo reversible de facturas recibidas', () => {
+  it('recupera el ID de cabecera del albarán desde raw sin confundirlo con el histórico', () => {
+    const factura = mapFacturaToUi({
+      id: 'factura-ge',
+      estado: 'enviada_erp',
+      ctb: [],
+      asientos: [],
+      punteos: [{
+        id: 'punteo-ge',
+        factura_id: 'factura-ge',
+        posicion: 1,
+        remote_id: 'AEH:212162',
+        source_table: 'albentrada_his',
+        source_id: 212162,
+        importe_factura: 129.2,
+        Origen: 'GE',
+        Serie: 'A26',
+        Albaran: 8436,
+        Ref: null,
+        Fecha: '2026-07-27',
+        'Importe P': 0,
+        Importe: 129.2,
+        S: true,
+        Ver: true,
+        empresa_id: 1,
+        proveedor_id: 1954,
+        cuenta_gasto: null,
+        line_count: 1,
+        source_lines: [],
+        raw: { albaran_id: 82548 },
+      }],
+    } as never);
+
+    expect(factura.punteos?.[0]).toMatchObject({
+      source_id: 212162,
+      albaran_id: 82548,
+    });
+  });
+
   it('clasifica ONDUSPAN sin inventar el número visible ni los apuntes del asiento', () => {
     const factura = mapRemoteFacturaToUi(onduSpanHeader, [], onduSpanPunteos, {
       factura_id: 49305,
@@ -211,6 +252,10 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(factura.punteos).toHaveLength(17);
     expect(factura.punteos?.reduce((sum, item) => sum + Number(item.line_count ?? 0), 0)).toBe(21);
     expect(factura.punteos?.reduce((sum, item) => sum + Number(item.importe_factura ?? 0), 0)).toBe(42341.52);
+    expect(factura.punteos?.[0]?.lines_loaded).toBe(true);
+    expect(factura.punteos?.[0]?.lines?.[0]).toMatchObject({
+      descripcion: 'Material 1.1',
+    });
     expect(isERPReadOnlyFactura(factura)).toBe(true);
   });
 
@@ -234,6 +279,7 @@ describe('modelo reversible de facturas recibidas', () => {
         id_interno_estable: 'AEH:211790',
         source_table: 'albentrada_his',
         source_id: 211790,
+        albaran_id: 82548,
         Origen: 'GE',
         Importe: 129.2,
         importe_origen: 136,
@@ -253,6 +299,7 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(factura.punteos?.[0]).toMatchObject({
       remote_id: 'AEH:211790',
       source_table: 'albentrada_his',
+      albaran_id: 82548,
       origen: 'GE',
       importe: 129.2,
       importe_factura: 129.2,
@@ -622,6 +669,38 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(punteos[0]).not.toHaveProperty('raw');
   });
 
+  it('conserva la referencia de cabecera GE sin persistir sus líneas', () => {
+    const [punteo] = buildPunteosPayload([{
+      posicion: 1,
+      remote_id: 'AEH:212162',
+      source_table: 'albentrada_his',
+      source_id: 212162,
+      albaran_id: 82548,
+      importe_factura: 129.2,
+      origen: 'GE',
+      serie: 'A26',
+      albaran: 8436,
+      ref: null,
+      fecha: '2026-07-27',
+      importe_punteado: 0,
+      importe: 129.2,
+      seleccionado: true,
+      ver: true,
+      line_count: 1,
+      lines_loaded: true,
+      lines: [{ id: 87097, posicion: 1 }],
+    }]);
+
+    expect(punteo).toMatchObject({
+      source_table: 'albentrada_his',
+      source_id: 212162,
+      albaran_id: 82548,
+      line_count: 1,
+    });
+    expect(punteo).not.toHaveProperty('lines');
+    expect(punteo).not.toHaveProperty('source_lines');
+  });
+
   it('bloquea también estados de envío indeterminados aunque aún no exista FRR_id', () => {
     expect(isERPReadOnlyFactura({ sync_status: 'unknown' })).toBe(true);
     expect(isERPReadOnlyFactura({ sync_status: 'reconciling' })).toBe(true);
@@ -763,6 +842,189 @@ describe('validacion ERP autoritativa', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.seleccionado).toBe(false);
+    expect((invokeMock.mock.calls[0]?.[1] as { body?: { consulta?: string } })?.body?.consulta).toContain(
+      'include_lines=false',
+    );
+  });
+
+  it('recupera las referencias vivas sin solicitar ni persistir sus líneas', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          items: [{
+            id_interno_estable: 'AMA:23210',
+            source_table: 'albmaterial',
+            source_id: 23210,
+            albaran_id: 23210,
+            Origen: 'MA',
+            Serie: 'A26',
+            Albaran: 2108,
+          }],
+        },
+      },
+      error: null,
+    } as never);
+
+    const result = await fetchFacturaPunteosLive(49305);
+
+    expect(result[0]).toMatchObject({
+      source_table: 'albmaterial',
+      source_id: 23210,
+      lines_loaded: false,
+    });
+    expect(result[0]?.lines).toEqual([]);
+    expect((invokeMock.mock.calls[0]?.[1] as { body?: { consulta?: string } })?.body?.consulta).toBe(
+      'facturasrecibidas/49305/punteos?include_lines=false',
+    );
+  });
+
+  it('consulta las líneas MA bajo demanda por su identidad técnica', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          items: [{
+            line_id: 53384,
+            position: 1,
+            article_id: 370,
+            description: 'CC60x40x18',
+            reference: 'MONTADA',
+            quantity: '100.0000',
+            unit_price: '0.901000',
+            amount: '87.40',
+          }],
+        },
+      },
+      error: null,
+    } as never);
+
+    const result = await fetchAlbaranMaterialLineas(23210);
+
+    expect(result).toEqual([expect.objectContaining({
+      id: 53384,
+      posicion: 1,
+      articulo_id: 370,
+      descripcion: 'CC60x40x18',
+      cantidad: 100,
+      precio: 0.901,
+      importe: 87.4,
+    })]);
+    expect((invokeMock.mock.calls[0]?.[1] as { body?: { consulta?: string } })?.body?.consulta).toBe(
+      'albaranes/material/23210/lineas',
+    );
+  });
+
+  it('mantiene compatibilidad MA en facturas enlazadas mientras se promueve la nueva ruta', async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        data: null,
+        error: new Error('Ruta todavía no desplegada'),
+      } as never)
+      .mockResolvedValueOnce({
+        data: {
+          contract_version: 2,
+          ok: true,
+          data: {
+            items: [{
+              source_table: 'albmaterial',
+              source_id: 23210,
+              lines: [{
+                line_id: 53384,
+                position: 1,
+                article_id: 370,
+                description: 'CC60x40x18',
+                quantity: '100.0000',
+                unit_price: '0.901000',
+                amount: '87.40',
+              }],
+            }],
+          },
+        },
+        error: null,
+      } as never);
+
+    const result = await fetchAlbaranMaterialLineas(23210, 49305);
+
+    expect(result[0]).toMatchObject({
+      id: 53384,
+      descripcion: 'CC60x40x18',
+      importe: 87.4,
+    });
+    expect(invokeMock.mock.calls.map((call) =>
+      (call[1] as { body?: { consulta?: string } })?.body?.consulta)).toEqual([
+      'albaranes/material/23210/lineas',
+      'facturasrecibidas/49305/punteos?include_lines=true',
+    ]);
+  });
+
+  it('consulta y tipa las líneas vivas del albarán de entrada por su ID de cabecera', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          items: [{
+            id: 87097,
+            albaran_id: 82548,
+            linea: 0,
+            partida: 10843601,
+            genero_id: 161100,
+            genero_nombre: 'SANDIA MINI',
+            categoria_id: 0,
+            categoria_nombre: null,
+            categoria_calibre: null,
+            categoria_calibre_nombre: null,
+            envase_id: 701,
+            envase_nombre: 'BOX PEQUEÑO',
+            cultivo_id: 3966,
+            tipo_cultivo_id: 1,
+            tipo_cultivo_abreviatura: 'BIO',
+            tipo_cultivo_nombre: 'ECOLOGICO',
+            calidad_codigo: null,
+            kilos_brutos: '24225.00',
+            kilos_netos: '21194.00',
+            palets: 0,
+            bultos: 88,
+            piezas: 0,
+            precio: '0.00000',
+            importe: '0.00',
+          }],
+        },
+      },
+      error: null,
+    } as never);
+
+    const result = await fetchAlbaranEntradaLineas(82548);
+
+    expect(result).toEqual([expect.objectContaining({
+      id: 87097,
+      albaran_id: 82548,
+      partida: 10843601,
+      genero_nombre: 'SANDIA MINI',
+      tipo_cultivo_abreviatura: 'BIO',
+      tipo_cultivo_nombre: 'ECOLOGICO',
+      kilos_netos: 21194,
+      importe: 0,
+    })]);
+    expect(invokeMock).toHaveBeenCalledWith('facturas-recibidas-erp-read', {
+      body: expect.objectContaining({
+        contract_version: 2,
+        consulta: 'albaranes/entrada/82548/lineas',
+      }),
+    });
+  });
+
+  it('rechaza un ID técnico de albarán inválido sin llamar a la API', async () => {
+    await expect(fetchAlbaranEntradaLineas(0)).rejects.toThrow(
+      'El albarán no tiene una identidad ERP válida.',
+    );
+    await expect(fetchAlbaranMaterialLineas(0)).rejects.toThrow(
+      'El albarán de material no tiene una identidad ERP válida.',
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('exige seleccion manual cuando el nombre exacto normalizado es ambiguo', async () => {

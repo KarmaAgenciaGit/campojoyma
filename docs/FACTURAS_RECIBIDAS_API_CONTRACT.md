@@ -512,6 +512,24 @@ La respuesta es `{items, limit, offset, total}`.
 mutaciones. La evidencia disponible solo autoriza a leer vínculos GE ya
 existentes, no a proponer, seleccionar o enlazar nuevos albaranes de género.
 
+### Líneas MA bajo demanda
+
+El candidato FastAPI v0.2.4 incorpora:
+
+```http
+GET /albaranes/material/{material_id}/lineas
+```
+
+`material_id` es el `AMA_idalb` positivo de la cabecera `albmaterial`. La
+respuesta es `{items}` y conserva la proyección de `albmateriallineas`:
+artículo, descripción, referencia, cantidad, precios, descuento, plástico,
+importe, observaciones y unidad.
+
+El frontend consulta esta ruta únicamente al desplegar una fila MA y mantiene
+la respuesta en memoria durante esa vista. `punteables` sigue devolviendo solo
+cabeceras; el payload de guardado conserva `source_table`, `source_id` y, cuando
+aplica a GE, `albaran_id`, pero nunca persiste `lines` ni `source_lines`.
+
 ## Lectura del asiento
 
 ```http

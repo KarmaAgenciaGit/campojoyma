@@ -75,12 +75,40 @@ export interface FacturaRecibidaPunteoLinea {
   raw?: Record<string, unknown> | null;
 }
 
+export interface AlbaranEntradaLineaERP {
+  id: number;
+  albaran_id: number;
+  linea: number | null;
+  partida: number | null;
+  genero_id: number | null;
+  genero_nombre: string | null;
+  categoria_id: number | null;
+  categoria_nombre: string | null;
+  categoria_calibre: string | null;
+  categoria_calibre_nombre: string | null;
+  envase_id: number | null;
+  envase_nombre: string | null;
+  cultivo_id: number | null;
+  tipo_cultivo_id: number | null;
+  tipo_cultivo_abreviatura: string | null;
+  tipo_cultivo_nombre: string | null;
+  calidad_codigo: string | null;
+  kilos_brutos: number | null;
+  kilos_netos: number | null;
+  palets: number | null;
+  bultos: number | null;
+  piezas: number | null;
+  precio: number | null;
+  importe: number | null;
+}
+
 export interface FacturaRecibidaPunteo {
   id?: string;
   posicion: number;
   remote_id?: string | null;
   source_table?: string | null;
   source_id?: number | null;
+  albaran_id?: number | null;
   importe_factura?: number | null;
   origen: string | null;
   serie: string | null;
@@ -95,6 +123,7 @@ export interface FacturaRecibidaPunteo {
   proveedor_id?: number | null;
   cuenta_gasto?: string | null;
   line_count?: number | null;
+  lines_loaded?: boolean;
   lines?: FacturaRecibidaPunteoLinea[];
   raw?: Record<string, unknown> | null;
 }

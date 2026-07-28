@@ -120,6 +120,19 @@ Listado y detalle de facturas recibidas v0.2.2 exponen la identidad normalizada
 los campos especificos de acreedor y agricultor. Esta adenda describe el
 contrato del repositorio; su despliegue debe comprobarse por version y readback.
 
+## Adenda API v0.2.4: lineas MA bajo demanda (candidato local)
+
+El candidato v0.2.4 añade
+`GET /albaranes/material/{material_id}/lineas`. `material_id` es el
+`AMA_idalb` positivo del albaran `albmaterial`; la respuesta `{items}` reutiliza
+la proyeccion de `albmateriallineas` con articulo, descripcion, referencia,
+cantidad, precios, descuento, plastico, importe, observaciones y unidad.
+
+La ruta se consulta solo al desplegar una fila MA. El listado de punteables
+permanece formado por cabeceras y Supabase conserva unicamente la referencia
+estable; las lineas no se copian ni se incluyen en el contrato de escritura.
+El runtime vivo continua en v0.2.3 hasta promover y verificar este candidato.
+
 ## Adenda API v0.2.3: lineas de albaran de entrada (2026-07-28)
 
 La API v0.2.3 amplia de forma aditiva
@@ -312,6 +325,7 @@ recuento nuevo de toda la superficie:
 | `GET /facturasrecibidas_ctb?factura_id={id}` | Alias para consultar apuntes `FRC_*` por query string. |
 | `GET /facturasrecibidas/{factura_id}/punteos` | Punteos/gastos reales enlazados. V0.2.2 incluye GE desde `albentrada_his`/`albentrada_hislineas`, solo lectura, y distingue `importe_origen`, `importe_factura` e `importe_metodo`. |
 | `GET /albaranes-gastos/punteables` | Lista de gastos/albaranes punteables, por defecto pendientes de factura recibida. Filtros: `source_table`, `proveedor_id`, `empresa_id`, `fecha_desde`, `fecha_hasta`, `solo_pendientes`, `limit`, `offset`. |
+| `GET /albaranes/material/{material_id}/lineas` | Lineas MA bajo demanda por `AMA_idalb`; no amplia el listado de punteables. |
 | `GET /cuentas-contables` | Catalogo de cuentas con descripcion desde `contabilidad*.cuentas`. Filtros: `account_schema`, `q`, `cuenta`, `nif`, `limit`, `offset`. |
 | `GET /tipos-iva` | Catalogo de IVA desde `tiposivacli` y `tiposiva` si estuviera poblada. |
 | `GET /regimenes` | Catalogo observado de `FRR_idregimen`; no se ha encontrado tabla maestra poblada de regimenes. |
@@ -699,6 +713,7 @@ No confundir catalogos:
 | `GET /facturasrecibidas_ctb` | Query obligatorio `factura_id:int`; `schema` | Igual que la ruta `/ctb` | Alias por query string |
 | `GET /facturasrecibidas/{factura_id}/punteos` | `factura_id:int`, `schema`, `limit=200`, `offset=0`, `include_lines` | `{items,limit,offset,total}`; incluye lineas cuando se solicitan | Union de origenes ligados mas GE historico de solo lectura |
 | `GET /albaranes-gastos/punteables` | `schema`, `limit=50`, `offset=0`, `source_table`, `proveedor_id`, `empresa_id`, fechas, `solo_pendientes=true` | `{items,limit,offset,total}` | Misma union; por defecto solo registros sin factura recibida |
+| `GET /albaranes/material/{material_id}/lineas` | `material_id:int > 0`, `schema` | `{items}` con el detalle de compra del material | `albmateriallineas`; carga perezosa de un unico MA |
 | `POST /facturasrecibidas` | `schema`, `dry_run=true`, body JSON | Validacion o alta transaccional descrita abajo | Puede insertar cabecera/CTB y enlazar punteos en `netagrocomer` |
 
 Filtros de facturas recibidas:
@@ -867,6 +882,7 @@ escrito en produccion.
 | `GET /albaranes/salida` | `schema`, `limit=50`, `offset=0`, fechas, `cliente_id`, `factura_id`, `serie`, `numero` | `{items,limit,offset}` sin `total` | `albsalida` |
 | `GET /albaranes/salida/{albaran_id}` | `albaran_id:int`, `schema` | Todas las columnas `ASA_*`; `404` si no existe | `albsalida` |
 | `GET /albaranes/salida/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con genero, categoria, kilos, palets, bultos, piezas, precio e importe | `albsalida_lineas` |
+| `GET /albaranes/material/{material_id}/lineas` | `material_id:int > 0`, `schema` | `{items}` con articulo, descripcion, referencia, cantidades e importes | `albmateriallineas` |
 | `GET /albaranes/entrada` | `schema`, `limit=50`, `offset=0`, fechas, `agricultor_id`, `serie`, `numero` | `{items,limit,offset}`; campana, agricultor, punto de venta, centro, referencia y empresa | `albentrada` |
 | `GET /albaranes/entrada/{albaran_id}` | `albaran_id:int`, `schema` | Todas las columnas `AEN_*`; `404` si no existe | `albentrada` |
 | `GET /albaranes/entrada/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con `id`, `albaran_id`, `linea`, `partida`; genero, categoria/calibre, envase y tipo de cultivo con id y etiquetas; `cultivo_id` crudo, `calidad_codigo`, kilos, palets, bultos, piezas, precio e importe | `albentrada_lineas` + maestros `generos`, `categoriasentrada`, `envases`, `tipocultivo` |

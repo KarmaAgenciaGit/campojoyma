@@ -15,8 +15,9 @@ estado de homologación y los límites de la API se documentan en
 el OpenAPI verificable está en
 [openapi/netagro-test-api-v0.2.0.json](openapi/netagro-test-api-v0.2.0.json).
 El nombre del fichero se mantiene por compatibilidad; su contenido corresponde
-a la API v0.2.3, cuya ampliación de líneas de albarán de entrada se verificó
-contra el caso real `25 / A26 / 8436` el 28/07/2026.
+al candidato API v0.2.4. La ampliación de líneas de albarán de entrada se
+verificó contra el caso real `25 / A26 / 8436` el 28/07/2026. El runtime
+publicado continúa en v0.2.3 hasta que se promocione este candidato.
 
 La API de escritura sigue en modo <code>reference_only</code>. La copia de
 Netagro no expone el mecanismo oficial que crea el asiento ni permite verificar
@@ -212,6 +213,7 @@ Endpoints relevantes:
 | <code>GET /facturasrecibidas/{factura_id}/punteos</code> | Punteos ya ligados; en GE incluye histórico de entrada de solo lectura. |
 | <code>GET /albaranes/entrada</code> | Cabeceras vigentes de albaranes de género. |
 | <code>GET /albaranes/entrada/{albaran_id}/lineas</code> | Detalle logístico v0.2.3: línea, partida, género, categoría/calibre, envase, cultivo, tipo de cultivo, calidad, pesos, unidades, precio e importe. |
+| <code>GET /albaranes/material/{material_id}/lineas</code> | Candidato v0.2.4: líneas de un albarán de material por su identificador estable <code>AMA_idalb</code>. |
 
 Los listados responden con:
 
@@ -248,6 +250,15 @@ distintos. Ambas proceden de <code>tipocultivo</code>: `TCUL` es la abreviatura
 Para el albarán visible `8436`, la respuesta se obtiene con
 <code>/albaranes/entrada/82548/lineas</code> y devuelve la línea
 <code>87097</code>, partida <code>10843601</code>.
+
+Las líneas MA también se consultan bajo demanda. Supabase conserva únicamente
+la referencia estable del punteo (`source_table=albmaterial` y
+`source_id=AMA_idalb`), nunca una copia de las líneas. Hasta que el runtime
+v0.2.4 esté desplegado, el frontend mantiene compatibilidad para facturas ya
+ligadas recuperando las líneas desde
+<code>/facturasrecibidas/{factura_id}/punteos?include_lines=true</code>. Una vez
+disponible el endpoint específico, la consulta se hace directamente por
+<code>material_id</code>.
 
 La búsqueda interactiva de terceros debe ser acotada y con debounce. Tras
 seleccionar uno se consulta su detalle en el maestro correspondiente; no se

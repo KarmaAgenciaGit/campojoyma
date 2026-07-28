@@ -1884,6 +1884,14 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
       "include_lines",
     ]),
   },
+  {
+    path: /^albaranes\/entrada\/[1-9]\d*\/lineas$/,
+    keys: new Set(["schema"]),
+  },
+  {
+    path: /^albaranes\/material\/[1-9]\d*\/lineas$/,
+    keys: new Set(["schema"]),
+  },
 ];
 
 export const isAllowedERPConsulta = (consulta: string) => {

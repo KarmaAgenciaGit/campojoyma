@@ -484,8 +484,8 @@
   },
   "info": {
     "description": "API interna de la copia de pruebas de Netagro. El contrato v2 es aditivo; la contabilizacion queda bloqueada mientras no exista un mecanismo oficial de Netagro accesible desde esta copia.",
-    "title": "Netagro Test API v2 Staging",
-    "version": "0.2.3"
+    "title": "Netagro Test API",
+    "version": "0.2.4"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -1511,6 +1511,68 @@
           }
         },
         "summary": "Get Albaran Entrada Lineas"
+      }
+    },
+    "/albaranes/material/{material_id}/lineas": {
+      "get": {
+        "operationId": "get_albaran_material_lineas_albaranes_material__material_id__lineas_get",
+        "parameters": [
+          {
+            "description": "Identificador tecnico AMA_idalb del albaran de material.",
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "description": "Identificador tecnico AMA_idalb del albaran de material.",
+              "exclusiveMinimum": 0,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Albaran Material Lineas Albaranes Material  Material Id  Lineas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Albaran Material Lineas"
       }
     },
     "/albaranes/salida": {

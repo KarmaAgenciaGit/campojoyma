@@ -32,6 +32,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { FilterSelect, type FilterSelectOption } from '../components/FilterSelect';
 import { AcreedorCombobox } from '../components/AcreedorCombobox';
 import { AsientoContableTable } from '../components/facturas/AsientoContableTable';
+import { FacturaPunteosTable } from '../components/facturas/FacturaPunteosTable';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
@@ -44,8 +45,11 @@ import {
   type FacturaProveedorERPDetail,
   type FacturaCuentaOption,
   type FacturaRegimenOption,
+  fetchAlbaranEntradaLineas,
+  fetchAlbaranMaterialLineas,
   fetchFacturaCuentas,
   fetchFacturaPunteables,
+  fetchFacturaPunteosLive,
   fetchFacturaProveedorERPDetail,
   fetchFacturaRecibidaById,
   fetchFacturaRecibidaERPPayloadPreview,
@@ -1041,6 +1045,7 @@ const Facturas = () => {
   const [cuentas, setCuentas] = useState<FacturaCuentaOption[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [punteosLoading, setPunteosLoading] = useState(false);
+  const [punteoReferencesLoading, setPunteoReferencesLoading] = useState(false);
   const [punteosLoadError, setPunteosLoadError] = useState<string | null>(null);
   const [preflightIssues, setPreflightIssues] = useState<FacturaValidationIssue[]>([]);
   const [duplicateCandidate, setDuplicateCandidate] = useState<FacturaERPDuplicateCandidate | null>(null);
@@ -1049,6 +1054,7 @@ const Facturas = () => {
   const erpPayloadPreviewRunRef = useRef(0);
   const providerDetailRunRef = useRef(0);
   const punteablesRunRef = useRef(0);
+  const punteoReferencesRunRef = useRef(0);
   const activeProviderScopeRef = useRef('');
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
@@ -1067,6 +1073,10 @@ const Facturas = () => {
   const isNewFacturaDraft = Boolean(draft && !draft.id);
   const isDetailMode = Boolean(draft?.id && !modalOpen);
   const activeDraftId = draft?.id ?? null;
+  const activeRemoteFacturaId = (() => {
+    const parsed = Number(draft?.remote_frr_id ?? draft?.erp_factura_id ?? 0);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  })();
   const activePdfPath = draft?.pdf_path ?? null;
   const currentEditorSnapshot = useMemo(() => createEditorSnapshot(draft, lineas), [draft, lineas]);
   const hasUnsavedDetailChanges = Boolean(
@@ -1091,6 +1101,19 @@ const Facturas = () => {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }, [draft?.proveedor_codigo]);
   const detailIsReadOnly = isERPReadOnlyFactura(draft);
+  const pendingEntryReferenceIdentities = useMemo(
+    () =>
+      (draft?.punteos ?? [])
+        .filter((punteo) => {
+          const sourceTable = punteo.source_table?.trim().toLowerCase();
+          return (
+            ['albentrada', 'albentrada_his', 'albentrada_hisgastos'].includes(sourceTable ?? '') &&
+            !punteo.albaran_id
+          );
+        })
+        .map(punteoERPIdentity),
+    [draft?.punteos],
+  );
 
   useEffect(() => {
     const runId = historialRunRef.current + 1;
@@ -1336,6 +1359,69 @@ const Facturas = () => {
     loading,
     modalOpen,
   ]);
+
+  const loadPunteoReferences = useCallback(async () => {
+    if (!activeDraftId || !activeRemoteFacturaId || pendingEntryReferenceIdentities.length === 0) {
+      return;
+    }
+    const runId = punteoReferencesRunRef.current + 1;
+    punteoReferencesRunRef.current = runId;
+    const facturaId = activeDraftId;
+    const pendingIdentities = new Set(pendingEntryReferenceIdentities);
+    setPunteoReferencesLoading(true);
+    setPunteosLoadError(null);
+
+    try {
+      const livePunteos = await fetchFacturaPunteosLive(activeRemoteFacturaId);
+      if (punteoReferencesRunRef.current !== runId) return;
+      const liveByIdentity = new Map(
+        livePunteos.map((punteo) => [punteoERPIdentity(punteo), punteo]),
+      );
+      const hasResolvedReference = [...pendingIdentities].some((identity) => {
+        const albaranId = Number(liveByIdentity.get(identity)?.albaran_id);
+        return Number.isInteger(albaranId) && albaranId > 0;
+      });
+      if (!hasResolvedReference) {
+        throw new Error('El ERP no devolvió la referencia técnica de los albaranes vinculados.');
+      }
+
+      setDraft((current) => {
+        if (!current || current.id !== facturaId) return current;
+        return {
+          ...current,
+          punteos: (current.punteos ?? []).map((punteo) => {
+            const identity = punteoERPIdentity(punteo);
+            if (!pendingIdentities.has(identity)) return punteo;
+            const live = liveByIdentity.get(identity);
+            const albaranId = Number(live?.albaran_id);
+            if (!Number.isInteger(albaranId) || albaranId < 1) return punteo;
+            return {
+              ...punteo,
+              albaran_id: albaranId,
+            };
+          }),
+        };
+      });
+    } catch (error) {
+      if (punteoReferencesRunRef.current !== runId) return;
+      setPunteosLoadError(
+        getErrorMessage(error, 'No se pudieron recuperar las referencias ERP de los albaranes.'),
+      );
+    } finally {
+      if (punteoReferencesRunRef.current === runId) {
+        setPunteoReferencesLoading(false);
+      }
+    }
+  }, [activeDraftId, activeRemoteFacturaId, pendingEntryReferenceIdentities]);
+
+  useEffect(() => {
+    if (!detailIsReadOnly || pendingEntryReferenceIdentities.length === 0) return;
+    void loadPunteoReferences();
+    return () => {
+      punteoReferencesRunRef.current += 1;
+      setPunteoReferencesLoading(false);
+    };
+  }, [detailIsReadOnly, loadPunteoReferences, pendingEntryReferenceIdentities.length]);
 
   useEffect(() => {
     document.body.classList.add('facturas-iberica-shell');
@@ -3389,88 +3475,43 @@ const Facturas = () => {
                 {punteosLoadError ? (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
                     <span>{punteosLoadError}</span>
-                    {!isReadOnlyDetail ? (
-                      <button
-                        type="button"
-                        className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 bg-white px-3 text-xs font-bold hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900/60 dark:bg-amber-950/40"
-                        disabled={punteosLoading}
-                        onClick={() => void loadPunteables()}
-                      >
+                    <button
+                      type="button"
+                      className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 bg-white px-3 text-xs font-bold hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900/60 dark:bg-amber-950/40"
+                      disabled={isReadOnlyDetail ? punteoReferencesLoading : punteosLoading}
+                      onClick={() =>
+                        void (isReadOnlyDetail ? loadPunteoReferences() : loadPunteables())
+                      }
+                    >
+                      {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading) ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
                         <RefreshCw className="h-3.5 w-3.5" />
-                        Reintentar
-                      </button>
-                    ) : null}
+                      )}
+                      {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading)
+                        ? 'Recuperando...'
+                        : 'Reintentar'}
+                    </button>
                   </div>
                 ) : null}
 
-                {punteos.length > 0 ? (
-                  <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
-                    <table className="w-full min-w-[720px] text-left text-sm">
-                      <thead>
-                        <tr className="bg-slate-50 text-xs font-bold uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
-                          <th className="px-3 py-3">Origen</th>
-                          <th className="px-3 py-3">Serie</th>
-                          <th className="px-3 py-3">Albaran</th>
-                          <th className="px-3 py-3">Ref</th>
-                          <th className="px-3 py-3">Fecha</th>
-                          <th className="px-3 py-3 text-right">Importe P</th>
-                          <th className="px-3 py-3 text-right">Importe</th>
-                          <th className="px-3 py-3 text-center">S</th>
-                          <th className="px-3 py-3 text-center">Ver</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                        {punteos.map((punteo, index) => (
-                          <tr key={punteo.id ?? `${punteo.ref ?? 'punteo'}-${index}`} className="bg-white dark:bg-slate-950">
-                            <td className="px-3 py-3">{punteo.origen ?? '-'}</td>
-                            <td className="px-3 py-3">{punteo.serie ?? '-'}</td>
-                            <td className="px-3 py-3">{punteo.albaran ?? '-'}</td>
-                            <td className="px-3 py-3">{punteo.ref ?? '-'}</td>
-                            <td className="px-3 py-3">{formatDate(punteo.fecha)}</td>
-                            <td className="px-3 py-3 text-right">{formatMoney(punteo.importe_punteado)}</td>
-                            <td className="px-3 py-3 text-right">{formatMoney(punteo.importe)}</td>
-                            <td className="px-3 py-3 text-center">
-                              {isReadOnlyDetail ? (
-                                getPunteoSelected(punteo) ? 'Sí' : 'No'
-                              ) : (
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
-                                  checked={getPunteoSelected(punteo)}
-                                  onChange={(event) =>
-                                    updatePunteoSelected(punteoERPIdentity(punteo), event.target.checked)
-                                  }
-                                  aria-label={`Seleccionar punteo ${punteo.albaran ?? punteo.source_id ?? index + 1}`}
-                                />
-                              )}
-                            </td>
-                            <td className="px-3 py-3 text-center">{punteo.ver ? 'Si' : '-'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
-                          <td className="px-3 py-3" colSpan={5}>
-                            Total seleccionado: {punteosSeleccionados}
-                          </td>
-                          <td />
-                          <td className="px-3 py-3 text-right">{formatMoney(punteosTotal)}</td>
-                          <td colSpan={2} />
-                        </tr>
-                        <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-                          <td className="px-3 pb-3" colSpan={9}>
-                            Diferencia frente a base: {formatMoney(punteosBaseDifference)} · Diferencia frente a gastos:{' '}
-                            {formatMoney(punteosGastosDifference)}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-                    Sin albaranes/gastos para puntear recibidos desde API.
-                  </div>
-                )}
+                <FacturaPunteosTable
+                  punteos={punteos}
+                  readOnly={isReadOnlyDetail}
+                  selectedCount={punteosSeleccionados}
+                  selectedTotal={punteosTotal}
+                  baseDifference={punteosBaseDifference}
+                  expensesDifference={punteosGastosDifference}
+                  onSelectionChange={(punteo, selected) =>
+                    updatePunteoSelected(punteoERPIdentity(punteo), selected)
+                  }
+                  loadEntryLines={fetchAlbaranEntradaLineas}
+                  loadMaterialLines={(materialId) =>
+                    fetchAlbaranMaterialLineas(materialId, activeRemoteFacturaId)
+                  }
+                  formatMoney={formatMoney}
+                  formatDate={formatDate}
+                />
               </FieldGroup>
 
               {!isReadOnlyDetail || ctbLineas.length > 0 ? (

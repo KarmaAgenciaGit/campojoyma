@@ -4,6 +4,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 import { facturasRecibidas } from '@/services/facturasRecibidas';
 import type {
+  AlbaranEntradaLineaERP,
   FacturaRecibida as UiFacturaRecibida,
   FacturaRecibidaAccounting,
   FacturaRecibidaAsientoLinea,
@@ -600,6 +601,9 @@ const mapPunteoToUi = (punteo: ERPFacturaRecibida['punteos'][number]): FacturaRe
   remote_id: punteo.remote_id,
   source_table: punteo.source_table,
   source_id: punteo.source_id,
+  albaran_id:
+    readNumber(punteo as unknown as Record<string, unknown>, ['albaran_id'], null) ??
+    readNumber(asRecord(punteo.raw), ['albaran_id'], null),
   importe_factura: punteo.importe_factura,
   origen: punteo.Origen,
   serie: punteo.Serie,
@@ -614,6 +618,7 @@ const mapPunteoToUi = (punteo: ERPFacturaRecibida['punteos'][number]): FacturaRe
   proveedor_id: punteo.proveedor_id,
   cuenta_gasto: punteo.cuenta_gasto,
   line_count: punteo.line_count,
+  lines_loaded: false,
   lines: asRecordArray(punteo.source_lines).map(mapPunteoLinea),
   raw: asRecord(punteo.raw),
 });
@@ -800,6 +805,7 @@ const mapRemotePunteoToUi = (
   remote_id: readText(punteo, ['id_interno_estable', 'remote_id', 'id', 'ID'], null),
   source_table: readText(punteo, ['source_table'], null),
   source_id: readNumber(punteo, ['source_id'], null),
+  albaran_id: readNumber(punteo, ['albaran_id'], null),
   importe_factura: readNumber(punteo, ['importe_factura'], null),
   origen: readText(punteo, ['Origen', 'origen'], null),
   serie: readText(punteo, ['Serie', 'serie'], null),
@@ -814,6 +820,7 @@ const mapRemotePunteoToUi = (
   proveedor_id: readNumber(punteo, ['proveedor_id', 'FRR_idproveedor'], null),
   cuenta_gasto: readText(punteo, ['cuenta_gasto', 'FRR_ctagasto'], null),
   line_count: readNumber(punteo, ['line_count'], 0),
+  lines_loaded: Array.isArray(punteo.lines),
   lines: asRecordArray(punteo.lines).map(mapPunteoLinea),
   raw: Object.keys(asRecord(punteo.raw)).length > 0 ? asRecord(punteo.raw) : punteo,
 });
@@ -1074,6 +1081,7 @@ export const buildPunteosPayload = (punteos: FacturaRecibidaPunteo[] = []) =>
     remote_id: cleanText(punteo.remote_id),
     source_table: cleanText(punteo.source_table),
     source_id: numberValue(punteo.source_id, null),
+    albaran_id: numberValue(punteo.albaran_id, null),
     importe_factura: numberValue(punteo.importe_factura, null),
     Origen: cleanText(punteo.origen),
     Serie: cleanText(punteo.serie),
@@ -1816,6 +1824,120 @@ export const fetchFacturaPunteables = async (params: {
     ...mapRemotePunteoToUi(punteo, index, `candidate-${params.empresaId}-${params.proveedorId}`),
     seleccionado: false,
   }));
+};
+
+export const fetchFacturaPunteosLive = async (
+  facturaId: number,
+): Promise<FacturaRecibidaPunteo[]> => {
+  if (!Number.isInteger(facturaId) || facturaId < 1) {
+    throw new Error('La factura no tiene una identidad ERP válida.');
+  }
+
+  const response = await erpRead<{ items?: ERPReadPunteoRow[] }>(
+    `facturasrecibidas/${facturaId}/punteos?include_lines=false`,
+  );
+  if (!Array.isArray(response?.items)) {
+    throw new Error('La API no devolvió un listado válido de albaranes vinculados.');
+  }
+
+  return response.items.map((punteo, index) =>
+    mapRemotePunteoToUi(punteo, index, facturaId));
+};
+
+const mapAlbaranEntradaLineaERP = (
+  linea: ERPReadGenericRow,
+  requestedAlbaranId: number,
+): AlbaranEntradaLineaERP => {
+  const id = readNumber(linea, ['id'], null);
+  const albaranId = readNumber(linea, ['albaran_id'], null);
+  if (
+    id === null ||
+    !Number.isInteger(id) ||
+    id < 1 ||
+    albaranId === null ||
+    !Number.isInteger(albaranId) ||
+    albaranId !== requestedAlbaranId
+  ) {
+    throw new Error('La API devolvió una línea de albarán con una identidad no válida.');
+  }
+
+  return {
+    id,
+    albaran_id: albaranId,
+    linea: readNumber(linea, ['linea'], null),
+    partida: readNumber(linea, ['partida'], null),
+    genero_id: readNumber(linea, ['genero_id'], null),
+    genero_nombre: readText(linea, ['genero_nombre'], null),
+    categoria_id: readNumber(linea, ['categoria_id'], null),
+    categoria_nombre: readText(linea, ['categoria_nombre'], null),
+    categoria_calibre: readText(linea, ['categoria_calibre'], null),
+    categoria_calibre_nombre: readText(linea, ['categoria_calibre_nombre'], null),
+    envase_id: readNumber(linea, ['envase_id'], null),
+    envase_nombre: readText(linea, ['envase_nombre'], null),
+    cultivo_id: readNumber(linea, ['cultivo_id'], null),
+    tipo_cultivo_id: readNumber(linea, ['tipo_cultivo_id'], null),
+    tipo_cultivo_abreviatura: readText(linea, ['tipo_cultivo_abreviatura'], null),
+    tipo_cultivo_nombre: readText(linea, ['tipo_cultivo_nombre'], null),
+    calidad_codigo: readText(linea, ['calidad_codigo'], null),
+    kilos_brutos: readNumber(linea, ['kilos_brutos'], null),
+    kilos_netos: readNumber(linea, ['kilos_netos'], null),
+    palets: readNumber(linea, ['palets'], null),
+    bultos: readNumber(linea, ['bultos'], null),
+    piezas: readNumber(linea, ['piezas'], null),
+    precio: readNumber(linea, ['precio'], null),
+    importe: readNumber(linea, ['importe'], null),
+  };
+};
+
+export const fetchAlbaranEntradaLineas = async (
+  albaranId: number,
+): Promise<AlbaranEntradaLineaERP[]> => {
+  if (!Number.isInteger(albaranId) || albaranId < 1) {
+    throw new Error('El albarán no tiene una identidad ERP válida.');
+  }
+
+  const response = await erpRead<{ items?: ERPReadGenericRow[] }>(
+    `albaranes/entrada/${albaranId}/lineas`,
+  );
+  if (!Array.isArray(response?.items)) {
+    throw new Error('La API no devolvió un listado válido de líneas del albarán.');
+  }
+
+  return response.items.map((linea) => mapAlbaranEntradaLineaERP(linea, albaranId));
+};
+
+export const fetchAlbaranMaterialLineas = async (
+  materialId: number,
+  facturaId?: number | null,
+): Promise<FacturaRecibidaPunteoLinea[]> => {
+  if (!Number.isInteger(materialId) || materialId < 1) {
+    throw new Error('El albarán de material no tiene una identidad ERP válida.');
+  }
+
+  try {
+    const response = await erpRead<{ items?: ERPReadGenericRow[] }>(
+      `albaranes/material/${materialId}/lineas`,
+    );
+    if (!Array.isArray(response?.items)) {
+      throw new Error('La API no devolvió un listado válido de líneas del albarán.');
+    }
+    return response.items.map(mapPunteoLinea);
+  } catch (error) {
+    if (!Number.isInteger(facturaId) || Number(facturaId) < 1) throw error;
+
+    const response = await erpRead<{ items?: ERPReadPunteoRow[] }>(
+      `facturasrecibidas/${Number(facturaId)}/punteos?include_lines=true`,
+    );
+    const material = (Array.isArray(response?.items) ? response.items : []).find(
+      (punteo) =>
+        readText(punteo, ['source_table'], null)?.toLowerCase() === 'albmaterial' &&
+        readNumber(punteo, ['source_id'], null) === materialId,
+    );
+    if (!material || !Array.isArray(material.lines)) {
+      throw new Error('La API no devolvió las líneas del albarán solicitado.');
+    }
+    return asRecordArray(material.lines).map(mapPunteoLinea);
+  }
 };
 
 const validateFacturaPdf = (file: File) => {

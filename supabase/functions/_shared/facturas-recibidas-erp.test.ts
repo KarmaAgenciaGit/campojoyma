@@ -373,6 +373,7 @@ Deno.test("normaliza albmaterial con claves estables sin persistir lineas del ER
   const punteo = normalizePunteoPayload({
     source_table: "albmaterial",
     AMA_id: 49305,
+    albaran_id: 82548,
     Importe: "42.341,52",
     lines: [{ id: 1 }, { id: 2 }],
   }, 1);
@@ -383,6 +384,7 @@ Deno.test("normaliza albmaterial con claves estables sin persistir lineas del ER
   assertEquals(punteo.line_count, 2);
   assertEquals(punteo.source_lines, []);
   assertEquals("lines" in punteo.raw, false);
+  assertEquals(punteo.raw.albaran_id, 82548);
   assertEquals(punteo.S, false);
 });
 
@@ -953,6 +955,10 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "facturasrecibidas/49305/punteos?include_lines=true&limit=100",
     "facturasrecibidas/49305/asiento",
     "albaranes-gastos/punteables?empresa_id=1&proveedor_id=17&solo_pendientes=true&source_table=albmaterial&include_lines=true",
+    "albaranes/entrada/82548/lineas",
+    "albaranes/entrada/82548/lineas?schema=agroiris",
+    "albaranes/material/23210/lineas",
+    "albaranes/material/23210/lineas?schema=agroiris",
   ];
   for (const consulta of allowed) assert(isAllowedERPConsulta(consulta), consulta);
 
@@ -971,8 +977,42 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "facturasrecibidas?redirect=https://attacker.invalid",
     "facturasrecibidas/49305/asiento?include_lines=true",
     "albaranes-gastos/punteables?sql=drop",
+    "albaranes/entrada/no-numerico/lineas",
+    "albaranes/entrada/0/lineas",
+    "albaranes/entrada/82548/lineas?limit=1",
+    "albaranes/entrada/82548/lineas/extra",
+    "albaranes/material/no-numerico/lineas",
+    "albaranes/material/0/lineas",
+    "albaranes/material/23210/lineas?limit=1",
+    "albaranes/material/23210/lineas/extra",
   ];
   for (const consulta of denied) assert(!isAllowedERPConsulta(consulta), consulta);
+});
+
+Deno.test("lectura de lineas de entrada conserva el permiso exclusivo de facturas", () => {
+  assertEquals(getERPReadAuthorizedRoutes("albaranes/entrada/82548/lineas"), [
+    "/facturas-recibidas",
+  ]);
+  assert(
+    !isRouteSetAuthorized(
+      "authenticated",
+      ["/pedidos"],
+      getERPReadAuthorizedRoutes("albaranes/entrada/82548/lineas"),
+    ),
+  );
+});
+
+Deno.test("lectura de lineas de material conserva el permiso exclusivo de facturas", () => {
+  assertEquals(getERPReadAuthorizedRoutes("albaranes/material/23210/lineas"), [
+    "/facturas-recibidas",
+  ]);
+  assert(
+    !isRouteSetAuthorized(
+      "authenticated",
+      ["/pedidos"],
+      getERPReadAuthorizedRoutes("albaranes/material/23210/lineas"),
+    ),
+  );
 });
 
 Deno.test("readback CTB y punteos exige arrays o envelopes explicitos incluso vacios", () => {

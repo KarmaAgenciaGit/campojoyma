@@ -283,10 +283,10 @@ index 0000000..fa9d36c
 +        "error": None,
 +    }
 diff --git app/main.py app/main.py
-index 3676c6c..5bda030 100644
+index 3676c6c..9927116 100644
 --- app/main.py
 +++ app/main.py
-@@ -1,9 +1,15 @@
+@@ -1,17 +1,24 @@
  from __future__ import annotations
  
 +import hashlib
@@ -301,9 +301,11 @@ index 3676c6c..5bda030 100644
  from typing import Annotated, Any, Literal
 +from uuid import UUID
  
- from fastapi import FastAPI, HTTPException, Query
+-from fastapi import FastAPI, HTTPException, Query
++from fastapi import FastAPI, HTTPException, Path, Query
  from pydantic import BaseModel, ConfigDict, Field
-@@ -12,6 +18,7 @@ from .db import (
+ 
+ from .db import (
      DB_ALLOWED_ACCOUNT_SCHEMAS,
      DB_ALLOWED_SCHEMAS,
      DB_DEFAULT_SCHEMA,
@@ -343,9 +345,9 @@ index 3676c6c..5bda030 100644
 +
 +app = FastAPI(
 +    title=os.getenv("API_TITLE", "Netagro Test API"),
-+    # 0.2.3: lineas de entrada enriquecidas con las etiquetas que muestra el
-+    # ERP, manteniendo el contrato anterior de forma aditiva.
-+    version="0.2.3",
++    # 0.2.4: detalle de lineas MA bajo demanda, sin engordar el listado de
++    # punteables ni persistir copias de las lineas del ERP.
++    version="0.2.4",
 +    description=(
 +        "API interna de la copia de pruebas de Netagro. El contrato v2 es aditivo; "
 +        "la contabilizacion queda bloqueada mientras no exista un mecanismo oficial "
@@ -1257,9 +1259,9 @@ index 3676c6c..5bda030 100644
 +            ) AS line_count
 +        FROM {selected}.albmaterial m
 +        LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = m.AMA_idacreedor
-     """
- 
- 
++    """
++
++
 +def ge_allocated_invoice_amount_sql(selected: str) -> str:
 +    """Allocate the invoice base across linked GE receipts with exact cent totals.
 +
@@ -1412,9 +1414,9 @@ index 3676c6c..5bda030 100644
 +        ) allocation
 +            ON allocation.factura_recibida_id = h.AEH_idfacturafirme
 +        WHERE h.AEH_idfacturafirme = %(factura_id)s
-+    """
-+
-+
+     """
+ 
+ 
 +def attach_punteo_lines(
 +    selected: str,
 +    punteos: list[dict[str, Any]],
@@ -1874,11 +1876,30 @@ index 3676c6c..5bda030 100644
      ]
      | None = None,
      proveedor_id: int | None = None,
-@@ -1129,22 +2423,96 @@ def list_albaranes_gastos_punteables(
+@@ -1129,22 +2423,115 @@ def list_albaranes_gastos_punteables(
      return {"items": rows, "limit": limit, "offset": offset, "total": int(total_row["total"]) if total_row else 0}
  
  
 -@app.post("/facturasrecibidas")
++@app.get("/albaranes/material/{material_id}/lineas")
++def get_albaran_material_lineas(
++    material_id: Annotated[
++        int,
++        Path(
++            gt=0,
++            description="Identificador tecnico AMA_idalb del albaran de material.",
++        ),
++    ],
++    schema: Annotated[str | None, schema_query()] = None,
++) -> dict[str, Any]:
++    selected = quote_identifier(resolve_schema(schema))
++    [punteo] = attach_punteo_lines(
++        selected,
++        [{"source_table": "albmaterial", "source_id": material_id}],
++    )
++    return {"items": punteo["lines"]}
++
++
 +@app.post("/facturasrecibidas", response_model=FacturaRecibidaWriteResponse)
  def create_factura_recibida(
      payload: FacturaRecibidaCreateRequest,
@@ -1974,7 +1995,7 @@ index 3676c6c..5bda030 100644
  
      duplicate = None
      duplicate_fields = ("FRR_Idempresa", "FRR_ejercicio", "FRR_idproveedor", "FRR_numerofactura")
-@@ -1188,33 +2556,42 @@ def create_factura_recibida(
+@@ -1188,33 +2575,42 @@ def create_factura_recibida(
          )
          generated_numero = int(number_row["next_numero"]) if number_row else None
  
@@ -2041,7 +2062,7 @@ index 3676c6c..5bda030 100644
                  lock_row = cursor.fetchone()
                  if not lock_row or int(lock_row["got_lock"]) != 1:
                      raise HTTPException(status_code=409, detail="could not acquire invoice creation lock")
-@@ -1231,22 +2608,16 @@ def create_factura_recibida(
+@@ -1231,22 +2627,16 @@ def create_factura_recibida(
                  duplicate_row = cursor.fetchone()
                  if duplicate_row:
                      connection.rollback()
@@ -2074,7 +2095,7 @@ index 3676c6c..5bda030 100644
  
                  cursor.execute(f"SELECT COALESCE(MAX(FRR_id), 0) + 1 AS next_id FROM {selected}.facturasrecibidas")
                  generated_frr_id = int(cursor.fetchone()["next_id"])
-@@ -1284,7 +2655,7 @@ def create_factura_recibida(
+@@ -1284,7 +2674,7 @@ def create_factura_recibida(
                      next_frc_id += 1
  
                  for punteo in payload.punteos:
@@ -2083,7 +2104,7 @@ index 3676c6c..5bda030 100644
                      cursor.execute(
                          f"""
                          SELECT {id_column} AS source_id, {link_column} AS linked_invoice
-@@ -1340,25 +2711,43 @@ def create_factura_recibida(
+@@ -1340,25 +2730,43 @@ def create_factura_recibida(
                          }
                      )
  
@@ -2144,7 +2165,7 @@ index 3676c6c..5bda030 100644
  
  
  @app.get("/facturas")
-@@ -1691,20 +3080,41 @@ def get_albaran_entrada_lineas(
+@@ -1691,20 +3099,41 @@ def get_albaran_entrada_lineas(
      rows = fetch_all(
          f"""
          SELECT
