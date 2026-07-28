@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 
 export interface AgroIrisAcreedor {
   acreedorid: number;
@@ -40,6 +41,7 @@ export interface AcreedorSelectOption {
 }
 
 export type AcreedorSource = 'erp';
+export type ProveedorERPKind = 'acreedor' | 'agricultor';
 
 type ERPReadListResponse<T> = {
   items?: T[];
@@ -176,13 +178,16 @@ const isFalseyFlag = (value: unknown) => {
   return ['0', 'false', 'n', 'no'].includes(normalized);
 };
 
-const mapERPRow = (row: ERPAcreedorRow): AgroIrisAcreedor | null => {
+const mapERPRow = (
+  row: ERPAcreedorRow,
+  entityType: ProveedorERPKind = 'acreedor',
+): AgroIrisAcreedor | null => {
   const code = readNumber(row, ['ACR_Codigo', 'codigo', 'id', 'acreedor_id'], null);
   if (!code) return null;
 
   const name =
     readText(row, ['ACR_Nombre', 'nombre', 'nombre_comercial', 'razon_social'], null) ??
-    `Acreedor ${code}`;
+    `${entityType === 'agricultor' ? 'Proveedor' : 'Acreedor'} ${code}`;
   const nif = readText(row, ['ACR_Nif', 'nif', 'cif'], '');
   const cuenta = readText(row, ['cuenta_id', 'ACR_IdCuenta', 'ACR_Cuenta', 'cuenta', 'cuenta_contable'], null);
   const cuentaGasto = readText(row, ['cuenta_gasto', 'ACR_Cuentagasto', 'ACR_CuentaGasto'], null);
@@ -234,7 +239,9 @@ const mapERPRow = (row: ERPAcreedorRow): AgroIrisAcreedor | null => {
 
 class AgroIrisAcreedorService {
   private async getFunctionErrorMessage(error: unknown): Promise<string> {
-    const fallback = error instanceof Error ? error.message : 'Error consultando el ERP.';
+    const fallback = sanitizeUserFacingErrorMessage(
+      error instanceof Error ? error.message : 'Error consultando el ERP.',
+    );
     const context = isRecord(error) ? error.context : null;
     if (!context || typeof (context as { clone?: unknown }).clone !== 'function') return fallback;
 
@@ -247,28 +254,38 @@ class AgroIrisAcreedorService {
         const payload = JSON.parse(text) as unknown;
         if (isRecord(payload)) {
           const message = payload.error ?? payload.message ?? payload.details;
-          if (message !== undefined && message !== null && String(message).trim()) return String(message).trim();
+          if (message !== undefined && message !== null && String(message).trim()) {
+            return sanitizeUserFacingErrorMessage(String(message));
+          }
         }
       } catch {
         // Keep the raw text below.
       }
 
-      return text.trim() || fallback;
+      return text.trim() ? sanitizeUserFacingErrorMessage(text) : fallback;
     } catch {
       return fallback;
     }
   }
 
-  private async erpRead<T>(consulta: string): Promise<T> {
+  private async erpRead<T>(
+    consulta: string,
+    entityType: ProveedorERPKind = 'acreedor',
+  ): Promise<T> {
+    const entityLabel = entityType === 'agricultor' ? 'agricultores' : 'acreedores';
     const { data, error } = await supabase.functions.invoke(ERP_READ_FUNCTION, {
       body: { consulta },
     });
     if (error) {
       const details = await this.getFunctionErrorMessage(error);
-      throw new Error(`No se pudo consultar el ERP de acreedores: ${details}`);
+      throw new Error(`No se pudo consultar el ERP de ${entityLabel}: ${details}`);
     }
     if (data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string') {
-      throw new Error(`No se pudo consultar el ERP de acreedores: ${String((data as { error: string }).error)}`);
+      throw new Error(
+        `No se pudo consultar el ERP de ${entityLabel}: ${
+          sanitizeUserFacingErrorMessage(String((data as { error: string }).error))
+        }`,
+      );
     }
     return data as T;
   }
@@ -281,24 +298,32 @@ class AgroIrisAcreedorService {
     };
   }
 
-  private async searchAcreedoresERP(query: string, limit: number, offset: number): Promise<AgroIrisAcreedor[]> {
+  private async searchAcreedoresERP(
+    query: string,
+    limit: number,
+    offset: number,
+    entityType: ProveedorERPKind,
+  ): Promise<AgroIrisAcreedor[]> {
     const cleaned = query.trim();
     const pageSize = Math.min(Math.max(1, Math.trunc(limit)), MAX_ERP_ACREEDORES_PAGE_SIZE);
     const pageOffset = Math.max(0, Math.trunc(offset));
     const pagination = `limit=${encodeURIComponent(String(pageSize))}&offset=${encodeURIComponent(String(pageOffset))}&activo=true`;
+    const resource = entityType === 'agricultor' ? 'agricultores' : 'acreedores';
     const consultas = cleaned
       ? [
-          `acreedores?q=${encodeURIComponent(cleaned)}&${pagination}`,
-          `acreedores?nombre=${encodeURIComponent(cleaned)}&${pagination}`,
-          `acreedores?nif=${encodeURIComponent(cleaned)}&${pagination}`,
-          `acreedores?codigo=${encodeURIComponent(cleaned)}&${pagination}`,
+          `${resource}?q=${encodeURIComponent(cleaned)}&${pagination}`,
+          `${resource}?nombre=${encodeURIComponent(cleaned)}&${pagination}`,
+          `${resource}?nif=${encodeURIComponent(cleaned)}&${pagination}`,
+          `${resource}?codigo=${encodeURIComponent(cleaned)}&${pagination}`,
         ]
-      : [`acreedores?${pagination}`];
+      : [`${resource}?${pagination}`];
 
     for (const consulta of consultas) {
-      const payload = await this.erpRead<unknown>(consulta);
+      const payload = await this.erpRead<unknown>(consulta, entityType);
       const page = this.mapAcreedoresERPPage(payload);
-      const acreedores = (page.items ?? []).map(mapERPRow).filter((item): item is AgroIrisAcreedor => Boolean(item));
+      const acreedores = (page.items ?? [])
+        .map((row) => mapERPRow(row, entityType))
+        .filter((item): item is AgroIrisAcreedor => Boolean(item));
       if (acreedores.length > 0) {
         return acreedores;
       }
@@ -309,20 +334,37 @@ class AgroIrisAcreedorService {
 
   async searchAcreedores(
     query: string,
-    options: { limit?: number; offset?: number; source?: AcreedorSource } = {},
+    options: {
+      limit?: number;
+      offset?: number;
+      source?: AcreedorSource;
+      entityType?: ProveedorERPKind;
+    } = {},
   ): Promise<AgroIrisAcreedor[]> {
     const limit = options.limit ?? DEFAULT_ERP_ACREEDORES_PAGE_SIZE;
     const offset = options.offset ?? 0;
-    return this.searchAcreedoresERP(query, limit, offset);
+    return this.searchAcreedoresERP(
+      query,
+      limit,
+      offset,
+      options.entityType ?? 'acreedor',
+    );
   }
 
-  async getAcreedorById(acreedorid: number): Promise<AgroIrisAcreedor | null> {
+  async getAcreedorById(
+    acreedorid: number,
+    entityType: ProveedorERPKind = 'acreedor',
+  ): Promise<AgroIrisAcreedor | null> {
     const normalizedId = Math.trunc(Number(acreedorid));
     if (!Number.isFinite(normalizedId) || normalizedId <= 0) return null;
 
-    const payload = await this.erpRead<unknown>(`acreedores/${encodeURIComponent(String(normalizedId))}`);
+    const resource = entityType === 'agricultor' ? 'agricultores' : 'acreedores';
+    const payload = await this.erpRead<unknown>(
+      `${resource}/${encodeURIComponent(String(normalizedId))}`,
+      entityType,
+    );
     const [row] = extractRows<ERPAcreedorRow>(payload);
-    return row ? mapERPRow(row) : null;
+    return row ? mapERPRow(row, entityType) : null;
   }
 
   formatAcreedoresForSelect(acreedores: AgroIrisAcreedor[]): AcreedorSelectOption[] {

@@ -26,6 +26,10 @@ const acreedores = [
   { acreedorid: 102, nombre_comercial: 'APARTOTEL MELIA CASTILLA' },
   { acreedorid: 103, nombre_comercial: 'JAPANTA, S.L.' },
 ] as AgroIrisAcreedor[];
+const agricultor = {
+  acreedorid: 1957,
+  nombre_comercial: 'ALMERITERRA-BIO S.L.',
+} as AgroIrisAcreedor;
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
@@ -66,5 +70,26 @@ describe('AcreedorCombobox', () => {
 
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(101));
     expect(input).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('resuelve un proveedor GE contra agricultores aunque coincida el ID', async () => {
+    vi.mocked(agroirisAcreedores.getAcreedorById).mockResolvedValue(agricultor);
+
+    render(
+      <AcreedorCombobox
+        value={1957}
+        onChange={vi.fn()}
+        entityType="agricultor"
+        disabled
+      />,
+    );
+
+    await waitFor(() => {
+      expect(agroirisAcreedores.getAcreedorById).toHaveBeenCalledWith(
+        1957,
+        'agricultor',
+      );
+    });
+    expect(await screen.findByDisplayValue('ALMERITERRA-BIO S.L.')).toBeInTheDocument();
   });
 });

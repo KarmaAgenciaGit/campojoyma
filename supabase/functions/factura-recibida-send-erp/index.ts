@@ -163,8 +163,7 @@ Deno.serve(async (req) => {
     if (!jwtSecret || !readWebhookUrl || (!reconciliationMode && !writeWebhookUrl)) {
       return jsonResponse(
         {
-          error:
-            "Faltan secretos o URLs n8n requeridos para la operacion ERP.",
+          error: "Falta configuracion interna requerida para la operacion ERP.",
         },
         500,
       );
@@ -176,10 +175,16 @@ Deno.serve(async (req) => {
       parsedWriteUrl = writeWebhookUrl ? new URL(writeWebhookUrl) : null;
       parsedReadUrl = new URL(readWebhookUrl);
     } catch {
-      return jsonResponse({ error: "Las URLs n8n de lectura/escritura no son validas." }, 500);
+      return jsonResponse(
+        { error: "La configuracion de lectura/escritura ERP no es valida." },
+        500,
+      );
     }
     if ((parsedWriteUrl && parsedWriteUrl.protocol !== "https:") || parsedReadUrl.protocol !== "https:") {
-      return jsonResponse({ error: "Los webhooks n8n deben usar HTTPS." }, 500);
+      return jsonResponse(
+        { error: "Los servicios ERP configurados deben usar HTTPS." },
+        500,
+      );
     }
     if (parsedWriteUrl && parsedWriteUrl.toString() === parsedReadUrl.toString()) {
       return jsonResponse(
@@ -329,7 +334,7 @@ Deno.serve(async (req) => {
       const [headerRaw, ctbRaw, punteosRaw, accountingRaw] = await Promise.all([
         callRead(`facturasrecibidas/${remoteFacturaId}`),
         callRead(`facturasrecibidas/${remoteFacturaId}/ctb`),
-        callRead(`facturasrecibidas/${remoteFacturaId}/punteos?include_lines=true`),
+        callRead(`facturasrecibidas/${remoteFacturaId}/punteos?include_lines=false`),
         accountingRequested
           ? callRead(`facturasrecibidas/${remoteFacturaId}/asiento`)
           : Promise.resolve({ status: "not_requested" }),
@@ -1002,7 +1007,7 @@ Deno.serve(async (req) => {
       const [headerRaw, ctbRaw, punteosRaw, accountingRaw] = await Promise.all([
         callRead(`facturasrecibidas/${remoteFacturaId}`),
         callRead(`facturasrecibidas/${remoteFacturaId}/ctb`),
-        callRead(`facturasrecibidas/${remoteFacturaId}/punteos?include_lines=true`),
+        callRead(`facturasrecibidas/${remoteFacturaId}/punteos?include_lines=false`),
         accountingRequested
           ? callRead(`facturasrecibidas/${remoteFacturaId}/asiento`)
           : Promise.resolve({ status: "not_requested" }),

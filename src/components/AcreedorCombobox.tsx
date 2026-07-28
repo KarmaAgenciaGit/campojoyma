@@ -13,6 +13,7 @@ import {
   type AcreedorSelectOption,
   type AcreedorSource,
   type AgroIrisAcreedor,
+  type ProveedorERPKind,
 } from '@/services/agroirisAcreedores';
 
 interface AcreedorComboboxProps {
@@ -25,17 +26,19 @@ interface AcreedorComboboxProps {
   source?: AcreedorSource;
   minSearchLength?: number;
   searchLimit?: number;
+  entityType?: ProveedorERPKind;
 }
 
 export function AcreedorCombobox({
   value,
   onChange,
   onSelect,
-  placeholder = 'Seleccionar acreedor...',
+  placeholder,
   disabled = false,
   className,
   minSearchLength,
   searchLimit = 25,
+  entityType = 'acreedor',
 }: AcreedorComboboxProps) {
   const rootRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -52,6 +55,9 @@ export function AcreedorCombobox({
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const effectiveMinSearchLength = minSearchLength ?? 2;
   const effectiveSearchLimit = Math.min(Math.max(1, Math.trunc(searchLimit)), 50);
+  const entityLabel = entityType === 'agricultor' ? 'proveedor' : 'acreedor';
+  const entityLabelPlural = entityType === 'agricultor' ? 'proveedores' : 'acreedores';
+  const resolvedPlaceholder = placeholder ?? `Seleccionar ${entityLabel}...`;
 
   const selectedOption = React.useMemo(() => {
     return options.find((option) => option.value === value);
@@ -61,6 +67,15 @@ export function AcreedorCombobox({
   React.useEffect(() => {
     if (selectedOption) selectedOptionRef.current = selectedOption;
   }, [selectedOption]);
+
+  React.useEffect(() => {
+    selectedOptionRef.current = undefined;
+    setOptions([]);
+    setActiveValue(null);
+    setSearch('');
+    setEditingSearch(false);
+    setErrorMessage(null);
+  }, [entityType]);
 
   const keepOnlySelectedOption = React.useCallback(() => {
     setOptions((current) => {
@@ -76,32 +91,32 @@ export function AcreedorCombobox({
 
     let active = true;
     agroirisAcreedores
-      .getAcreedorById(value)
+      .getAcreedorById(value, entityType)
       .then((acreedor) => {
         if (!active) return;
         if (!acreedor) {
-          setErrorMessage('El acreedor guardado ya no está disponible en el ERP. Busca y selecciona otro proveedor.');
+          setErrorMessage(`El ${entityLabel} guardado ya no está disponible en el ERP. Busca y selecciona otro.`);
           return;
         }
         const [option] = agroirisAcreedores.formatAcreedoresForSelect([acreedor]);
         if (!option) {
-          setErrorMessage('El acreedor guardado no está operativo en el ERP. Busca y selecciona otro proveedor.');
+          setErrorMessage(`El ${entityLabel} guardado no está operativo en el ERP. Busca y selecciona otro.`);
           return;
         }
         setErrorMessage(null);
         setOptions((current) => (current.some((item) => item.value === option.value) ? current : [option, ...current]));
       })
       .catch((error) => {
-        console.error(`Error obteniendo acreedor ${value}:`, error);
+        console.error(`Error obteniendo ${entityLabel} ${value}:`, error);
         if (active) {
-          setErrorMessage(error instanceof Error ? error.message : 'No se pudo consultar el acreedor en el ERP.');
+          setErrorMessage(error instanceof Error ? error.message : `No se pudo consultar el ${entityLabel} en el ERP.`);
         }
       });
 
     return () => {
       active = false;
     };
-  }, [selectedOption, value]);
+  }, [entityLabel, entityType, selectedOption, value]);
 
   React.useEffect(() => {
     const requestId = searchRequestRef.current + 1;
@@ -132,7 +147,11 @@ export function AcreedorCombobox({
     keepOnlySelectedOption();
     const timeout = window.setTimeout(() => {
       agroirisAcreedores
-        .searchAcreedores(cleaned, { limit: effectiveSearchLimit, offset: 0 })
+        .searchAcreedores(cleaned, {
+          limit: effectiveSearchLimit,
+          offset: 0,
+          entityType,
+        })
         .then((acreedores) => {
           if (!active || requestId !== searchRequestRef.current) return;
           const found = agroirisAcreedores.formatAcreedoresForSelect(acreedores);
@@ -142,10 +161,10 @@ export function AcreedorCombobox({
           });
         })
         .catch((error) => {
-          console.error('Error buscando acreedores en ERP:', error);
+          console.error(`Error buscando ${entityLabelPlural} en ERP:`, error);
           if (active && requestId === searchRequestRef.current) {
             setOptions([]);
-            setErrorMessage(error instanceof Error ? error.message : 'No se pudo consultar el listado de acreedores.');
+            setErrorMessage(error instanceof Error ? error.message : `No se pudo consultar el listado de ${entityLabelPlural}.`);
           }
         })
         .finally(() => {
@@ -157,7 +176,17 @@ export function AcreedorCombobox({
       active = false;
       window.clearTimeout(timeout);
     };
-  }, [effectiveMinSearchLength, effectiveSearchLimit, keepOnlySelectedOption, open, search, selectedSearchLabel, value]);
+  }, [
+    effectiveMinSearchLength,
+    effectiveSearchLimit,
+    entityLabelPlural,
+    entityType,
+    keepOnlySelectedOption,
+    open,
+    search,
+    selectedSearchLabel,
+    value,
+  ]);
 
   const filteredOptions = React.useMemo(() => {
     if (!search) return options;
@@ -190,7 +219,7 @@ export function AcreedorCombobox({
     errorMessage ??
     (search.trim().length < effectiveMinSearchLength
       ? `Escribe al menos ${effectiveMinSearchLength} caracteres.`
-      : 'No se encontraron acreedores.');
+      : `No se encontraron ${entityLabelPlural}.`);
   const displayValue = open ? (editingSearch ? search : selectedOption?.label ?? '') : selectedOption?.label ?? '';
   const showFieldLoader = loading && open && (editingSearch || !selectedOption);
 
@@ -235,14 +264,14 @@ export function AcreedorCombobox({
     setLoading(true);
     setErrorMessage(null);
     try {
-      const acreedor = await agroirisAcreedores.getAcreedorById(option.value);
+      const acreedor = await agroirisAcreedores.getAcreedorById(option.value, entityType);
       if (!acreedor) {
-        throw new Error('El acreedor ya no está disponible en el ERP. Actualiza la búsqueda e inténtalo de nuevo.');
+        throw new Error(`El ${entityLabel} ya no está disponible en el ERP. Actualiza la búsqueda e inténtalo de nuevo.`);
       }
 
       const [detailOption] = agroirisAcreedores.formatAcreedoresForSelect([acreedor]);
       if (!detailOption) {
-        throw new Error('El acreedor no está operativo en el ERP. Selecciona otro proveedor.');
+        throw new Error(`El ${entityLabel} no está operativo en el ERP. Selecciona otro.`);
       }
 
       selectedOptionRef.current = detailOption;
@@ -252,9 +281,9 @@ export function AcreedorCombobox({
       closeSearch();
       inputRef.current?.blur();
     } catch (error) {
-      console.error(`Error validando acreedor ${option.value} en ERP:`, error);
+      console.error(`Error validando ${entityLabel} ${option.value} en ERP:`, error);
       setOptions([]);
-      setErrorMessage(error instanceof Error ? error.message : 'No se pudo consultar el acreedor en el ERP.');
+      setErrorMessage(error instanceof Error ? error.message : `No se pudo consultar el ${entityLabel} en el ERP.`);
       setOpen(true);
       setEditingSearch(true);
     } finally {
@@ -310,7 +339,7 @@ export function AcreedorCombobox({
           }
           disabled={disabled}
           value={displayValue}
-          placeholder={showFieldLoader && !search ? 'Cargando acreedores...' : placeholder}
+          placeholder={showFieldLoader && !search ? `Cargando ${entityLabelPlural}...` : resolvedPlaceholder}
           className="h-full min-w-0 flex-1 bg-transparent pl-7 pr-8 font-[inherit] text-inherit outline-none placeholder:text-slate-400 disabled:cursor-not-allowed dark:placeholder:text-slate-500"
           onFocus={openSearch}
           onChange={(event) => {

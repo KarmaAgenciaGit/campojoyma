@@ -78,7 +78,12 @@ const warningTexts = (...sources: unknown[]): string[] => {
 const normalizeN8nResponse = (raw: unknown): NormalizedExtraction => {
   const rawObject = asObject(raw);
   if (rawObject.ok === false) {
-    throw new Error(text(pick(rawObject, ["error", "message"]), "n8n no pudo extraer la factura")!);
+    throw new Error(
+      text(
+        pick(rawObject, ["error", "message"]),
+        "El servicio de analisis no pudo extraer la factura",
+      )!,
+    );
   }
 
   const root = asObject(rawObject.ingest_payload ?? rawObject.payload ?? rawObject.output ?? rawObject);
@@ -119,7 +124,7 @@ const readResponseJson = async (response: Response): Promise<unknown> => {
   try {
     return JSON.parse(rawText);
   } catch {
-    throw new Error(`n8n devolvio una respuesta no JSON (${response.status})`);
+    throw new Error(`El servicio de analisis devolvio una respuesta no valida (${response.status})`);
   }
 };
 
@@ -238,7 +243,7 @@ Deno.serve(async (req) => {
         {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
-          error: "n8n no pudo extraer la factura",
+          error: "El servicio de analisis no pudo extraer la factura",
           status: webhookResponse.status,
           details: webhookJson,
         },

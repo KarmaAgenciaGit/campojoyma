@@ -9,6 +9,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AlertTriangle, CheckCircle2, Clock, Loader2, Mail, RefreshCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { formatDateSafe, parseDateSafe } from '@/utils/dateSafe';
+import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 import { addDays, startOfDay, subDays } from 'date-fns';
 
  type AppError = {
@@ -60,13 +61,13 @@ const useErroresApp = () => {
         created_at: item.created_at ?? null,
         email: item.email ?? null,
         subject: item.subject ?? 'Sin asunto',
-        error: item.error ?? 'Sin descripción',
+        error: sanitizeUserFacingErrorMessage(item.error ?? 'Sin descripción'),
         revisado: Boolean(item.revisado),
       })));
     } catch (error) {
       console.error('Error cargando errores:', error);
       const message = error instanceof Error ? error.message : 'No se pudo obtener el listado de errores.';
-      setFetchError(message);
+      setFetchError(sanitizeUserFacingErrorMessage(message));
       setErrors([]);
     } finally {
       setLoading(false);
@@ -153,7 +154,9 @@ const Errors = () => {
     } catch (error) {
       toast({
         title: 'Aviso',
-        description: error instanceof Error ? error.message : 'Intenta nuevamente.',
+        description: sanitizeUserFacingErrorMessage(
+          error instanceof Error ? error.message : 'Intenta nuevamente.',
+        ),
       });
     } finally {
       setReviewingId(null);
@@ -173,7 +176,9 @@ const Errors = () => {
     } catch (error) {
       toast({
         title: 'Aviso',
-        description: error instanceof Error ? error.message : 'Intenta nuevamente.',
+        description: sanitizeUserFacingErrorMessage(
+          error instanceof Error ? error.message : 'Intenta nuevamente.',
+        ),
       });
     } finally {
       setDeletingId(null);

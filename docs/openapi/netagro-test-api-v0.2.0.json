@@ -485,7 +485,7 @@
   "info": {
     "description": "API interna de la copia de pruebas de Netagro. El contrato v2 es aditivo; la contabilizacion queda bloqueada mientras no exista un mecanismo oficial de Netagro accesible desde esta copia.",
     "title": "Netagro Test API v2 Staging",
-    "version": "0.2.0"
+    "version": "0.2.2"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3743,6 +3743,42 @@
               ],
               "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
               "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 2,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Optional accounting schema to inspect: contabilidad, contabilidad_10, contabilidad_11, contabilidad_12, contabilidad_13, contabilidad_14, contabilidad_15, contabilidad_2, contabilidad_6, contabilidad_7, contabilidad_99",
+            "in": "query",
+            "name": "account_schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional accounting schema to inspect: contabilidad, contabilidad_10, contabilidad_11, contabilidad_12, contabilidad_13, contabilidad_14, contabilidad_15, contabilidad_2, contabilidad_6, contabilidad_7, contabilidad_99",
+              "title": "Account Schema"
             }
           }
         ],

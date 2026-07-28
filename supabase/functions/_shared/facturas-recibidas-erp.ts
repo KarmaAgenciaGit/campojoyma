@@ -845,6 +845,9 @@ export const normalizeFrcPayload = (
 export const normalizePunteoPayload = (input: JsonObject, position: number) => {
   const sourceLinesValue = pick(input, ["source_lines", "lines", "lineas"], []);
   const sourceLines = Array.isArray(sourceLinesValue) ? sourceLinesValue : [];
+  const rawWithoutSourceLines = Object.fromEntries(
+    Object.entries(input).filter(([key]) => !["source_lines", "lines", "lineas"].includes(key)),
+  );
   const rawSourceTable = text(pick(input, ["source_table", "tabla_origen", "tabla"]), null);
   return {
     posicion: integerValue(pick(input, ["posicion", "position"]), position) ?? position,
@@ -868,8 +871,8 @@ export const normalizePunteoPayload = (input: JsonObject, position: number) => {
     proveedor_id: integerValue(pick(input, ["proveedor_id", "FRR_idproveedor"]), null),
     cuenta_gasto: text(pick(input, ["cuenta_gasto", "FRR_ctagasto"]), null),
     line_count: integerValue(pick(input, ["line_count", "numero_lineas"]), sourceLines.length) ?? sourceLines.length,
-    source_lines: sourceLines,
-    raw: input,
+    source_lines: [],
+    raw: rawWithoutSourceLines,
   };
 };
 

@@ -12,10 +12,26 @@ Referencias:
 - [OpenAPI FastAPI v0.2.0](openapi/netagro-test-api-v0.2.0.json)
 - [Runbook de homologación y despliegue](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
+- [Agente de extracción v3 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
+
+El nombre del fichero OpenAPI se conserva por compatibilidad, pero su contenido
+se ha regenerado desde la API v0.2.2. La resolución canónica del proveedor y la
+lectura de albaranes GE quedaron desplegadas y verificadas mediante readback el
+28/07/2026.
 
 ## Principios del modelo
 
 - La factura es el documento recibido del proveedor.
+- `FRR_tipofactura` identifica el circuito de la factura. En la evidencia
+  contrastada, `GE` corresponde a `Compras de Género` y resuelve el tercero en
+  `agricultores`; `OT` y los demás tipos muestreados corresponden al circuito de
+  acreedores.
+- `Origen` identifica la familia del albarán o gasto punteado y es un eje
+  diferente. Una factura `OT` puede contener punteos `MA`; nunca se copia
+  `Origen` a `FRR_tipofactura`.
+- `FRR_idproveedor` no es global entre maestros: un mismo número puede existir
+  en `acreedores` y `agricultores`. Toda lectura debe conservar el tipo de
+  entidad y resolver por el maestro correcto.
 - Los campos `FRR_igasto*/FRR_ctagasto*` son las cuatro posiciones de gasto de la
   cabecera.
 - Las filas `FRC_*` son el desglose CTB real. No se fabrican a partir de los gastos.
@@ -73,6 +89,13 @@ ellas:
 - Forma de pago, banco, cartera, suplidos y agricultor a descontar.
 - Concepto de asiento, observaciones generales y observaciones AEAT.
 - Controles ERP `S/N`, total y datos de cartera.
+
+Campojoyma confirmó el 28/07/2026 que `Agricultor descontar` no se utiliza.
+`FRR_IdAgricultorDto` continúa en las 74 columnas por compatibilidad con el
+contrato físico, pero no se expone como dato editable ni se deduce en el
+frontend. El payload hacia Netagro conserva el valor neutro requerido por el
+contrato. La evidencia está en
+[la carpeta funcional del 28/07/2026](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/).
 
 Campos mínimos para detectar duplicados:
 
@@ -155,6 +178,11 @@ facturas_gastos
 albarancoste
 albmaterial
 ```
+
+`albentrada_his` no se admite en este catálogo de escritura. En v0.2.2 se
+consulta únicamente para reconstruir los albaranes de género que Netagro ya
+ligó a una factura mediante `AEH_idfacturafirme`; no es un candidato ni puede
+enviarse en `punteos`.
 
 Reglas:
 
@@ -340,7 +368,22 @@ si el intento requiere intervención manual.
 GET /facturasrecibidas/{factura_id}
 ```
 
-Devuelve las columnas ERP completas y datos auxiliares del acreedor.
+Desde v0.2.2, listado y detalle devuelven las columnas ERP junto a una identidad
+normalizada:
+
+```text
+proveedor_tipo
+proveedor_id
+proveedor_nombre
+proveedor_nif
+acreedor_id / acreedor_nombre / acreedor_nif
+agricultor_id / agricultor_nombre / agricultor_nif
+```
+
+Para `FRR_tipofactura="GE"`, el proveedor canónico se obtiene de
+`agricultores`; para los demás tipos observados, de `acreedores`. Los campos
+específicos del maestro no aplicable quedan a `null`. Esto evita falsos matches
+cuando ambos maestros contienen el mismo identificador numérico.
 
 ### CTB
 
@@ -415,7 +458,34 @@ Respuesta:
 ```
 
 `lines` solo se incorpora cuando `include_lines=true`. Para fuentes distintas de MA
-es `[]`; `line_count` sigue disponible.
+o GE es `[]`; `line_count` sigue disponible.
+
+La API v0.2.2 añade a esta lectura los albaranes GE ya vinculados:
+
+- `source_table="albentrada_his"` y `Origen="GE"`;
+- enlace histórico por `AEH_idfacturafirme=FRR_id`;
+- referencia a la cabecera mediante `AEH_idalbaran`;
+- líneas leídas de `albentrada_hislineas` cuando `include_lines=true`;
+- proveedor canónico de tipo `agricultor`.
+
+Estas filas exponen tres importes con semántica explícita:
+
+- `importe_origen`: base registrada en el histórico del albarán;
+- `importe_factura`: parte de la base de la factura atribuida a esa fila;
+- `importe_metodo`: `base_historica` o `prorrateo_base_factura`.
+
+Cuando la suma histórica difiere de la base de la factura, v0.2.2 reparte esta
+última proporcionalmente y conserva ambos importes; no sobrescribe ni
+reinterpreta el histórico. La suma de `importe_factura` representa la factura y
+la de `importe_origen` conserva la evidencia ERP. Para evitar residuos por
+redondeo en GE multi-albarán, todas las filas salvo la de mayor `AEH_id` se
+redondean a céntimos y esa última absorbe la diferencia; así la suma coincide
+exactamente con la base de la factura.
+
+En los orígenes legacy `albsalida_gastos` y `facturas_gastos`,
+`importe_origen` conserva el gasto bruto (`Importe`) e `importe_factura` usa el
+importe realmente asignado (`Importe P`). En ese caso
+`importe_metodo=importe_asignado_factura`.
 
 ### Candidatos
 
@@ -437,6 +507,10 @@ offset
 ```
 
 La respuesta es `{items, limit, offset, total}`.
+
+`albentrada_his` queda expresamente fuera de este endpoint y de todas las
+mutaciones. La evidencia disponible solo autoriza a leer vínculos GE ya
+existentes, no a proponer, seleccionar o enlazar nuevos albaranes de género.
 
 ## Lectura del asiento
 
@@ -500,7 +574,8 @@ Operaciones principales:
 | `GET /acreedores` | Búsqueda por NIF, texto o código. |
 | `GET /acreedores/{id}` | Detalle del acreedor. |
 | `GET /acreedores/{id}/gastos` | Reglas/cuentas de gasto del acreedor. |
-| `GET /agricultores` | Fallback explícito para productores; no se mezcla su identidad con acreedores. |
+| `GET /agricultores` | Búsqueda explícita de productores; no se mezcla su identidad con acreedores. |
+| `GET /agricultores/{id}` | Detalle autoritativo del agricultor. |
 | `GET /agricultores/{id}/gastos` | Gastos configurados para agricultor. |
 | `GET /empresas` | Empresas disponibles. |
 | `GET /cuentas-contables` | Cuenta, descripción, NIF, contrapartida, IVA, IRPF, pago y banco. |
@@ -511,7 +586,9 @@ Operaciones principales:
 | `GET /series-factura` | Series auxiliares; no mapear automáticamente a tipo de factura. |
 | `GET /conceptos-factura` | Conceptos auxiliares; no sustituir automáticamente `FRR_Concepto`. |
 
-El OpenAPI enlazado es la fuente para filtros, límites y esquemas exactos.
+El OpenAPI enlazado sigue siendo la fuente de la superficie v0.2.0. Para los
+campos canónicos de proveedor y la lectura GE añadidos en v0.2.2 prevalece este
+contrato hasta regenerar y sincronizar la instantánea OpenAPI.
 
 ## Errores y códigos HTTP
 
@@ -563,12 +640,14 @@ El workflow exportado:
 ## Estado operativo actual
 
 - API activa: v0.1.0 en `karma-box:8000`, expuesta al VPS por `18000`.
-- API v2 staging: v0.2.0 en `karma-box:8001`, solo loopback.
-- El túnel no permite todavía el destino `8001`.
+- API v2 activa: v0.2.2 en `karma-box:8001`, expuesta al VPS por `18001`, con
+  proveedor canónico y lectura GE histórica de solo lectura.
+- El despliegue se verificó por versión, `/health`, readback de los casos
+  `FRR_id=49489`, `49310` y `49305`, suite de 43 pruebas y gate de grants.
 - Workflow v2 importado pero `active=false`.
 - Escritura MA deshabilitada por falta de grants.
 - Contabilización v2 bloqueada por ausencia del mecanismo oficial y del diario.
 - Producción no se ha modificado.
 
-La activación, recuperación, promoción futura y rollback están detallados en el
+La recuperación, futuras promociones y rollback están detallados en el
 [runbook](FACTURAS_RECIBIDAS_API_V2_STAGING.md).

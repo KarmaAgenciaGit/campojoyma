@@ -1,6 +1,7 @@
 import { supabase } from '@/integrations/supabase/client';
 import type { Tables } from '@/integrations/supabase/types';
-import { FACTURA_RECIBIDA_INBOX_SOURCE_KINDS } from '@/types/facturasRecibidas';
+import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
+import { FACTURA_RECIBIDA_NON_INBOX_SOURCE_KINDS } from '@/types/facturasRecibidas';
 import type {
   FacturaRecibida,
   FacturaRecibidaAsiento,
@@ -53,7 +54,9 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
 const getFunctionErrorMessage = (data: unknown): string | null => {
   if (!data || typeof data !== 'object') return null;
   const error = (data as { error?: unknown }).error;
-  return typeof error === 'string' ? error : null;
+  return typeof error === 'string'
+    ? sanitizeUserFacingErrorMessage(error)
+    : null;
 };
 
 const isReconciliationRequiredResponse = (data: unknown): boolean => {
@@ -67,7 +70,7 @@ const asValidationErrors = (value: unknown): FacturaValidationIssue[] => {
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .map((item): FacturaValidationIssue => ({
       field: String(item.field ?? ''),
-      message: String(item.message ?? ''),
+      message: sanitizeUserFacingErrorMessage(String(item.message ?? '')),
       severity: item.severity === 'warning' ? 'warning' : 'error',
     }))
     .filter((item) => item.field || item.message);
@@ -173,7 +176,9 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   duplicada_de: row.duplicada_de ?? null,
   erp_sent_at: row.erp_sent_at ?? null,
   erp_response: row.erp_response ?? null,
-  erp_error: row.erp_error ?? null,
+  erp_error: row.erp_error
+    ? sanitizeUserFacingErrorMessage(row.erp_error)
+    : null,
   row_version: row.row_version ?? 1,
   sync_status: row.sync_status ?? null,
   accounting_status: row.accounting_status ?? null,
@@ -282,7 +287,11 @@ class FacturasRecibidasService {
     let query = supabase
       .from('facturasrecibidas')
       .select('*, facturasrecibidas_ctb(*), facturasrecibidas_punteos(*)', { count: 'exact' })
-      .in('source_kind', [...FACTURA_RECIBIDA_INBOX_SOURCE_KINDS]);
+      .not(
+        'source_kind',
+        'in',
+        `(${FACTURA_RECIBIDA_NON_INBOX_SOURCE_KINDS.join(',')})`,
+      );
 
     if (filters.estado && filters.estado !== 'all') {
       query = query.eq('estado', filters.estado);

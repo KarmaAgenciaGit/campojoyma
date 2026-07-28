@@ -1,6 +1,7 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
 import { supabase } from '@/integrations/supabase/client';
+import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 import { facturasRecibidas } from '@/services/facturasRecibidas';
 import type {
   FacturaRecibida as UiFacturaRecibida,
@@ -201,7 +202,7 @@ const mapPunteoLinea = (linea: Record<string, unknown>, index: number): FacturaR
   importe: readNumber(linea, ['amount', 'importe', 'total'], null),
   observaciones: readText(linea, ['observations', 'observaciones'], null),
   unidad_id: firstValue(linea, ['unit_id', 'unidad_id']) as string | number | null,
-  raw: asRecord(linea.raw),
+  raw: Object.keys(asRecord(linea.raw)).length > 0 ? asRecord(linea.raw) : linea,
 });
 
 const mapAccountingEntry = (
@@ -259,7 +260,10 @@ const mapAccounting = (
     total_debe: readNumber(accounting, ['total_debit', 'total_debe'], lines.length ? calculatedDebit : null),
     total_haber: readNumber(accounting, ['total_credit', 'total_haber'], lines.length ? calculatedCredit : null),
     lines,
-    error: readText(accounting, ['error'], null),
+    error: (() => {
+      const message = readText(accounting, ['error'], null);
+      return message ? sanitizeUserFacingErrorMessage(message) : null;
+    })(),
   };
 };
 
@@ -367,8 +371,9 @@ export const normalizeFacturaValidationIssues = (value: unknown): FacturaValidat
     const record = typeof rawIssue === 'object' && rawIssue !== null && !Array.isArray(rawIssue)
       ? (rawIssue as Record<string, unknown>)
       : null;
-    const message = cleanText(record?.message ?? rawIssue);
-    if (!message) continue;
+    const rawMessage = cleanText(record?.message ?? rawIssue);
+    if (!rawMessage) continue;
+    const message = sanitizeUserFacingErrorMessage(rawMessage);
 
     const code = cleanText(record?.code);
     const field = cleanText(record?.field) ?? '_global';
@@ -695,7 +700,9 @@ export const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida =
   erp_last_attempt_at: null,
   erp_sent_at: factura.erp_sent_at,
   erp_response: factura.erp_response as Record<string, unknown> | null,
-  erp_error: factura.erp_error,
+  erp_error: factura.erp_error
+    ? sanitizeUserFacingErrorMessage(factura.erp_error)
+    : null,
   erp_payload: null,
   erp_factura_id: factura.FRR_id ? String(factura.FRR_id) : null,
   source_kind: factura.source_kind,
@@ -784,9 +791,13 @@ const mapRemotePunteoToUi = (
   index: number,
   facturaId: number | string,
 ): FacturaRecibidaPunteo => ({
-  id: `${ERP_REMOTE_ID_PREFIX}punteo:${readText(punteo, ['remote_id', 'id', 'ID'], `${facturaId}-${index + 1}`)}`,
+  id: `${ERP_REMOTE_ID_PREFIX}punteo:${readText(
+    punteo,
+    ['id_interno_estable', 'remote_id', 'id', 'ID'],
+    `${facturaId}-${index + 1}`,
+  )}`,
   posicion: index + 1,
-  remote_id: readText(punteo, ['remote_id', 'id', 'ID'], null),
+  remote_id: readText(punteo, ['id_interno_estable', 'remote_id', 'id', 'ID'], null),
   source_table: readText(punteo, ['source_table'], null),
   source_id: readNumber(punteo, ['source_id'], null),
   importe_factura: readNumber(punteo, ['importe_factura'], null),
@@ -804,7 +815,7 @@ const mapRemotePunteoToUi = (
   cuenta_gasto: readText(punteo, ['cuenta_gasto', 'FRR_ctagasto'], null),
   line_count: readNumber(punteo, ['line_count'], 0),
   lines: asRecordArray(punteo.lines).map(mapPunteoLinea),
-  raw: asRecord(punteo.raw),
+  raw: Object.keys(asRecord(punteo.raw)).length > 0 ? asRecord(punteo.raw) : punteo,
 });
 
 export const mapRemoteFacturaToUi = (
@@ -826,8 +837,8 @@ export const mapRemoteFacturaToUi = (
     id: erpRemoteId(frrId),
     documento_codigo: cleanText(frrId),
     estado: 'enviada_erp',
-    proveedor_nombre: readText(factura, ['acreedor_nombre', 'proveedor_nombre', 'ACR_Nombre'], null),
-    proveedor_nif: readText(factura, ['acreedor_nif', 'proveedor_nif', 'ACR_Nif'], null),
+    proveedor_nombre: readText(factura, ['proveedor_nombre', 'acreedor_nombre', 'ACR_Nombre'], null),
+    proveedor_nif: readText(factura, ['proveedor_nif', 'acreedor_nif', 'ACR_Nif'], null),
     proveedor_codigo: cleanText(readNumber(factura, ['FRR_idproveedor', 'proveedor_id', 'acreedor_codigo'], null)),
     proveedor_cuenta: readText(factura, ['FRR_idcuenta', 'cuenta_proveedor', 'ACR_Cuenta'], null),
     numero_factura: readText(factura, ['FRR_numerofactura', 'numero_factura'], null),
@@ -1058,7 +1069,7 @@ export const buildCtbPayload = (lineas: FacturaRecibidaLinea[]) =>
   }));
 
 export const buildPunteosPayload = (punteos: FacturaRecibidaPunteo[] = []) =>
-  punteos.map((punteo, index) => ({
+  punteos.filter((punteo) => punteo.seleccionado).map((punteo, index) => ({
     posicion: index + 1,
     remote_id: cleanText(punteo.remote_id),
     source_table: cleanText(punteo.source_table),
@@ -1077,8 +1088,6 @@ export const buildPunteosPayload = (punteos: FacturaRecibidaPunteo[] = []) =>
     proveedor_id: numberValue(punteo.proveedor_id, null),
     cuenta_gasto: cleanText(punteo.cuenta_gasto),
     line_count: numberValue(punteo.line_count, punteo.lines?.length ?? 0) ?? 0,
-    source_lines: punteo.lines ?? [],
-    raw: punteo.raw ?? {},
   }));
 
 const blobToBase64 = (blob: Blob): Promise<string> =>
@@ -1093,7 +1102,9 @@ const getFunctionErrorMessage = (data: unknown): string | null => {
   if (!data || typeof data !== 'object') return null;
   const source = data as Record<string, unknown>;
   for (const value of [source.error, source.message, source.detail]) {
-    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'string' && value.trim()) {
+      return sanitizeUserFacingErrorMessage(value);
+    }
   }
   return getFunctionErrorMessage(source.details);
 };
@@ -1134,9 +1145,10 @@ export const getFunctionInvokeErrorMessage = async (error: unknown, data?: unkno
         const raw = (await response.text()).trim();
         if (raw) {
           try {
-            return getFunctionErrorMessage(JSON.parse(raw)) ?? raw;
+            return getFunctionErrorMessage(JSON.parse(raw)) ??
+              sanitizeUserFacingErrorMessage(raw);
           } catch {
-            return raw;
+            return sanitizeUserFacingErrorMessage(raw);
           }
         }
       }
@@ -1145,7 +1157,9 @@ export const getFunctionInvokeErrorMessage = async (error: unknown, data?: unkno
     }
   }
 
-  return error instanceof Error && error.message.trim() ? error.message.trim() : null;
+  return error instanceof Error && error.message.trim()
+    ? sanitizeUserFacingErrorMessage(error.message)
+    : null;
 };
 
 export const fetchFacturasRecibidas = async (): Promise<UiFacturaRecibida[]> => {
@@ -1183,7 +1197,7 @@ export const fetchFacturaRecibidaById = async (id: string): Promise<UiFacturaRec
       erpRead<ERPReadFacturaRow>(`facturasrecibidas/${remoteId}`),
       erpRead<{ items?: ERPReadCtbRow[] }>(`facturasrecibidas/${remoteId}/ctb`),
       erpRead<{ items?: ERPReadPunteoRow[] }>(
-        `facturasrecibidas/${remoteId}/punteos?include_lines=true`,
+        `facturasrecibidas/${remoteId}/punteos?include_lines=false`,
       ),
       erpRead<ERPReadAccountingResponse>(`facturasrecibidas/${remoteId}/asiento`),
     ]);
@@ -1306,6 +1320,14 @@ const normalizeProveedorNif = (value: unknown) =>
 const normalizeProveedorNombre = (value: unknown) =>
   normalizeIssueToken(value).replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 
+export type FacturaProveedorERPKind = 'acreedor' | 'agricultor';
+
+export const facturaProveedorERPKind = (tipoFactura: unknown): FacturaProveedorERPKind =>
+  cleanText(tipoFactura)?.toUpperCase() === 'GE' ? 'agricultor' : 'acreedor';
+
+const facturaProveedorERPResource = (tipoFactura: unknown) =>
+  facturaProveedorERPKind(tipoFactura) === 'agricultor' ? 'agricultores' : 'acreedores';
+
 const isProveedorERPOperativo = (row: Record<string, unknown>) => {
   const activo = readBoolean(row, ['activo', 'operativo', 'ACR_Activo'], true);
   const bloqueado = readBoolean(row, ['bloqueado', 'ACR_Bloqueado'], false);
@@ -1316,13 +1338,15 @@ const isProveedorERPOperativo = (row: Record<string, unknown>) => {
 export const localizarProveedorERP = async (payload: {
   nif?: string | null;
   nombre?: string | null;
+  tipoFactura?: string | null;
 }): Promise<LocalizarProveedorResponse> => {
   const nif = cleanText(payload.nif);
   const nombre = cleanText(payload.nombre);
+  const resource = facturaProveedorERPResource(payload.tipoFactura);
   const consulta = nif
-    ? `acreedores?nif=${encodeURIComponent(nif)}&activo=true&limit=25`
+    ? `${resource}?nif=${encodeURIComponent(nif)}&activo=true&limit=25`
     : nombre
-      ? `acreedores?nombre=${encodeURIComponent(nombre)}&activo=true&limit=25`
+      ? `${resource}?nombre=${encodeURIComponent(nombre)}&activo=true&limit=25`
       : null;
 
   if (!consulta) {
@@ -1435,7 +1459,7 @@ const findNestedERPRecord = (
 
   const record = value as Record<string, unknown>;
   if (signatureKeys.some((key) => key in record)) return record;
-  for (const key of ['item', 'items', 'data', 'datos', 'result', 'results', 'acreedor', 'factura', 'resultado']) {
+  for (const key of ['item', 'items', 'data', 'datos', 'result', 'results', 'acreedor', 'agricultor', 'factura', 'resultado']) {
     const found = findNestedERPRecord(record[key], signatureKeys, depth + 1);
     if (found) return found;
   }
@@ -1443,16 +1467,23 @@ const findNestedERPRecord = (
 };
 
 export const mapProveedorERPDetail = (value: unknown): FacturaProveedorERPDetail | null => {
-  const row = findNestedERPRecord(value, ['ACR_Codigo', 'codigo', 'acreedor_id', 'cuenta_id', 'ACR_Nombre', 'id']);
+  const row = findNestedERPRecord(
+    value,
+    ['ACR_Codigo', 'AGR_Idagricultor', 'codigo', 'acreedor_id', 'agricultor_id', 'cuenta_id', 'ACR_Nombre', 'id'],
+  );
   if (!row) return null;
-  const codigo = readNumber(row, ['ACR_Codigo', 'codigo', 'id', 'acreedor_id'], null);
+  const codigo = readNumber(row, ['ACR_Codigo', 'AGR_Idagricultor', 'codigo', 'id', 'acreedor_id', 'agricultor_id'], null);
   if (!codigo) return null;
 
   return {
     codigo,
-    nombre: readText(row, ['nombre', 'ACR_Nombre', 'razon_social'], null),
-    nif: readText(row, ['nif', 'cif', 'ACR_Nif'], null),
-    cuenta: readText(row, ['cuenta_id', 'cuenta', 'cuenta_contable', 'ACR_IdCuenta', 'ACR_Cuenta'], null),
+    nombre: readText(row, ['nombre', 'ACR_Nombre', 'AGR_Nombre', 'razon_social'], null),
+    nif: readText(row, ['nif', 'cif', 'ACR_Nif', 'AGR_Nif'], null),
+    cuenta: readText(
+      row,
+      ['cuenta_id', 'cuenta', 'cuenta_contable', 'ACR_IdCuenta', 'ACR_Cuenta', 'AGR_Cuenta'],
+      null,
+    ),
     cuentaGasto: readText(row, ['cuenta_gasto', 'ACR_CuentaGasto', 'ACR_Cuentagasto'], null),
     cuentaCartera: readText(row, ['cuenta_cartera', 'ACR_IdCuentaCartera', 'ACR_CuentaCartera'], null),
     porcentajeIva: readNumber(row, ['porcentaje_iva', 'ACR_PorcentajeIVA', 'ACR_PorcentajeIva'], null),
@@ -1464,8 +1495,10 @@ export const mapProveedorERPDetail = (value: unknown): FacturaProveedorERPDetail
 
 export const fetchFacturaProveedorERPDetail = async (
   proveedorId: number,
+  tipoFactura?: string | null,
 ): Promise<FacturaProveedorERPDetail | null> => {
-  const response = await erpRead<unknown>(`acreedores/${encodeURIComponent(String(proveedorId))}`);
+  const resource = facturaProveedorERPResource(tipoFactura);
+  const response = await erpRead<unknown>(`${resource}/${encodeURIComponent(String(proveedorId))}`);
   return mapProveedorERPDetail(response);
 };
 
@@ -1512,8 +1545,10 @@ const looksLikeProveedorNotFoundError = (error: unknown) => {
     !message.includes('function not found') &&
     !message.includes('funcion no encontrada') &&
     (message.includes('acreedor no encontrado') ||
+      message.includes('agricultor no encontrado') ||
       message.includes('proveedor no encontrado') ||
-      message.includes('acreedor not found'))
+      message.includes('acreedor not found') ||
+      message.includes('agricultor not found'))
   );
 };
 
@@ -1546,7 +1581,7 @@ export const preflightFacturaRecibidaERP = async (
   let provider: FacturaProveedorERPDetail | null = null;
   if (proveedorId) {
     try {
-      provider = await fetchFacturaProveedorERPDetail(proveedorId);
+      provider = await fetchFacturaProveedorERPDetail(proveedorId, factura.fr_sufa);
       if (!provider) {
         issues.push(validationIssue(
           'proveedor_no_encontrado',
@@ -1649,6 +1684,12 @@ export const TIPO_FACTURA_DESCRIPCIONES: Record<string, string> = {
   GC: 'GASTOS COMPRAS',
   FZ: 'FIANZA',
   CX: 'COSTES EXTERNOS',
+};
+
+export const tipoFacturaRadioValue = (value?: string | null): 'GE' | 'OT' | '' => {
+  const tipo = value?.trim().toUpperCase();
+  if (!tipo) return '';
+  return tipo === 'GE' ? 'GE' : 'OT';
 };
 
 export const labelTipoFactura = (value: string): string => {
@@ -1769,7 +1810,7 @@ export const fetchFacturaPunteables = async (params: {
   proveedorId: number;
 }): Promise<FacturaRecibidaPunteo[]> => {
   const response = await erpRead<{ items?: ERPReadPunteoRow[] }>(
-    `albaranes-gastos/punteables?empresa_id=${params.empresaId}&proveedor_id=${params.proveedorId}&solo_pendientes=true&include_lines=true&limit=100`,
+    `albaranes-gastos/punteables?empresa_id=${params.empresaId}&proveedor_id=${params.proveedorId}&solo_pendientes=true&include_lines=false&limit=100`,
   );
   return (response.items ?? []).map((punteo, index) => ({
     ...mapRemotePunteoToUi(punteo, index, `candidate-${params.empresaId}-${params.proveedorId}`),
@@ -1820,7 +1861,7 @@ export type FacturaRecibidaExtraerResponse = {
   error?: string;
 };
 
-export const extractFacturaWithN8n = async (
+export const extractFacturaFromPdf = async (
   file: File,
   factura: Partial<UiFacturaRecibida> = {},
 ): Promise<UiFacturaRecibida> => {

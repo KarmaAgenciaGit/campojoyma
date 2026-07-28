@@ -2,6 +2,10 @@
 
 Fecha de medición: 23 de julio de 2026.
 
+Adenda funcional y de lectura API: 28 de julio de 2026. Los denominadores
+históricos permanecen referidos a la medición del día 23; las nuevas
+afirmaciones se identifican como evidencia funcional o contraste adicional.
+
 Este documento se diferencia del resto de `docs/` en un punto esencial: **no contiene
 hipótesis reconstruidas a partir de una factura y un correo, sino frecuencias medidas
 sobre el histórico del ERP.** Cada afirmación lleva su denominador. Cuando los datos
@@ -71,8 +75,19 @@ GM - (sin descripcion)
 
 Estas etiquetas se muestran en el desplegable y en las sugerencias mediante
 `labelTipoFactura()` en `src/services/facturas.ts`. Describen el código, no aportan la
-regla de elección: cuándo usar cada tipo sigue dependiendo del historico del proveedor y
-de la persona que revisa (ver 5.1).
+regla completa de elección.
+
+La contrastación del 28/07/2026 sí permite fijar la dimensión funcional:
+`FRR_tipofactura` representa el circuito de la factura. `GE` activa `Compras de
+Género` y el tercero pertenece a `agricultores`; `OT` y los demás tipos
+muestreados usan el circuito de acreedores. El código exacto dentro de este
+segundo grupo sigue dependiendo de una regla aprobada o de revisión manual.
+
+Esto no convierte `Origen` en tipo de factura. `Origen` clasifica el albarán o
+gasto punteado: el ejemplo de acreedores con `FRR_tipofactura=OT` contiene
+punteos `MA`. Las capturas y el segundo correo sobre albaranes de entrada se
+conservan en
+[la evidencia funcional del 28/07/2026](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/).
 
 `FRR_idregimen`, 18 valores. Los relevantes:
 
@@ -212,6 +227,13 @@ fechas/importes de vencimiento: ver 3.5
 
 `FRR_GeneraCartera` vale `""` (225) o `"N"` (60). **Nunca `"S"`.**
 
+Confirmación funcional complementaria, no derivada de la muestra: el 28/07/2026
+Campojoyma indicó por escrito que la casilla `Agricultor descontar` no se
+utiliza. El frontend no debe mostrarla ni pedirla. La columna física
+`FRR_IdAgricultorDto` se mantiene por compatibilidad y no debe reinterpretarse
+ni eliminarse del contrato. La respuesta y sus capturas se conservan en
+[la evidencia del correo](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/README.md).
+
 ## 4. Hipótesis refutadas
 
 Cuatro atajos tentadores que los datos descartan. Documentados para que nadie los
@@ -256,7 +278,10 @@ que decide quien contabiliza, y admite facturas antiguas. Debe venir de configur
 Y el sufijo tampoco es fiable: la cuenta termina en el `proveedor_id` en 92,1%.
 Casos como `prov=10225 -> 41001000225` rompen el rellenado con ceros.
 
-**`FRR_idcuenta` se toma siempre de `acreedores/{id}`.** Nunca se calcula.
+**`FRR_idcuenta` se obtiene del maestro que corresponda al circuito y nunca se
+calcula.** Para `GE`, la identidad y cuenta se resuelven en `agricultores`; para
+`OT` y los demás tipos observados, en `acreedores`. El mismo identificador
+numérico puede existir en ambos maestros, por lo que no basta con buscar por ID.
 
 ### 4.4 La escalera de IVA no depende de la versión, pero sí es del ERP
 
@@ -298,7 +323,7 @@ confirme cuál de las dos formas quiere en las altas nuevas.
 
 ## 5. Lo que sigue exigiendo decisión humana
 
-### 5.1 Tipo de factura: techo del 84%
+### 5.1 Tipo de factura: circuito confirmado y código revisable
 
 | Predictor | Acierto |
 |---|---:|
@@ -306,12 +331,17 @@ confirme cuál de las dos formas quiere en las altas nuevas.
 | proveedor + régimen | 84,5% |
 | proveedor + `iva1` | 84,4% |
 
-El techo no se mueve porque el tipo depende de **qué se compró**, información que vive en
-las líneas y en el albarán de origen, no en la cabecera. Esto explica por fin la anomalía
-de Onduspan: vende material, sus punteos son de origen `MA`, y su cabecera es `OT` porque
-lo decidió una persona.
+La cabecera sí persiste el circuito en `FRR_tipofactura`: `GE` es Compras de
+Género/agricultor y los demás tipos muestreados son Acreedores. Lo que la
+muestra no permite automatizar con suficiente confianza es el código exacto
+dentro del circuito de acreedores.
 
-Debe seguir siendo elección manual con sugerencia.
+El origen del punteo no resuelve esa decisión. Onduspan tiene
+`FRR_tipofactura=OT` y sus punteos son `MA`; ambos valores son correctos porque
+describen ejes distintos.
+
+Debe seguir siendo elección manual con sugerencia salvo que exista una regla
+aprobada. Nunca se deduce copiando `Origen`.
 
 ### 5.2 Fecha CTB: sin regla
 
@@ -394,8 +424,19 @@ La pantalla está cubierta casi por completo. Los huecos reales son:
 | `R. G. GASTOS` | `regimenes` devuelve `descripcion: null` para `2110`; `tipos-iva` no incluye `2110`. |
 | `Importaciones` | Sin campo entre los 82. |
 | Rejilla `Pagos` | Sin endpoint ni campo. Vacía en este caso, contenido desconocido. |
-| Radio `Compras de Género` / `Acreedores` | Sin campo. No es `FRR_tipofactura`, que aquí vale `OT`. |
 | Usuario de `FRR_IdUsuarioLog = 61` | Se devuelve el identificador, no hay forma de resolver el nombre. |
+
+El radio `Compras de Género` / `Acreedores` ya no es un hueco: presenta el
+circuito persistido por `FRR_tipofactura`. `GE` muestra Compras de Género;
+`OT` y los demás tipos muestreados, Acreedores. En Onduspan vale `OT`, por eso
+corresponde Acreedores aunque sus punteos sean `MA`.
+
+La API v0.2.2 corrige además el join incondicional contra `acreedores`: listado
+y detalle exponen `proveedor_tipo`, `proveedor_id`, `proveedor_nombre` y
+`proveedor_nif`, junto a las identidades específicas de acreedor y agricultor.
+En `GE` el proveedor canónico procede de `agricultores`; en los demás tipos
+observados, de `acreedores`. Esto evita resolver por error dos terceros que
+comparten código numérico.
 
 `Guardar Como`, `Abono`, `Modificar` y `Filtrar albaranes por empresa` son acciones o
 filtros de interfaz, no datos persistidos.
@@ -537,7 +578,7 @@ solo lo devuelve el ERP al contabilizar.
 Del asiento leído, en 18/18: `status=reference_only`, `date == FRR_fechactb` y
 `concept` empieza por `FRA`. La fecha del asiento ES la fecha CTB.
 
-### 9.3 La fuente de punteos se predice por el tipo
+### 9.3 Tipo de factura y origen de punteo son ejes separados
 
 | Tipo | Fuente observada |
 |---|---|
@@ -547,9 +588,25 @@ Del asiento leído, en 18/18: `status=reference_only`, `date == FRR_fechactb` y
 | `CE` | `albarancoste` |
 | `GM` | `albaranescompra_gastos` |
 | `OT` | variable (ONDUSPAN usa `albmaterial`) |
-| `GE`, `FI`, abonos | sin punteos |
+| `GE` | `albentrada_his` en el caso contrastado del 28/07 |
+| `FI`, abonos | sin punteos en esta muestra |
 
-Uso correcto: **preseleccionar el filtro de candidatos** por tipo. No autoenlazar.
+La tabla refleja correlaciones históricas, no una equivalencia. Uso correcto:
+ordenar o preseleccionar el filtro de candidatos por tipo; nunca autoenlazar ni
+copiar `Origen` a `FRR_tipofactura`.
+
+La lectura v0.2.2 incorpora los GE ya ligados mediante
+`albentrada_his.AEH_idfacturafirme` y sus líneas en
+`albentrada_hislineas`. Es un read model de solo lectura: esas filas no forman
+parte de candidatos ni mutaciones. Para cada una conserva
+`importe_origen` y calcula `importe_factura` mediante prorrateo cuando la suma
+histórica difiere de la base de la factura; `importe_metodo` hace explícita la
+decisión. El enlace con mayor `AEH_id` absorbe el residuo de redondeo, de modo
+que la suma asignada cuadra exactamente con la base de factura.
+
+En ASG y FGC no deben confundirse ambos importes: `Importe` es el gasto bruto y
+`Importe P` es la asignación real a la factura. La API los devuelve como
+`importe_origen` e `importe_factura`, respectivamente.
 
 La suma de punteos solo cuadra con la base en 4/8 casos con punteos (todas las MA y
 ONDUSPAN). GC quedó a 4,19 de la base; GM cubre 600 de 2.580; CE es parcial. La

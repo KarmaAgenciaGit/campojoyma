@@ -4,6 +4,13 @@
 
 **URL**: https://lovable.dev/projects/0b9ee859-c0a5-4789-b5d8-088e5ba1d929
 
+## Documentación operativa
+
+- [Acceso a servidores e infraestructura](docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md)
+- [Documentación consolidada de facturas](docs/DOCUMENTACION_FACTURAS_CAMPOJOYMA_CONSOLIDADA.md)
+- [Contrato de la API de facturas recibidas](docs/FACTURAS_RECIBIDAS_API_CONTRACT.md)
+- [Despliegue](DEPLOYMENT.md)
+
 ## How can I edit this code?
 
 There are several ways of editing your application.

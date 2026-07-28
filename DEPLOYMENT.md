@@ -14,6 +14,9 @@ reciben un servicio usan `agroiris`; no se renombra porque arrastraría a
 
 Esta guía cubre solo el frontend. Las Edge Functions de Supabase, los workflows de
 n8n y la API de Netagro se despliegan aparte; su estado está en `docs/`.
+La topología real, los dos saltos SSH, los túneles y los comandos de diagnóstico
+están en
+[docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md](docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md).
 
 ---
 

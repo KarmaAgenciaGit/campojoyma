@@ -25,6 +25,17 @@ const erpAcreedor = {
   activo: true,
 };
 
+const erpAgricultor = {
+  codigo: 1957,
+  nombre: 'ALMERITERRA-BIO S.L.',
+  nif: 'B13702956',
+  cuenta_id: '40090001957',
+  forma_pago_id: 0,
+  banco_id: 0,
+  activo: 'S',
+  bloqueado: 'N',
+};
+
 describe('agroirisAcreedores ERP', () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -77,6 +88,37 @@ describe('agroirisAcreedores ERP', () => {
     expect(invokeMock).toHaveBeenCalledWith('facturas-recibidas-erp-read', {
       body: { consulta: 'acreedores?limit=25&offset=0&activo=true' },
     });
+  });
+
+  it('consulta agricultores sin mezclar un ID coincidente de acreedor', async () => {
+    invokeMock.mockResolvedValue({ data: { items: [erpAgricultor] }, error: null });
+
+    const agricultores = await agroirisAcreedores.searchAcreedores('ALMERITERRA', {
+      entityType: 'agricultor',
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith('facturas-recibidas-erp-read', {
+      body: {
+        consulta: 'agricultores?q=ALMERITERRA&limit=25&offset=0&activo=true',
+      },
+    });
+    expect(agricultores[0]).toMatchObject({
+      acreedorid: 1957,
+      nombre_comercial: 'ALMERITERRA-BIO S.L.',
+      identificador_fiscal: 'B13702956',
+      cuenta_contable: '40090001957',
+    });
+  });
+
+  it('hidrata el detalle GE desde agricultores', async () => {
+    invokeMock.mockResolvedValue({ data: erpAgricultor, error: null });
+
+    const agricultor = await agroirisAcreedores.getAcreedorById(1957, 'agricultor');
+
+    expect(invokeMock).toHaveBeenCalledWith('facturas-recibidas-erp-read', {
+      body: { consulta: 'agricultores/1957' },
+    });
+    expect(agricultor?.nombre_comercial).toBe('ALMERITERRA-BIO S.L.');
   });
 
   it('propaga una caída de API como error operativo sin fallback local', async () => {

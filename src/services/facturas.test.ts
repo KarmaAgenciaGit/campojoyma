@@ -33,6 +33,7 @@ import {
   normalizeFacturaValidationIssues,
   partitionFacturaValidationIssues,
   preflightFacturaRecibidaERP,
+  tipoFacturaRadioValue,
 } from '@/services/facturas';
 import { supabase } from '@/integrations/supabase/client';
 import { isFacturaRecibidaInboxSourceKind } from '@/types/facturasRecibidas';
@@ -122,6 +123,20 @@ describe('errores de Edge Functions', () => {
       'FRR_Observaciones supera el limite de 50 caracteres.',
     );
   });
+
+  it('no expone el nombre interno del servicio en mensajes de interfaz', async () => {
+    const internalName = ['n', '8', 'n'].join('');
+    const error = new FunctionsHttpError(
+      new Response(JSON.stringify({ error: `${internalName} no pudo extraer la factura` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(getFunctionInvokeErrorMessage(error)).resolves.toBe(
+      'xFuego no pudo extraer la factura',
+    );
+  });
 });
 
 describe('reintentos ERP', () => {
@@ -197,6 +212,58 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(factura.punteos?.reduce((sum, item) => sum + Number(item.line_count ?? 0), 0)).toBe(21);
     expect(factura.punteos?.reduce((sum, item) => sum + Number(item.importe_factura ?? 0), 0)).toBe(42341.52);
     expect(isERPReadOnlyFactura(factura)).toBe(true);
+  });
+
+  it('usa la identidad canónica del agricultor y conserva la evidencia del albarán GE', () => {
+    const factura = mapRemoteFacturaToUi(
+      {
+        ...onduSpanHeader,
+        FRR_id: 49489,
+        FRR_tipofactura: 'GE',
+        FRR_idproveedor: 1957,
+        proveedor_tipo: 'agricultor',
+        proveedor_nombre: 'ALMERITERRA-BIO S.L.',
+        proveedor_nif: 'B13702956',
+        acreedor_nombre: 'EVENTOS DEL SUR S.L.',
+        acreedor_nif: 'B00000000',
+        agricultor_nombre: 'ALMERITERRA-BIO S.L.',
+        agricultor_nif: 'B13702956',
+      },
+      [],
+      [{
+        id_interno_estable: 'AEH:211790',
+        source_table: 'albentrada_his',
+        source_id: 211790,
+        Origen: 'GE',
+        Importe: 129.2,
+        importe_origen: 136,
+        importe_factura: 129.2,
+        importe_metodo: 'prorrateo_base_factura',
+        lines: [{
+          line_id: 87097,
+          description: 'Genero 161100',
+          package_id: 701,
+        }],
+      }],
+      null,
+    );
+
+    expect(factura.proveedor_nombre).toBe('ALMERITERRA-BIO S.L.');
+    expect(factura.proveedor_nif).toBe('B13702956');
+    expect(factura.punteos?.[0]).toMatchObject({
+      remote_id: 'AEH:211790',
+      source_table: 'albentrada_his',
+      origen: 'GE',
+      importe: 129.2,
+      importe_factura: 129.2,
+    });
+    expect(factura.punteos?.[0]?.raw).toMatchObject({
+      importe_origen: 136,
+      importe_metodo: 'prorrateo_base_factura',
+    });
+    expect(factura.punteos?.[0]?.lines?.[0]?.raw).toMatchObject({
+      package_id: 701,
+    });
   });
 
   it('no infiere la fecha CTB desde la fecha de factura al leer ni al guardar', () => {
@@ -502,6 +569,24 @@ describe('modelo reversible de facturas recibidas', () => {
     const punteos = buildPunteosPayload([
       {
         posicion: 1,
+        remote_id: 'MA:9999',
+        source_table: 'albmaterial',
+        source_id: 9999,
+        importe_factura: 10,
+        origen: 'MA',
+        serie: 'A26',
+        albaran: 9999,
+        ref: 'NO-SELECCIONADO',
+        fecha: '2026-06-23',
+        importe_punteado: 0,
+        importe: 10,
+        seleccionado: false,
+        ver: false,
+        line_count: 1,
+        lines: [{ id: 1 }],
+      },
+      {
+        posicion: 2,
         remote_id: 'MA:2058',
         source_table: 'albmaterial',
         source_id: 2058,
@@ -516,7 +601,7 @@ describe('modelo reversible de facturas recibidas', () => {
         seleccionado: true,
         ver: false,
         line_count: 2,
-        lines: [],
+        lines: [{ id: 1 }, { id: 2 }],
       },
     ]);
 
@@ -532,6 +617,9 @@ describe('modelo reversible de facturas recibidas', () => {
       importe_factura: 1351.79,
       line_count: 2,
     });
+    expect(punteos).toHaveLength(1);
+    expect(punteos[0]).not.toHaveProperty('source_lines');
+    expect(punteos[0]).not.toHaveProperty('raw');
   });
 
   it('bloquea también estados de envío indeterminados aunque aún no exista FRR_id', () => {
@@ -542,12 +630,12 @@ describe('modelo reversible de facturas recibidas', () => {
 
   it('distingue una referencia ERP de una factura entrante real ya enviada', () => {
     expect(isERPReferenceFactura({ source_kind: 'erp_reference', is_readonly_reference: true })).toBe(true);
-    expect(isERPReferenceFactura({ source_kind: 'n8n_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(false);
-    expect(isERPReadOnlyFactura({ source_kind: 'n8n_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(true);
+    expect(isERPReferenceFactura({ source_kind: 'email_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(false);
+    expect(isERPReadOnlyFactura({ source_kind: 'email_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(true);
   });
 
   it('limita la bandeja a PDFs procesados y excluye referencias o fixtures manuales', () => {
-    expect(isFacturaRecibidaInboxSourceKind('n8n_draft')).toBe(true);
+    expect(isFacturaRecibidaInboxSourceKind('ocr_draft')).toBe(true);
     expect(isFacturaRecibidaInboxSourceKind('email_draft')).toBe(true);
     expect(isFacturaRecibidaInboxSourceKind('front_draft')).toBe(true);
     expect(isFacturaRecibidaInboxSourceKind('erp_reference')).toBe(false);
@@ -588,6 +676,44 @@ describe('validacion ERP autoritativa', () => {
     expect(result.erp_response?.resultado).toBe('ok');
     expect(datos.codigo).toBe(17);
     expect(invocation?.body?.consulta).toContain('nif=A04119293&activo=true&limit=25');
+  });
+
+  it('busca las facturas GE en agricultores y no en acreedores con el mismo ID', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          total: 1,
+          items: [{
+            codigo: 1957,
+            nombre: 'ALMERITERRA-BIO S.L.',
+            nif: 'B13702956',
+            cuenta_id: '40090001957',
+            activo: 'S',
+            bloqueado: 'N',
+          }],
+        },
+      },
+      error: null,
+    } as never);
+
+    const result = await localizarProveedorERP({
+      nif: 'B13702956',
+      nombre: 'ALMERITERRA-BIO S.L.',
+      tipoFactura: 'GE',
+    });
+    const invocation = invokeMock.mock.calls[0]?.[1] as { body?: { consulta?: string } } | undefined;
+
+    expect(result.erp_response?.resultado).toBe('ok');
+    expect(result.erp_response?.datos).toMatchObject({
+      codigo: 1957,
+      nombre: 'ALMERITERRA-BIO S.L.',
+      cuenta: '40090001957',
+    });
+    expect(invocation?.body?.consulta).toBe(
+      'agricultores?nif=B13702956&activo=true&limit=25',
+    );
   });
 
   it('no resuelve automaticamente un acreedor bloqueado aunque coincida el NIF', async () => {
@@ -778,6 +904,46 @@ describe('validacion ERP autoritativa', () => {
     expect(unavailable.issues.map((issue) => issue.code)).not.toContain('proveedor_no_encontrado');
   });
 
+  it('prevalida GE contra el detalle de agricultores', async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        data: {
+          contract_version: 2,
+          ok: true,
+          data: {
+            codigo: 1957,
+            nombre: 'ALMERITERRA-BIO S.L.',
+            nif: 'B13702956',
+            cuenta_id: '40090001957',
+          },
+        },
+        error: null,
+      } as never)
+      .mockResolvedValueOnce({
+        data: { contract_version: 2, ok: true, data: { items: [] } },
+        error: null,
+      } as never);
+
+    const result = await preflightFacturaRecibidaERP({
+      ...facturaPreflight,
+      fr_sufa: 'GE',
+      proveedor_codigo: '1957',
+      proveedor_cuenta: '40090001957',
+      numero_factura: 'FTV26/217',
+    });
+    const providerInvocation = invokeMock.mock.calls[0]?.[1] as {
+      body?: { consulta?: string };
+    } | undefined;
+
+    expect(providerInvocation?.body?.consulta).toBe('agricultores/1957');
+    expect(result.provider).toMatchObject({
+      codigo: 1957,
+      nombre: 'ALMERITERRA-BIO S.L.',
+      cuenta: '40090001957',
+    });
+    expect(result.issues).toEqual([]);
+  });
+
   it('bloquea una cuenta distinta de la maestra y muestra el candidato duplicado', async () => {
     invokeMock
       .mockResolvedValueOnce({
@@ -840,5 +1006,15 @@ describe('labelTipoFactura', () => {
 
   it('no inventa descripciones para codigos desconocidos', () => {
     expect(labelTipoFactura('ZZ')).toBe('ZZ');
+  });
+});
+
+describe('tipoFacturaRadioValue', () => {
+  it('mapea el selector binario a compras de genero o acreedores', () => {
+    expect(tipoFacturaRadioValue('GE')).toBe('GE');
+    expect(tipoFacturaRadioValue('OT')).toBe('OT');
+    expect(tipoFacturaRadioValue('MA')).toBe('OT');
+    expect(tipoFacturaRadioValue('GV')).toBe('OT');
+    expect(tipoFacturaRadioValue(null)).toBe('');
   });
 });

@@ -42,7 +42,12 @@ Deno.serve(async (req) => {
     if (!auth.ok) return auth.response;
 
     const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET")?.trim();
-    if (!jwtSecret) return jsonResponse({ error: "N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET no configurado." }, 500);
+    if (!jwtSecret) {
+      return jsonResponse(
+        { error: "Falta configuracion interna para consultar el ERP." },
+        500,
+      );
+    }
 
     const webhookUrl =
       Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim() ||

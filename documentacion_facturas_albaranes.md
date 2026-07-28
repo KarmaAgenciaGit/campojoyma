@@ -4,12 +4,14 @@
 > `api-campojoyma/docs/documentacion_facturas_albaranes.md`. Sus secciones de estado
 > y despliegue son una fotografia historica del 15 de julio de 2026 y no autorizan
 > activar escrituras. Para el estado actual, consultar el informe de relevo y el
-> runbook v2 de `docs/`.
+> runbook v2 de `docs/`. Para acceso, topologia y diagnostico operativo, consultar
+> `docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md`.
 
 Generado a partir de la copia local `netagrocomer` el `2026-06-29T16:01:26Z`.
 Actualizado el `2026-07-15` con auditoria completa de la FastAPI, sus 41 operaciones,
 los endpoints de agricultores y catalogos, el contrato de escritura y el estado real
-de despliegue.
+de despliegue. La adenda funcional y de lectura v0.2.2 se incorporo el
+`2026-07-28`.
 
 ## Alcance y cautelas
 
@@ -62,12 +64,68 @@ GET http://172.19.0.1:18000/facturasrecibidas/tipos -> 11 tipos observados
 GET http://172.19.0.1:18000/empresas -> total 1
 ```
 
+## Medicion operativa actual 2026-07-28
+
+La medicion se ejecuto directamente en `karma-box`, accediendo por la ruta
+canonica `equipo local -> VPS 82.25.119.150 -> karma-box 88.30.71.235:2222`.
+
+| Metrica | Valor |
+|---|---:|
+| Tamano fisico de `/var/lib/mysql` | `10.669.099.820` bytes |
+| Tamano fisico legible | `10G` (`9,94 GiB`) |
+| Datos logicos | `5,907 GiB` |
+| Indices logicos | `1,951 GiB` |
+| Total logico | `7,858 GiB` |
+| Esquema `netagrocomer` | `2,883 GiB` |
+| Esquemas de aplicacion | 47 |
+| Objetos | 3566 |
+
+El usuario runtime `netagro_api` solo ve los esquemas permitidos y no sirve para
+calcular el total completo de la copia. La guia operativa y los comandos de
+medicion estan en `docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md`.
+
+## Adenda funcional y API v0.2.2 (2026-07-28)
+
+Dos correos de Campojoyma aportaron los formularios vacios y cumplimentados de
+`Compras de Genero`, `Acreedores` y del albaran de entrada de genero. Las
+capturas saneadas, sus hashes y la cronologia estan en
+[la carpeta de evidencias del 28/07/2026](docs/evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/).
+
+La evidencia y el contraste de datos corrigen estas interpretaciones:
+
+- `FRR_tipofactura` representa el circuito de la factura. `GE` corresponde a
+  Compras de Genero y resuelve `FRR_idproveedor` contra `agricultores`; `OT` y
+  los demas tipos muestreados corresponden al circuito de `acreedores`.
+- La columna visual `Origen` pertenece al albaran o gasto punteado y es un eje
+  distinto. Una factura `OT` puede contener punteos `MA`; no se copia `Origen`
+  a `FRR_tipofactura`.
+- Los identificadores de acreedor y agricultor viven en espacios separados y
+  pueden colisionar. No se resuelve un tercero solo por su numero.
+- La cabecera vigente del albaran de genero esta en `albentrada`; su identidad
+  de negocio es `AEN_campa + AEN_serie + AEN_albaran` y su detalle se consulta
+  en las tablas de lineas, no se duplica como lineas de factura.
+- Para una factura GE ya ligada, la API v0.2.2 lee el historico desde
+  `albentrada_his.AEH_idfacturafirme` y las lineas desde
+  `albentrada_hislineas`. Es un read model: no se incorpora a candidatos ni a
+  mutaciones.
+- La lectura conserva `importe_origen` y expone por separado
+  `importe_factura`; cuando no coinciden las bases totales, esta ultima se
+  prorratea y `importe_metodo` declara el criterio. El mayor `AEH_id` absorbe
+  el residuo de redondeo para que la suma cuadre exactamente con la base.
+- En ASG y FGC, `importe_origen` conserva el gasto bruto e `importe_factura`
+  procede del importe realmente asignado (`Importe P`).
+
+Listado y detalle de facturas recibidas v0.2.2 exponen la identidad normalizada
+`proveedor_tipo`, `proveedor_id`, `proveedor_nombre` y `proveedor_nif`, ademas de
+los campos especificos de acreedor y agricultor. Esta adenda describe el
+contrato del repositorio; su despliegue debe comprobarse por version y readback.
+
 ## Resumen ejecutivo
 
 Hay cinco bloques principales:
 
 1. **Clientes**: `clientes` es el maestro que resuelve `CLI_Idcliente`, nombre, NIF/VAT, direccion, email, idioma/divisa y estado. Es la primera tabla a consultar cuando llega un PDF por OCR.
-2. **Proveedores/acreedores y facturas recibidas**: `empresas` identifica la empresa propietaria, `acreedores` identifica proveedor por `ACR_Codigo`; `facturasrecibidas` es la cabecera real Netagro de factura recibida, y `facturasrecibidas_ctb` es su desglose contable.
+2. **Proveedores y facturas recibidas**: `empresas` identifica la empresa propietaria; `FRR_tipofactura=GE` resuelve el tercero en `agricultores` y los demas tipos observados en `acreedores`; `facturasrecibidas` es la cabecera real Netagro y `facturasrecibidas_ctb` su desglose contable.
 3. **Facturas a clientes**: `facturas` como cabecera, `facturaslineasvar` como conceptos/lineas, `facturas_gastos` como gastos y `albsalida` como albaranes facturados.
 4. **Albaranes de salida**: `albsalida` como cabecera, `albsalida_lineas`, `albsalida_gastos`, `albsalida_palets` y `albsalida_lineas_desglose` como detalle.
 5. **Albaranes de entrada y facturas de agricultores**: `albentrada` y sus lineas/gastos/clasificaciones; `facturaagr` y `facturaagr_lineas` liquidan genero de agricultores.
@@ -80,14 +138,24 @@ clientes.CLI_Idcliente
   -> albsalida.ASA_idcliente
   -> clientesdescargas.CLD_IdCliente (domicilios/destinos de descarga)
 
-acreedores.ACR_Codigo
-  -> facturasrecibidas.FRR_idproveedor
+facturasrecibidas.FRR_tipofactura = GE
+  -> agricultores.AGR_Idagricultor = facturasrecibidas.FRR_idproveedor
+
+facturasrecibidas.FRR_tipofactura <> GE (tipos observados)
+  -> acreedores.ACR_Codigo = facturasrecibidas.FRR_idproveedor
 
 empresas.EMP_idempresa
   -> facturasrecibidas.FRR_Idempresa
 
 facturasrecibidas.FRR_id
   -> facturasrecibidas_ctb.FRC_idfacturarecibida
+  -> albentrada_his.AEH_idfacturafirme
+
+albentrada_his.AEH_idalbaran
+  -> albentrada.AEN_idalbaran
+
+albentrada_his.AEH_id
+  -> albentrada_hislineas.AHL_idalbhis
 
 facturas.FRA_idfactura
   -> albsalida.ASA_idfactura
@@ -118,7 +186,7 @@ facturaagr_lineas.FAL_idpartida
 |---|---:|---|
 | `clientes_to_facturas` | clientes=1190, facturas=179532, clientes_usados=772, facturas_cliente_huerfano=0 | Todas las facturas emitidas apuntan a un cliente existente. |
 | `clientes_to_albsalida` | clientes=1190, albaranes=110048, clientes_usados=365, albaranes_cliente_huerfano=0 | Los albaranes de salida con cliente distinto de 0 apuntan a cliente existente. |
-| `acreedores_to_facturasrecibidas` | acreedores=1831, facturas=48641, proveedores_usados=1738, proveedor_match=45672, proveedor_cero=4, proveedor_no_cero_huerfano=2965 | `FRR_idproveedor` apunta logicamente a `ACR_Codigo`, pero hay historico con proveedor inexistente en `acreedores` dentro de `netagrocomer`. |
+| `acreedores_to_facturasrecibidas` | acreedores=1831, facturas=48641, proveedores_usados=1738, proveedor_match=45672, proveedor_cero=4, proveedor_no_cero_huerfano=2965 | Medicion historica que unia todos los tipos contra `acreedores`; los no-match incluyen GE y no equivalen todos a huerfanos. Para GE debe medirse contra `agricultores`. |
 | `facturasrecibidas_to_ctb` | apuntes=37027, facturas_con_ctb=29783, apuntes_match=36621, factura_cero=38, factura_no_cero_huerfana=368 | `FRC_idfacturarecibida` apunta logicamente a `FRR_id`; hay apuntes contables historicos sin cabecera local. |
 | `facturas_to_albsalida` | albaranes_con_factura=108912, facturas_con_albaranes=103560, albaranes_huerfanos=0 | Albaranes de salida facturados; `ASA_idfactura=0` indica pendiente/no facturado. |
 | `facturas_to_lineasvar` | lineas=149032, facturas_con_lineas=75335, lineas_huerfanas=0 | Lineas o conceptos variables de factura emitida. |
@@ -130,6 +198,10 @@ facturaagr_lineas.FAL_idpartida
 | `albentrada_to_gastos` | gastos=32401, albaranes_con_gastos=30815, gastos_huerfanos=0 | Gastos de entrada. |
 | `facturaagr_to_lineas` | lineas=73437, facturas_con_lineas=8163, lineas_huerfanas=0 | Lineas de factura/liquidacion a agricultor. |
 | `facturaagr_lineas_to_albentrada_lineas_candidate` | lineas_facturaagr=73437, matches_por_fal_idpartida_ael_idlinea=73322, matches_por_fal_idpartida_aen_idalbaran=69449 | Relacion candidata de lineas de factura agraria con partidas de entrada. |
+
+La fila historica `acreedores_to_facturasrecibidas` anterior a la adenda mezcla
+todos los valores de `FRR_tipofactura`; sus no-matches no autorizan a tratar GE
+como acreedor ausente. Para GE el namespace correcto es `agricultores`.
 
 ## Volumen por tabla
 
@@ -149,7 +221,7 @@ consultarse de nuevo contra la copia vigente.
 | `facturas_gastos` | 109513 | 18.58 | Gastos asociados a facturas emitidas. |
 | `facturaagr` | 8163 | 2.61 | Cabecera de facturas/liquidaciones a agricultores. |
 | `facturaagr_lineas` | 73437 | 10.55 | Lineas de facturas/liquidaciones a agricultores. |
-| `facturasrecibidas` | 48641 | 30.59 | Cabecera de facturas recibidas de proveedores/acreedores. |
+| `facturasrecibidas` | 48641 | 30.59 | Cabecera de facturas recibidas; GE usa agricultor y los demas tipos observados usan acreedor. |
 | `facturasrecibidas_ctb` | 37027 | 3.88 | Desglose contable de facturas recibidas. |
 | `albsalida` | 110048 | 66.20 | Cabecera de albaranes de salida, normalmente entrega/venta a cliente. |
 | `albsalida_lineas` | 256951 | 77.13 | Lineas de producto de albaranes de salida. |
@@ -175,8 +247,10 @@ en el VPS se consume con:
 http://172.19.0.1:18000
 ```
 
-Inventario exhaustivo del codigo en disco (`41` operaciones sobre `40` paths; `GET` y
-`POST` comparten `/facturasrecibidas`):
+Inventario base auditado el 15/07 (`41` operaciones sobre `40` paths; `GET` y
+`POST` comparten `/facturasrecibidas`). Las filas de facturas recibidas y
+punteos incorporan las correcciones de lectura v0.2.2; no constituyen un
+recuento nuevo de toda la superficie:
 
 | Endpoint | Uso |
 |---|---|
@@ -193,13 +267,13 @@ Inventario exhaustivo del codigo en disco (`41` operaciones sobre `40` paths; `G
 | `GET /agricultores` | Maestro de agricultores con filtros `q`, `nombre`, `nif`, `codigo`, `tipo` y `activo`. **En disco; pendiente de reinicio.** |
 | `GET /agricultores/{agricultor_id}` | Ficha fiscal, contable y operativa del agricultor. **En disco; pendiente de reinicio.** |
 | `GET /agricultores/{agricultor_id}/gastos` | Reglas de gasto de `agricultorgastos`. **En disco; pendiente de reinicio.** |
-| `GET /facturasrecibidas/tipos` | Catalogo observado de `FRR_tipofactura` desde datos reales. No hay descripciones oficiales cargadas en la copia local. |
+| `GET /facturasrecibidas/tipos` | Catalogo observado de `FRR_tipofactura`. No hay maestro poblado; `GE = Compras de Genero` esta confirmado por evidencia funcional externa. |
 | `GET /facturasrecibidas/buscar` | Busqueda exacta de factura recibida existente por `empresa_id`, `ejercicio`, `proveedor_id` y `numero_factura`. |
-| `GET /facturasrecibidas` | Lista paginada de facturas recibidas. Filtros: `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura`, `schema`. |
-| `GET /facturasrecibidas/{factura_id}` | Cabecera `FRR_*` completa de factura recibida por `FRR_id`, con datos del acreedor asociado. |
+| `GET /facturasrecibidas` | Lista paginada de facturas recibidas. Filtros: `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura`, `schema`. En v0.2.2 devuelve proveedor canonico de tipo agricultor para GE y acreedor para los demas tipos observados. |
+| `GET /facturasrecibidas/{factura_id}` | Cabecera `FRR_*` completa por `FRR_id`, con `proveedor_tipo`, identidad canonica y campos especificos de acreedor/agricultor. |
 | `GET /facturasrecibidas/{factura_id}/ctb` | Apuntes contables reales `FRC_*` de `facturasrecibidas_ctb`. No genera lineas desde `FRR_ctagasto*`. |
 | `GET /facturasrecibidas_ctb?factura_id={id}` | Alias para consultar apuntes `FRC_*` por query string. |
-| `GET /facturasrecibidas/{factura_id}/punteos` | Punteos/gastos reales enlazados a una factura recibida. Devuelve `source_table`, `source_id`, `Origen`, `Serie`, `Albaran`, `Ref`, `Fecha`, `Importe P`, `Importe`, `S`, `Ver`, empresa, acreedor y cuenta gasto si aplica. |
+| `GET /facturasrecibidas/{factura_id}/punteos` | Punteos/gastos reales enlazados. V0.2.2 incluye GE desde `albentrada_his`/`albentrada_hislineas`, solo lectura, y distingue `importe_origen`, `importe_factura` e `importe_metodo`. |
 | `GET /albaranes-gastos/punteables` | Lista de gastos/albaranes punteables, por defecto pendientes de factura recibida. Filtros: `source_table`, `proveedor_id`, `empresa_id`, `fecha_desde`, `fecha_hasta`, `solo_pendientes`, `limit`, `offset`. |
 | `GET /cuentas-contables` | Catalogo de cuentas con descripcion desde `contabilidad*.cuentas`. Filtros: `account_schema`, `q`, `cuenta`, `nif`, `limit`, `offset`. |
 | `GET /tipos-iva` | Catalogo de IVA desde `tiposivacli` y `tiposiva` si estuviera poblada. |
@@ -543,9 +617,12 @@ Semantica obligatoria:
   el maestro de acreedores.
 - `/facturas-agricultores` devuelve liquidaciones/facturas emitidas al agricultor; no
   sustituye al maestro `/agricultores`.
-- Ante una factura recibida, el resolver debe probar `acreedores` y, solo cuando la
-  naturaleza del proveedor lo justifique y no haya match, buscar en `agricultores`.
-  No debe reinterpretar automaticamente un tipo de proveedor como el otro.
+- Ante una factura recibida, el resolver debe consultar ambos maestros sin
+  considerar uno fallback del otro. `FRR_tipofactura=GE` selecciona
+  `agricultores`; los demas tipos observados seleccionan `acreedores`.
+- Un match por codigo no basta, porque ambos maestros pueden contener el mismo
+  numero. Para la extraccion se conserva `entity_type` y se priorizan NIF y
+  nombre normalizados antes de aceptar el candidato.
 
 #### Catalogos contables y de facturacion
 
@@ -578,12 +655,12 @@ No confundir catalogos:
 
 | Operacion | Parametros | Respuesta | Fuente/efecto |
 |---|---|---|---|
-| `GET /facturasrecibidas` | `schema`, `limit=50`, `offset=0`, `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura` | `{items,limit,offset,total}`; resumen `FRR_*` mas nombre/NIF del acreedor | `facturasrecibidas` + `acreedores` |
+| `GET /facturasrecibidas` | `schema`, `limit=50`, `offset=0`, `fecha_desde`, `fecha_hasta`, `proveedor_id`, `proveedor_nif`, `numero_factura`, `ejercicio`, `tipo_factura` | `{items,limit,offset,total}`; resumen `FRR_*` y proveedor canonico con su tipo | `facturasrecibidas` + `agricultores`/`acreedores` segun `FRR_tipofactura` |
 | `GET /facturasrecibidas/buscar` | Obligatorios: `empresa_id`, `ejercicio`, `proveedor_id`, `numero_factura`; opcionales: `schema`, `limit=50`, `offset=0` | `{items,limit,offset,total}` con columnas `FRR_*` crudas | Busqueda exacta y criterio de duplicado |
-| `GET /facturasrecibidas/{factura_id}` | `factura_id:int`, `schema` | Todos los campos `FRR_*` mas datos del acreedor; `404` si no existe | `facturasrecibidas` + `acreedores` |
+| `GET /facturasrecibidas/{factura_id}` | `factura_id:int`, `schema` | Todos los campos `FRR_*`, proveedor canonico e identidades especificas; `404` si no existe | `facturasrecibidas` + `agricultores`/`acreedores` segun `FRR_tipofactura` |
 | `GET /facturasrecibidas/{factura_id}/ctb` | `factura_id:int`, `schema` | `{items}` con los 11 campos `FRC_*` | `facturasrecibidas_ctb` |
 | `GET /facturasrecibidas_ctb` | Query obligatorio `factura_id:int`; `schema` | Igual que la ruta `/ctb` | Alias por query string |
-| `GET /facturasrecibidas/{factura_id}/punteos` | `factura_id:int`, `schema`, `limit=200`, `offset=0` | `{items,limit,offset}` sin `total` | Union de cinco origenes, solo los enlazados a la factura |
+| `GET /facturasrecibidas/{factura_id}/punteos` | `factura_id:int`, `schema`, `limit=200`, `offset=0`, `include_lines` | `{items,limit,offset,total}`; incluye lineas cuando se solicitan | Union de origenes ligados mas GE historico de solo lectura |
 | `GET /albaranes-gastos/punteables` | `schema`, `limit=50`, `offset=0`, `source_table`, `proveedor_id`, `empresa_id`, fechas, `solo_pendientes=true` | `{items,limit,offset,total}` | Misma union; por defecto solo registros sin factura recibida |
 | `POST /facturasrecibidas` | `schema`, `dry_run=true`, body JSON | Validacion o alta transaccional descrita abajo | Puede insertar cabecera/CTB y enlazar punteos en `netagrocomer` |
 
@@ -615,7 +692,9 @@ La union normaliza estos campos:
 id_interno_estable, source_table, source_id, factura_recibida_id,
 Origen, Serie, Albaran, Ref, Fecha, Importe P, Importe, S, Ver,
 empresa, acreedor_id, acreedor_nombre, gasto_id, gasto_nombre,
-cuenta_gasto, albaran_id
+cuenta_gasto, albaran_id, agricultor_id, agricultor_nombre,
+agricultor_nif, proveedor_tipo, proveedor_id, proveedor_nombre,
+proveedor_nif, empresa_id, importe_origen, importe_factura, importe_metodo
 ```
 
 `Importe P` conserva un espacio y varias claves conservan mayusculas por compatibilidad
@@ -631,6 +710,13 @@ registros pendientes y ya enlazados. Los cinco origenes y relaciones exactas son
 | `albaranescompra_gastos` | `albaranescompra_gastos` | `AGT_IdFactura` | No se actualiza |
 | `facturas_gastos` | `facturas_gastos` | `FGC_idfacturaReci` | `FGC_importefacturaReci` |
 | `albarancoste` | `albarancoste` | `ALB_IdFactura` | No se actualiza |
+
+La union de lectura v0.2.2 añade `albentrada_his` solo al endpoint de punteos
+ya ligados, enlazando por `AEH_idfacturafirme`. No se añade a esta lista
+seleccionable, a `PUNTEO_CONFIG` ni al contrato de `POST /facturasrecibidas`.
+Sus lineas proceden de `albentrada_hislineas` y el importe de factura puede
+estar prorrateado sin alterar `importe_origen`; el mayor `AEH_id` absorbe el
+residuo de centimos.
 
 ##### Contrato de `POST /facturasrecibidas`
 
@@ -812,11 +898,12 @@ Resolucion de proveedor:
 
 1. Normalizar NIF y texto en el flujo de origen; corregir extraccion/parseo antes de
    introducir compensaciones locales.
-2. Consultar `/acreedores?nif=...` y, si no hay match, `/acreedores?q=...`.
-3. Cuando el documento corresponda a un productor/agricultor y no exista acreedor,
-   consultar `/agricultores?nif=...` y despues `/agricultores?q=...`.
-4. Mantener la identidad semantica del resultado: acreedor y agricultor no son el
-   mismo tipo de entidad.
+2. Consultar por NIF/nombre tanto `/acreedores` como `/agricultores`; ninguno
+   es fallback del otro.
+3. Mantener candidatos y namespaces separados. El circuito confirmado selecciona
+   agricultor para GE y acreedor para los demas tipos observados.
+4. No aceptar una coincidencia solo por codigo: el mismo numero puede identificar
+   terceros distintos en ambos maestros.
 5. Si persiste la ambiguedad, dejar seleccion manual en la UI; no elegir por similitud
    debil.
 6. Cargar reglas de gasto con el subrecurso que corresponda al tipo resuelto.
@@ -828,8 +915,9 @@ Resolucion de proveedor:
 9. Mostrar `validation_errors` al usuario y requerir confirmacion explicita antes de
    cualquier `dry_run=false`.
 
-El resolver n8n documentado en julio solo consultaba `/acreedores`. Debe incorporar el
-fallback explicito a `/agricultores` para aprovechar los endpoints nuevos.
+El resolver n8n documentado en julio solo consultaba `/acreedores`. Debe buscar
+ambos maestros, devolver `entity_type` y evitar que una colision numerica se
+convierta en un match falso.
 
 ### Limitaciones conocidas
 
@@ -1019,17 +1107,22 @@ Actualmente devuelve ids y valores de gasto. Para que OCR pueda mostrar nombres 
 
 ### Facturas recibidas de proveedores
 
-Si el PDF entrante es una factura recibida de proveedor/acreedor, no debe forzarse el flujo por `clientes`. La estructura real de Netagro en la copia local es:
+Si el PDF entrante es una factura recibida, no debe forzarse el flujo por
+`clientes` ni asumirse que todo tercero es acreedor. La estructura real es:
 
 ```text
-acreedores.ACR_Codigo
-  -> facturasrecibidas.FRR_idproveedor
+facturasrecibidas.FRR_tipofactura = GE
+  -> agricultores.AGR_Idagricultor = facturasrecibidas.FRR_idproveedor
+
+facturasrecibidas.FRR_tipofactura <> GE (tipos observados)
+  -> acreedores.ACR_Codigo = facturasrecibidas.FRR_idproveedor
 
 empresas.EMP_idempresa
   -> facturasrecibidas.FRR_Idempresa
 
 facturasrecibidas.FRR_id
   -> facturasrecibidas_ctb.FRC_idfacturarecibida
+  -> albentrada_his.AEH_idfacturafirme
 ```
 
 Lectura funcional:
@@ -1037,9 +1130,11 @@ Lectura funcional:
 | Tabla | Papel |
 |---|---|
 | `empresas` | Maestro de empresas/razones sociales. Resuelve `FRR_Idempresa`. |
-| `acreedores` | Maestro de proveedores/acreedores. Resuelve nombre, NIF, cuenta contable, cuenta de gasto, forma de pago y estado. |
+| `acreedores` | Maestro de terceros de los tipos distintos de GE observados. |
+| `agricultores` | Maestro del proveedor agricola para `FRR_tipofactura=GE`. |
 | `facturasrecibidas` | Cabecera real de factura recibida en Netagro. Tiene 74 columnas `FRR_*`/vencimientos/contabilidad. |
 | `facturasrecibidas_ctb` | Lineas de desglose contable de la factura recibida. Tiene 11 columnas `FRC_*`. |
+| `albentrada_his` / `albentrada_hislineas` | Albaranes GE ya ligados y su detalle, solo lectura en v0.2.2. |
 
 La tabla staging/OCR creada fuera de Netagro con unas 97 columnas no debe confundirse con la tabla real. Esa tabla mezcla:
 
@@ -1050,22 +1145,26 @@ La tabla staging/OCR creada fuera de Netagro con unas 97 columnas no debe confun
 | Columnas `FRR_*`, `FechaVto`, `ImporteVto` | Borrador/copia nullable de los campos reales de `netagrocomer.facturasrecibidas`. |
 | `netagro_sent_at`, `netagro_response`, `netagro_error` | Estado de sincronizacion hacia Netagro. No existe en Netagro. |
 
-Conclusion: esa tabla staging puede ser correcta como bandeja de trabajo para OCR, pero la documentacion de integracion debe tratarla como capa intermedia. El modelo real de destino es `facturasrecibidas` + `facturasrecibidas_ctb` + `acreedores`.
+Conclusion: esa tabla staging puede ser correcta como bandeja de trabajo para
+OCR, pero la documentacion de integracion debe tratarla como capa intermedia.
+El modelo real de destino es `facturasrecibidas` +
+`facturasrecibidas_ctb` + el maestro canonico (`agricultores` para GE,
+`acreedores` para los demas tipos observados).
 
 Para OCR de facturas recibidas, contrastar:
 
 | Dato OCR | Tabla/campo Netagro |
 |---|---|
-| Nombre proveedor | `acreedores.ACR_Nombre` |
-| NIF/CIF/VAT proveedor | `acreedores.ACR_Nif` |
+| Nombre proveedor | `agricultores.AGR_Nombre` para GE; `acreedores.ACR_Nombre` para los demas tipos observados |
+| NIF/CIF/VAT proveedor | `agricultores.AGR_Nif` para GE; `acreedores.ACR_Nif` para los demas tipos observados |
 | Numero factura proveedor | `facturasrecibidas.FRR_numerofactura` |
 | Fecha factura | `facturasrecibidas.FRR_fechafactura` |
 | Ejercicio | `facturasrecibidas.FRR_ejercicio` |
 | Total factura | `facturasrecibidas.FRR_totalfac` |
 | Bases/IVA/cuotas | `FRR_base1..5`, `FRR_iva1..5`, `FRR_cuota1..5` |
 | Retencion | `FRR_baseret`, `FRR_ret`, `FRR_cuotaret`, `FRR_ClaveIRPF` |
-| Cuenta proveedor | `FRR_idcuenta`, `acreedores.ACR_IdCuenta` |
-| Cuenta de gasto | `FRR_ctagasto1..4`, `acreedores.ACR_Cuentagasto`, `facturasrecibidas_ctb.FRC_Cuenta` |
+| Cuenta proveedor | `FRR_idcuenta` y cuenta del maestro canonico |
+| Cuenta de gasto | `FRR_ctagasto1..4`, reglas del agricultor/acreedor, `facturasrecibidas_ctb.FRC_Cuenta` |
 | Vencimientos | `FechaVto`/`ImporteVto`, `FRR_FechaVto1..3`, `FRR_ImporteVto1..3` |
 | Tipo/serie interna | `FRR_tipofactura`, `FRR_numero`, `FRR_IdTipoDoc` |
 
@@ -1098,7 +1197,11 @@ Para el combo debe usarse `empresa_id`/`EMP_idempresa` como valor y `nombre` com
 
 #### `FRR_tipofactura`
 
-`FRR_tipofactura` es un codigo corto de tipo/serie interna de factura recibida. En la copia local existe una tabla candidata llamada `facturasrecibidastipo`, pero esta vacia; por tanto no hay descripciones oficiales cargadas para mostrar en combo.
+`FRR_tipofactura` es el codigo corto del circuito/tipo interno de la factura
+recibida. En la copia local existe una tabla candidata llamada
+`facturasrecibidastipo`, pero esta vacia. La evidencia funcional confirma
+`GE = Compras de Genero`; el resto conserva las etiquetas y grados de
+confirmacion documentados fuera de esta tabla.
 
 El endpoint disponible devuelve el catalogo observado desde las facturas reales:
 
@@ -1128,7 +1231,7 @@ Valores observados:
 | `FRR_tipofactura` | Facturas | Fecha min | Fecha max | Descripcion |
 |---|---:|---|---|---|
 | OT | 30570 | 2013-10-01 | 2026-08-01 | Sin descripcion oficial en la copia local. |
-| GE | 8121 | 2020-01-02 | 2026-06-26 | Sin descripcion oficial en la copia local. |
+| GE | 8121 | 2020-01-02 | 2026-06-26 | Compras de Genero, confirmado funcionalmente el 28/07/2026. |
 | MA | 4919 | 2020-04-27 | 2026-04-07 | Sin descripcion oficial en la copia local. |
 | GV | 2704 | 2020-06-30 | 2026-06-09 | Sin descripcion oficial en la copia local. |
 | FI | 1279 | 2021-06-22 | 2026-04-20 | Sin descripcion oficial en la copia local. |
@@ -1427,7 +1530,7 @@ FROM netagrocomer.acreedores
 WHERE ACR_Nif LIKE ?;
 ```
 
-Factura recibida con acreedor:
+Factura recibida con acreedor (tipos observados distintos de GE):
 
 ```sql
 SELECT f.FRR_id, f.FRR_numero, f.FRR_fechafactura, f.FRR_numerofactura,
@@ -1438,6 +1541,23 @@ SELECT f.FRR_id, f.FRR_numero, f.FRR_fechafactura, f.FRR_numerofactura,
 FROM netagrocomer.facturasrecibidas f
 LEFT JOIN netagrocomer.acreedores a ON a.ACR_Codigo = f.FRR_idproveedor
 WHERE f.FRR_idproveedor = ?
+  AND f.FRR_tipofactura <> 'GE'
+  AND f.FRR_numerofactura = ?;
+```
+
+Factura recibida GE con agricultor:
+
+```sql
+SELECT f.FRR_id, f.FRR_numero, f.FRR_fechafactura, f.FRR_numerofactura,
+       f.FRR_ejercicio, f.FRR_idproveedor,
+       ag.AGR_Nombre, ag.AGR_Nif,
+       f.FRR_base1, f.FRR_iva1, f.FRR_cuota1, f.FRR_totalfac,
+       f.FRR_tipofactura, f.FRR_idcuenta, f.FRR_Concepto
+FROM netagrocomer.facturasrecibidas f
+LEFT JOIN netagrocomer.agricultores ag
+  ON ag.AGR_Idagricultor = f.FRR_idproveedor
+WHERE f.FRR_idproveedor = ?
+  AND f.FRR_tipofactura = 'GE'
   AND f.FRR_numerofactura = ?;
 ```
 
@@ -1574,12 +1694,14 @@ Campos:
 
 ### `acreedores`
 
-Maestro de proveedores/acreedores usado por facturas recibidas.
+Maestro de proveedores/acreedores usado por los tipos de factura recibida
+distintos de GE observados.
 
 - Filas exactas en copia local: `1831`
 - Tamano aproximado: `0.47 MB`
 - Clave tecnica: `ACR_Codigo`.
-- Relacion principal: `facturasrecibidas.FRR_idproveedor = acreedores.ACR_Codigo`.
+- Relacion principal para tipos observados distintos de GE:
+  `facturasrecibidas.FRR_idproveedor = acreedores.ACR_Codigo`.
 - Identificadores fuertes para OCR: `ACR_Nif`, `ACR_Nombre`, `ACR_Mail`, `ACR_IdCuenta`.
 
 Indices:
@@ -1940,25 +2062,28 @@ Campos:
 
 ### `facturasrecibidas`
 
-Cabecera de facturas recibidas de proveedores/acreedores.
+Cabecera de facturas recibidas. El maestro del tercero depende del circuito:
+agricultor para `FRR_tipofactura=GE` y acreedor para los demas tipos observados.
 
 - Filas exactas en copia local: `48641`
 - Tamano aproximado: `30.59 MB`
 - Columnas reales en Netagro: `74`.
 - Clave tecnica: `FRR_id`.
-- Relacion con proveedor: `FRR_idproveedor = acreedores.ACR_Codigo`.
+- Relacion con proveedor: para GE,
+  `FRR_idproveedor = agricultores.AGR_Idagricultor`; para los demas tipos
+  observados, `FRR_idproveedor = acreedores.ACR_Codigo`.
 - Relacion con empresa: `FRR_Idempresa = empresas.EMP_idempresa`.
 - Identidad documental: `FRR_tipofactura` + `FRR_ejercicio` + `FRR_numero` es la numeracion interna; `FRR_numerofactura` es el numero de factura del proveedor.
-- Catalogo de tipo: no hay tabla maestra poblada para `FRR_tipofactura`; usar `GET /facturasrecibidas/tipos` como lista observada hasta que negocio aporte descripciones.
+- Catalogo de tipo: no hay tabla maestra poblada para `FRR_tipofactura`; usar `GET /facturasrecibidas/tipos` como lista observada. La evidencia funcional confirma al menos `GE = Compras de Genero`; las descripciones restantes mantienen su grado de confirmacion previo.
 - Clave practica para duplicados OCR: `FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura`.
 
 Bloques funcionales:
 
 | Bloque | Campos principales | Uso |
 |---|---|---|
-| Identidad interna | `FRR_id`, `FRR_numero`, `FRR_tipofactura`, `FRR_ejercicio`, `FRR_IdTipoDoc` | Numeracion y clasificacion interna de Netagro. `FRR_tipofactura` son codigos observados, no descripciones. |
+| Identidad interna | `FRR_id`, `FRR_numero`, `FRR_tipofactura`, `FRR_ejercicio`, `FRR_IdTipoDoc` | Numeracion y circuito interno de Netagro. `GE` identifica Compras de Genero; no se confunde con `Origen`. |
 | Documento proveedor | `FRR_numerofactura`, `FRR_fechafactura`, `FRR_idproveedor`, `FRR_Concepto` | Lo que debe casar con OCR del PDF. |
-| Proveedor/cuenta | `FRR_idproveedor`, `FRR_idcuenta`, `FRR_IdBanco`, `FRR_IdFormaPago` | Relacion con `acreedores` y datos de pago/contabilidad. |
+| Proveedor/cuenta | `FRR_idproveedor`, `FRR_idcuenta`, `FRR_IdBanco`, `FRR_IdFormaPago` | Relacion con `agricultores` para GE o `acreedores` para los demas tipos observados, y datos de pago/contabilidad. |
 | Impuestos | `FRR_base1..5`, `FRR_iva1..5`, `FRR_cuota1..5` | Bases y cuotas por tramos de IVA. |
 | Retencion/IRPF | `FRR_baseret`, `FRR_ret`, `FRR_cuotaret`, `FRR_ClaveIRPF` | Retenciones aplicadas. |
 | Gastos/cuentas | `FRR_igasto1..4`, `FRR_ctagasto1..4`, `FRR_CtaSuplido`, `FRR_ImpSuplido`, `FRR_CuotaNoDeducible` | Desglose resumido de gastos/suplidos/no deducible. |
@@ -1989,7 +2114,7 @@ Campos:
 | `FRR_numerofactura` | `varchar(20)` | NO | MUL | numero de factura dentro de la serie (factura recibida) |
 | `FRR_ejercicio` | `int(11)` | NO |  | ejercicio fiscal/comercial (factura recibida) |
 | `FRR_idcentro` | `int(11)` | NO |  | id de centro (factura recibida) |
-| `FRR_idproveedor` | `int(11)` | NO | MUL | id del proveedor (factura recibida) |
+| `FRR_idproveedor` | `int(11)` | NO | MUL | id del proveedor en el namespace indicado por `FRR_tipofactura`: agricultor para GE, acreedor para los demas tipos observados |
 | `FRR_idregimen` | `int(11)` | NO |  | id de regimen fiscal (factura recibida) |
 | `FRR_fechactb` | `date` | NO |  | fecha de contabilizacion (factura recibida) |
 | `FRR_base1` | `decimal(10,2)` | NO |  | base imponible por tramo de IVA (factura recibida) |
@@ -2016,7 +2141,7 @@ Campos:
 | `FRR_igasto4` | `decimal(10,2)` | NO |  | gasto (factura recibida) |
 | `FRR_ctagasto4` | `varchar(11)` | NO |  | gasto (factura recibida) |
 | `FRR_totalfac` | `decimal(12,2)` | NO |  | total de factura (factura recibida) |
-| `FRR_tipofactura` | `varchar(2)` | NO | MUL | codigo de tipo/serie interna de factura recibida; valores observados en `/facturasrecibidas/tipos` |
+| `FRR_tipofactura` | `varchar(2)` | NO | MUL | codigo del circuito/tipo interno de factura; GE corresponde a Compras de Genero y no equivale al `Origen` del punteo |
 | `FRR_idcuenta` | `varchar(11)` | NO | MUL | cuenta contable (factura recibida) |
 | `FRR_idpuntoventa` | `int(11)` | NO |  | id de punto de venta (factura recibida) |
 | `FRR_ClaveIRPF` | `varchar(5)` | NO |  | campo operativo inferido por nombre: claveirpf (factura recibida) |
@@ -2728,7 +2853,7 @@ Campos:
 |---|---:|---:|---:|---|
 | `AEH_id` | `int(11)` | NO | PRI | campo operativo inferido por nombre: aeh_id |
 | `AEH_idalbaran` | `int(11)` | NO | MUL | id interno de albaran relacionado |
-| `AEH_idproveedor` | `int(11)` | NO | MUL | id del proveedor |
+| `AEH_idproveedor` | `int(11)` | NO | MUL | id del agricultor/proveedor agricola en el circuito GE |
 | `AEH_porcentaje` | `decimal(8,2)` | NO |  | campo operativo inferido por nombre: aeh_porcentaje |
 | `AEH_idtarifa` | `int(11)` | NO |  | campo operativo inferido por nombre: aeh_idtarifa |
 | `AEH_importegenero` | `decimal(8,2)` | NO |  | importe de genero |
@@ -2745,7 +2870,7 @@ Campos:
 | `AEH_nmed` | `int(11)` | NO |  | campo operativo inferido por nombre: aeh_nmed |
 | `AEH_kilos` | `decimal(8,2)` | NO |  | kilos |
 | `AEH_idempresa` | `int(11)` | NO | MUL | id de empresa |
-| `AEH_idfacturafirme` | `int(11)` | NO | MUL | id interno de factura relacionada |
+| `AEH_idfacturafirme` | `int(11)` | NO | MUL | enlace a `facturasrecibidas.FRR_id`; fuente de lectura de albaranes GE ya ligados |
 | `AEH_IdUsuarioLog` | `int(11)` | NO |  | usuario que creo o modifico el registro |
 | `AEH_FechaLog` | `date` | NO |  | fecha principal del documento |
 | `AEH_HoraLog` | `varchar(8)` | NO |  | hora de auditoria |
@@ -2850,11 +2975,24 @@ Campos:
 - Separar endpoints de lectura y escritura. Para escritura, usar un usuario MariaDB distinto, transacciones y validaciones de integridad previas.
 - No escribir nunca en produccion usando el usuario `sa`; crear usuario de aplicacion con permisos minimos y whitelisting de IP/tunel.
 - Para OCR de facturas de cliente, resolver primero `clientes` por `CLI_Nif`/`CLI_Nombre` y despues buscar `facturas` por `cliente_id`, `serie`, `numero`, `fecha` y `total`.
-- Para OCR de facturas recibidas, resolver primero `acreedores` por `ACR_Nif`/`ACR_Nombre`, despues validar `facturasrecibidas` por `FRR_idproveedor`, `FRR_numerofactura`, `FRR_fechafactura`, `FRR_totalfac` y tramos de IVA.
-- Para combos de facturas recibidas, usar `GET /empresas` para `FRR_Idempresa` y `GET /facturasrecibidas/tipos` para `FRR_tipofactura`. Las etiquetas de `FRR_tipofactura` quedan pendientes de confirmacion funcional porque no hay maestro poblado en la copia local.
+- Para OCR de facturas recibidas, buscar candidatos por NIF/nombre en
+  `acreedores` y `agricultores`, conservar el tipo de entidad y validar despues
+  `facturasrecibidas` por `FRR_idproveedor`, `FRR_numerofactura`,
+  `FRR_fechafactura`, `FRR_totalfac` y tramos de IVA. No aceptar el codigo por
+  si solo: puede existir en ambos maestros.
+- Para combos de facturas recibidas, usar `GET /empresas` para
+  `FRR_Idempresa` y `GET /facturasrecibidas/tipos` para
+  `FRR_tipofactura`. Esta confirmado `GE = Compras de Genero`; las demas
+  etiquetas conservan el grado de confirmacion indicado en la documentacion
+  funcional.
 - Mantener la tabla staging/OCR de 97 columnas como bandeja de trabajo, no como definicion del modelo Netagro. Sus metadatos (`estado`, `extraction`, `validation_errors`, `netagro_response`, etc.) son propios de la app y no deben enviarse ni asumirse como columnas ERP.
 - No hacer que staging tenga mas autoridad que Netagro: las columnas `FRR_*` deben mapearse 1:1 contra `facturasrecibidas` antes de cualquier envio, y `facturasrecibidas_ctb` debe generarse como tabla hija, no embutirse en JSON si se va a sincronizar con el ERP.
 - Exponer como siguientes maestros de solo lectura: `gastos` para traducir `FGC_idgasto`/`ASG_idgasto`, maestro de generos/productos para `ASL_idgenero`, paises/divisas para etiquetas legibles y `clientesdescargas` si se necesita validar direcciones de entrega.
-- Si los PDFs son facturas recibidas de proveedores, documentar y exponer el flujo separado `acreedores` + `facturasrecibidas` + `facturasrecibidas_ctb`; no mezclarlo con el flujo de facturas emitidas a clientes.
+- Si los PDFs son facturas recibidas, documentar y exponer el flujo separado
+  `(acreedores | agricultores) + facturasrecibidas + facturasrecibidas_ctb`;
+  no mezclarlo con el flujo de facturas emitidas a clientes.
+- Mantener `albentrada_his` y `albentrada_hislineas` como lectura de evidencia
+  GE ya ligada hasta disponer de un contrato oficial para seleccionar o mutar
+  esos albaranes.
 - Para facturar albaranes, validar primero el flujo real del ERP: campos `ASA_idfactura`, `ASA_idfacturaestimativa`, `ASA_idfacturanegativa`, `ASA_fechavaloracion`, `FRA_DefinitivaEstimativa` y asientos contables.
 - Antes de migrar cambios a produccion, crear pruebas de comparacion sobre totales: suma de lineas/gastos vs total de cabecera.

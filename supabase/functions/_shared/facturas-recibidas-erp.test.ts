@@ -369,7 +369,7 @@ Deno.test("conserva las cuatro dimensiones analiticas FRC", () => {
   assertEquals(frc.FRC_Idsubdepartamento, 14);
 });
 
-Deno.test("normaliza albmaterial con claves estables y lineas de solo lectura", () => {
+Deno.test("normaliza albmaterial con claves estables sin persistir lineas del ERP", () => {
   const punteo = normalizePunteoPayload({
     source_table: "albmaterial",
     AMA_id: 49305,
@@ -381,7 +381,8 @@ Deno.test("normaliza albmaterial con claves estables y lineas de solo lectura", 
   assertEquals(punteo.source_id, 49305);
   assertEquals(punteo.Origen, "MA");
   assertEquals(punteo.line_count, 2);
-  assertEquals(punteo.source_lines, [{ id: 1 }, { id: 2 }]);
+  assertEquals(punteo.source_lines, []);
+  assertEquals("lines" in punteo.raw, false);
   assertEquals(punteo.S, false);
 });
 

@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 import { agroirisAuth } from '@/services/agroirisAuth';
 import { agroirisPaises } from '@/services/agroirisPaises';
 import type { AgroIrisClient } from '@/services/agroirisClients';
@@ -249,7 +250,11 @@ const resolveInvokeError = async (error: unknown) => {
   const response = (error as { context?: unknown } | null)?.context;
 
   if (!(response instanceof Response)) {
-    return { status: undefined, message: fallbackMessage, details: undefined };
+    return {
+      status: undefined,
+      message: sanitizeUserFacingErrorMessage(fallbackMessage),
+      details: undefined,
+    };
   }
 
   const status = response.status;
@@ -276,7 +281,11 @@ const resolveInvokeError = async (error: unknown) => {
     }
   }
 
-  return { status, message, details };
+  return {
+    status,
+    message: sanitizeUserFacingErrorMessage(message),
+    details,
+  };
 };
 
 export const sendManualPedidoToWebhook = async ({

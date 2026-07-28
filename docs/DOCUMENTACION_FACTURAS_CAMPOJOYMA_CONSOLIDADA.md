@@ -1,6 +1,12 @@
 # Documentación consolidada: facturas Campojoyma
 
-Última actualización: 2026-07-22
+Última actualización: 2026-07-28
+
+La topología real, los dos saltos SSH, los túneles, las rutas de claves y los
+comandos de diagnóstico se mantienen en
+[ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md](ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md).
+Ese documento es la referencia operativa antes de concluir que un servidor no es
+accesible o antes de medir la copia MariaDB.
 
 La referencia canónica del contrato de escritura es
 [FACTURAS_RECIBIDAS_API_CONTRACT.md](FACTURAS_RECIBIDAS_API_CONTRACT.md). El
@@ -8,6 +14,8 @@ estado de homologación y los límites de la API se documentan en
 [FACTURAS_RECIBIDAS_API_V2_STAGING.md](FACTURAS_RECIBIDAS_API_V2_STAGING.md);
 el OpenAPI verificable está en
 [openapi/netagro-test-api-v0.2.0.json](openapi/netagro-test-api-v0.2.0.json).
+El nombre del fichero se mantiene por compatibilidad; su contenido corresponde
+a la API v0.2.2 desplegada y verificada mediante readback el 28/07/2026.
 
 La API de escritura sigue en modo <code>reference_only</code>. La copia de
 Netagro no expone el mecanismo oficial que crea el asiento ni permite verificar
@@ -29,10 +37,11 @@ La arquitectura activa se rige por estas decisiones:
 
 - Supabase es la bandeja de revisión. ERP es la autoridad para maestros,
   duplicados y, cuando la escritura real sea homologada, el destino final.
-- Los acreedores se consultan exclusivamente mediante la API ERP:
-  búsqueda, detalle y gastos. No existe una fuente ni un fallback local.
-- Antes de enviar se repite un preflight contra ERP: existencia del proveedor,
-  coincidencia de su cuenta y duplicado exacto.
+- Los terceros se consultan exclusivamente mediante la API ERP. El circuito
+  `GE` usa `agricultores`; `OT` y los demás tipos observados usan
+  `acreedores`. No existe una fuente ni un fallback local.
+- Antes de enviar se repite un preflight contra ERP: existencia del proveedor
+  en su maestro canónico, coincidencia de su cuenta y duplicado exacto.
 - El ejercicio 25 procede de una regla explícita limitada a Onduspan (acreedor
   ERP 17). No
   se calcula a partir de la fecha de factura.
@@ -56,6 +65,53 @@ Los valores contrastados para un caso de aceptación, como ONDUSPAN
 (ejercicio 25, tipo OT y régimen 2110), no son defaults universales. Solo se
 aplican cuando una regla con ese alcance está aprobada.
 
+## Confirmaciones funcionales recibidas el 28/07/2026
+
+Campojoyma confirmó por correo que la casilla `Agricultor descontar` no se
+utiliza. Por tanto, no debe mostrarse ni solicitarse en el frontend. El campo
+físico <code>FRR_IdAgricultorDto</code> se conserva en el modelo y en el
+contrato por compatibilidad con Netagro, con su valor neutro, pero no participa
+en la edición ni se deriva de otro dato.
+
+La respuesta incluye formularios vacíos y completos de las dos opciones
+visibles bajo `Tipo factura`:
+
+- `Compras de Género`, con la parte principal rotulada como `Proveedor`;
+- `Acreedores`, con la parte principal rotulada como `Acreedor`.
+
+Las capturas también muestran variantes distintas de
+`Albaranes/Gtos para puntear`. Esto es evidencia de presentación y contenido,
+no una autorización para deducir el tipo de factura desde la columna `Origen`
+de un punteo. En particular, el ejemplo de acreedores contiene filas de origen
+`MA`.
+
+![Formulario vacío de Compras de Género](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/01-erp-compras-genero-formulario-vacio.png)
+
+![Formulario vacío de Acreedores](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/02-erp-acreedores-formulario-vacio.png)
+
+La segunda respuesta del mismo hilo documenta expresamente los
+`Albaranes de entrada para compras de género`. Incluye el formulario vacío y
+un ejemplo `25 / A26 / 8436`. La cabecera corresponde a `albentrada` y la
+rejilla muestra sus partidas, género, cultivo/calidad, envase, bultos, kilos,
+precio e importe. En el ejemplo existen pesos pero precio e importe son cero:
+la recepción logística puede preceder a su valoración contable.
+
+![Albarán de entrada vacío](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/06-erp-albaran-entrada-formulario-vacio.png)
+
+![Albarán de entrada cumplimentado](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/07-erp-albaran-entrada-ejemplo-relleno.png)
+
+El cruce con la API y la base aclara dos dimensiones que no deben mezclarse:
+
+- `FRR_tipofactura` representa el circuito de factura. `GE` es Compras de
+  Género y resuelve el tercero en `agricultores`; `OT` y los demás tipos
+  muestreados corresponden al circuito de acreedores.
+- `Origen` representa la familia del albarán o gasto punteado. Una factura
+  `OT` puede contener albaranes `MA`, por lo que nunca se deriva
+  `FRR_tipofactura` desde `Origen`.
+
+Las siete capturas funcionales, los hashes y la cronología saneada están en
+[la carpeta de evidencias del 28/07/2026](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/).
+
 ## Flujo y autoridad de datos
 
 ~~~text
@@ -64,7 +120,7 @@ Frontend React
   -> factura-recibida-extraer
       -> n8n campojoyma-factura-extraer
           -> IA: solo datos visibles y evidencia del PDF
-          -> API ERP: proveedor y reglas confirmadas
+          -> API ERP: acreedor/agricultor canónico y reglas confirmadas
       -> facturasrecibidas (cabecera de staging)
       -> facturasrecibidas_ctb (solo CTB explícito)
       -> facturasrecibidas_punteos (propuestas no seleccionadas)
@@ -77,7 +133,7 @@ Frontend React
 
 Frontend React
   -> factura-recibida-send-erp
-      -> preflight de proveedor, cuenta y duplicado contra API ERP
+      -> preflight de tipo de proveedor, cuenta y duplicado contra API ERP
       -> escritor v2
       -> reference_only: no declarar asiento creado
 ~~~
@@ -87,7 +143,8 @@ Secuencia operativa:
 1. El usuario incorpora un PDF.
 2. El PDF se guarda en <code>archivos_pdf</code>.
 3. <code>factura-recibida-extraer</code> envía su contenido al extractor n8n.
-4. La IA extrae únicamente datos visibles; n8n contrasta el proveedor con ERP.
+4. La IA extrae únicamente datos visibles; n8n busca candidatos de acreedor y
+   agricultor sin mezclar sus identificadores.
 5. La Edge Function normaliza y guarda cabecera, CTB explícito y propuestas de
    punteo sin seleccionar.
 6. Los errores bloqueantes y avisos quedan visibles para revisión.
@@ -95,6 +152,13 @@ Secuencia operativa:
    inexistente, cuenta incoherente o duplicado exacto.
 8. Mientras el escritor continúe en <code>reference_only</code>, el resultado
    solo acredita validación/referencia, nunca la creación de un asiento.
+
+El prompt, el parser interno <code>schema_version: 3</code>, las seis
+herramientas HTTP de consulta y el procedimiento de importación saneada están
+documentados en
+[Agente v3 de extracción de facturas recibidas](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md).
+El contrato externo del workflow continúa siendo v2; son versiones de capas
+distintas.
 
 ## API ERP de lectura
 
@@ -129,12 +193,18 @@ Endpoints relevantes:
 | <code>GET /empresas/{empresa_id}</code> | Detalle de empresa. |
 | <code>GET /acreedores</code> | Búsqueda acotada por nombre, NIF o código. |
 | <code>GET /acreedores/{acreedor_id}</code> | Detalle autoritativo del proveedor y su cuenta. |
-| <code>GET /acreedores/{acreedor_id}/gastos</code> | Reglas/cuentas de gasto observadas para el proveedor. |
+| <code>GET /acreedores/{acreedor_id}/gastos</code> | Reglas/cuentas de gasto observadas para el acreedor. |
+| <code>GET /agricultores</code> | Búsqueda de productores por nombre, NIF o código. |
+| <code>GET /agricultores/{agricultor_id}</code> | Detalle autoritativo del agricultor y su cuenta. |
+| <code>GET /agricultores/{agricultor_id}/gastos</code> | Reglas/cuentas observadas para el agricultor. |
 | <code>GET /facturasrecibidas/tipos</code> | Códigos observados; no constituye una regla de selección. |
 | <code>GET /facturasrecibidas</code> | Consulta y comprobación de duplicados exactos. |
-| <code>GET /facturasrecibidas/{factura_id}</code> | Cabecera real por <code>FRR_id</code>. |
+| <code>GET /facturasrecibidas/{factura_id}</code> | Cabecera real por <code>FRR_id</code> con proveedor canónico. |
 | <code>GET /facturasrecibidas/{factura_id}/ctb</code> | CTB real asociado a una factura. |
 | <code>GET /facturasrecibidas_ctb?factura_id={id}</code> | Alias de consulta CTB. |
+| <code>GET /facturasrecibidas/{factura_id}/punteos</code> | Punteos ya ligados; en GE incluye histórico de entrada de solo lectura. |
+| <code>GET /albaranes/entrada</code> | Cabeceras vigentes de albaranes de género. |
+| <code>GET /albaranes/entrada/{albaran_id}/lineas</code> | Detalle logístico del albarán bajo demanda. |
 
 Los listados responden con:
 
@@ -147,9 +217,17 @@ Los listados responden con:
 }
 ~~~
 
-La búsqueda interactiva de acreedores debe ser acotada y con debounce. Tras
-seleccionar uno se consulta su detalle para hidratar los campos maestros; no se
-rellenan desde una copia persistida en Supabase.
+La búsqueda interactiva de terceros debe ser acotada y con debounce. Tras
+seleccionar uno se consulta su detalle en el maestro correspondiente; no se
+rellena desde una copia persistida en Supabase ni se acepta una coincidencia
+basada solo en un ID que también pueda existir en el otro maestro.
+
+En la API v0.2.2, listado y detalle de facturas recibidas devuelven
+<code>proveedor_tipo</code>, <code>proveedor_id</code>,
+<code>proveedor_nombre</code> y <code>proveedor_nif</code>, además de las
+identidades específicas de acreedor y agricultor. Para
+<code>FRR_tipofactura="GE"</code> el proveedor canónico es agricultor; para los
+demás tipos observados es acreedor.
 
 ## Modelo y duplicados
 
@@ -158,10 +236,13 @@ Tablas ERP principales:
 | Tabla | Papel |
 |---|---|
 | <code>empresas</code> | Maestro de empresas. |
-| <code>acreedores</code> | Maestro de proveedores. |
+| <code>acreedores</code> | Maestro de terceros del circuito de acreedores. |
+| <code>agricultores</code> | Maestro de proveedores agrícolas del circuito GE. |
 | <code>facturasrecibidas</code> | Cabecera real. |
 | <code>facturasrecibidas_ctb</code> | Apuntes CTB reales. |
 | <code>tipoagricultor</code> | Reglas contables cuando están confirmadas. |
+| <code>albentrada</code> | Cabecera vigente del albarán de entrada de género. |
+| <code>albentrada_his</code>/<code>albentrada_hislineas</code> | Histórico y líneas utilizados para leer albaranes GE ya ligados. |
 
 Relaciones prácticas:
 
@@ -169,11 +250,21 @@ Relaciones prácticas:
 empresas.EMP_idempresa
   -> facturasrecibidas.FRR_Idempresa
 
-acreedores.ACR_Codigo
-  -> facturasrecibidas.FRR_idproveedor
+facturasrecibidas.FRR_tipofactura = GE
+  -> agricultores.AGR_Idagricultor = facturasrecibidas.FRR_idproveedor
+
+facturasrecibidas.FRR_tipofactura <> GE (tipos observados)
+  -> acreedores.ACR_Codigo = facturasrecibidas.FRR_idproveedor
 
 facturasrecibidas.FRR_id
   -> facturasrecibidas_ctb.FRC_idfacturarecibida
+  -> albentrada_his.AEH_idfacturafirme
+
+albentrada_his.AEH_idalbaran
+  -> albentrada.AEN_idalbaran
+
+albentrada_his.AEH_id
+  -> albentrada_hislineas.AHL_idalbhis
 ~~~
 
 La clave de duplicado funcional es:
@@ -250,8 +341,9 @@ nulos hasta que el ERP confirme una escritura real.
 ### facturas-recibidas-erp-read
 
 Es el proxy server-side que protege el JWT. Su lista permitida incluye las
-consultas concretas necesarias para empresas, acreedores, detalle, gastos,
-facturas, tipos y CTB. No acepta rutas arbitrarias ni navegación por segmentos.
+consultas concretas necesarias para empresas, acreedores, agricultores,
+detalle, gastos, facturas, tipos, CTB, punteos y albaranes de entrada. No
+acepta rutas arbitrarias ni navegación por segmentos.
 
 Secrets:
 
@@ -266,8 +358,9 @@ N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS
 
 Antes de invocar al escritor:
 
-1. Comprueba que el proveedor existe en <code>/acreedores/{id}</code>.
-2. Contrasta la cuenta de la factura con la cuenta maestra del proveedor.
+1. Comprueba que el proveedor existe en el maestro canónico indicado por el
+   circuito: agricultor para GE y acreedor para los demás tipos observados.
+2. Contrasta la cuenta de la factura con la cuenta de ese maestro.
 3. Busca el duplicado exacto por empresa, ejercicio, proveedor y número.
 4. Bloquea si la API no está disponible, si el proveedor no existe, si la
    cuenta difiere o si aparece un candidato duplicado.
@@ -290,9 +383,12 @@ Reglas vigentes:
 - Tipo de factura: regla aprobada o selección manual.
 - Régimen IVA: regla aprobada o selección manual.
 - Fecha CTB: regla aprobada o selección manual; no hereda la fecha de factura.
-- Cuenta del proveedor: detalle del acreedor ERP.
+- Cuenta del proveedor: detalle del agricultor para GE o del acreedor para los
+  demás tipos observados.
 - Gastos: endpoint de gastos/regla ERP o edición explícita; nunca IA inventada.
 - Vencimientos: evidencia separada hasta existir regla aprobada o confirmación.
+- Agricultor a descontar: Campojoyma confirma que no se utiliza; no se muestra
+  ni se solicita en la interfaz.
 
 Los avisos informan de datos que requieren revisión. Los errores bloquean el
 envío. Para un mismo campo se muestra una sola incidencia semántica.
@@ -313,9 +409,27 @@ lista vacía; no se construye desde la base o desde la cuenta del proveedor.
 
 ### Punteos
 
-Los punteos son candidatos de conciliación. La selección es manual y su estado
-por defecto es no seleccionado. El total mostrado suma únicamente candidatos
-marcados por el usuario.
+Las propuestas de punteo de staging son candidatos de conciliación. La
+selección es manual y su estado por defecto es no seleccionado. El total de
+propuestas suma únicamente candidatos marcados por el usuario; la lectura de
+una factura ERP también puede devolver vínculos que ya existen.
+
+La lectura v0.2.2 añade los albaranes GE que Netagro ya vinculó a una factura:
+lee <code>albentrada_his</code> por <code>AEH_idfacturafirme</code> y, cuando
+se solicitan, sus líneas desde <code>albentrada_hislineas</code>. Esas filas
+son evidencia de solo lectura: no aparecen en candidatos y no pueden enviarse
+en una mutación.
+
+Cada fila GE distingue <code>importe_origen</code>, conservado del histórico,
+de <code>importe_factura</code>. Si ambas bases totales no coinciden, la API
+prorratea la base de factura y lo declara mediante
+<code>importe_metodo=prorrateo_base_factura</code>; no sobrescribe el importe
+histórico. El mayor <code>AEH_id</code> absorbe de forma determinista el residuo
+de redondeo para que la suma final cuadre al céntimo.
+
+En ASG y FGC, <code>importe_origen</code> conserva el gasto bruto e
+<code>importe_factura</code> usa el importe realmente asignado a la factura
+(<code>Importe P</code>).
 
 ### Asiento
 
@@ -331,8 +445,8 @@ dry-run y <code>reference_only</code> no son un asiento.
 | Ejercicio | <code>FRR_ejercicio</code> | Regla explícita (seed 25 solo para Onduspan, acreedor 17). |
 | Tipo | <code>FRR_tipofactura</code> | Regla aprobada o manual. |
 | Régimen | <code>FRR_idregimen</code> | Regla aprobada o manual. |
-| Proveedor | <code>FRR_idproveedor</code> | Búsqueda y detalle ERP. |
-| Cuenta proveedor | <code>FRR_idcuenta</code> | Detalle ERP y preflight. |
+| Proveedor | <code>FRR_idproveedor</code> | Búsqueda y detalle en el maestro indicado por <code>FRR_tipofactura</code>; conservar <code>proveedor_tipo</code>. |
+| Cuenta proveedor | <code>FRR_idcuenta</code> | Detalle canónico de agricultor/acreedor y preflight. |
 | Número factura | <code>FRR_numerofactura</code> | PDF/IA, confirmado por usuario. |
 | Fecha factura | <code>FRR_fechafactura</code> | PDF/IA. |
 | Fecha contable | <code>FRR_fechactb</code> | Regla aprobada o manual. |
@@ -365,8 +479,9 @@ mediante IA.
 ## Validación mínima antes del envío
 
 - Empresa, ejercicio, proveedor, cuenta, número, fecha, tipo y régimen presentes.
-- Proveedor existente en el detalle ERP.
-- Cuenta coincidente con el maestro del proveedor.
+- Proveedor existente en el maestro canónico ERP; no basta un ID coincidente
+  en el otro maestro.
+- Cuenta coincidente con ese maestro.
 - Duplicado exacto inexistente en ERP.
 - Importes coherentes dentro de la tolerancia definida.
 - Fecha CTB confirmada por regla o usuario.
@@ -382,7 +497,7 @@ usa una copia local.
 Decisiones vigentes:
 
 - La pantalla principal lista staging, no todo el histórico ERP.
-- Los catálogos y acreedores se consultan bajo demanda.
+- Los catálogos, acreedores y agricultores se consultan bajo demanda.
 - <code>FRR_tipofactura = "1"</code> no es un valor confirmado ni un default.
 - n8n extrae y contrasta; la Edge Function persiste en Supabase.
 - La escritura real debe devolver identificadores ERP verificables.
@@ -391,15 +506,20 @@ Pendientes externos:
 
 1. Homologar el mecanismo oficial de asiento y sus evidencias de lectura.
 2. Confirmar las descripciones funcionales pendientes de algunos tipos.
-3. Confirmar cualquier nueva regla de tipo, régimen, fecha CTB o vencimiento
+3. Confirmar el contrato oficial de selección y mutación de albaranes GE antes
+   de sacarlos del modo de solo lectura.
+4. Confirmar cualquier nueva regla de tipo, régimen, fecha CTB o vencimiento
    antes de automatizarla.
-4. Desplegar el frontend y reemplazar el workflow n8n tras exportar la versión
+5. Desplegar el frontend y reemplazar el workflow n8n tras exportar la versión
    remota vigente.
-5. Completar la aceptación autenticada del flujo desplegado.
+6. Completar la aceptación autenticada del flujo desplegado.
 
 ## Errores a evitar
 
 - Usar <code>acreedores_cache</code> como fuente o fallback.
+- Resolver <code>FRR_idproveedor</code> contra acreedores sin comprobar el
+  circuito; los IDs de acreedor y agricultor pueden colisionar.
+- Inferir <code>FRR_tipofactura</code> desde <code>Origen</code>.
 - Tratar Supabase como ERP real.
 - Exponer el JWT en variables de frontend.
 - Cargar todo el histórico ERP en la pantalla principal.

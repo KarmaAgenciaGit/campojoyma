@@ -234,17 +234,20 @@ export type FacturaRecibidaPage = {
   total: number;
 };
 
-export const FACTURA_RECIBIDA_INBOX_SOURCE_KINDS = [
-  'ocr_draft',
-  'email_draft',
-  'front_draft',
-  'n8n_draft',
+export const FACTURA_RECIBIDA_NON_INBOX_SOURCE_KINDS = [
+  'manual_draft',
+  'erp_reference',
 ] as const;
 
-export const isFacturaRecibidaInboxSourceKind = (value?: string | null) =>
-  FACTURA_RECIBIDA_INBOX_SOURCE_KINDS.includes(
-    value as (typeof FACTURA_RECIBIDA_INBOX_SOURCE_KINDS)[number],
+export const isFacturaRecibidaInboxSourceKind = (value?: string | null) => {
+  const sourceKind = value?.trim();
+  return Boolean(
+    sourceKind?.endsWith('_draft') &&
+      !FACTURA_RECIBIDA_NON_INBOX_SOURCE_KINDS.includes(
+        sourceKind as (typeof FACTURA_RECIBIDA_NON_INBOX_SOURCE_KINDS)[number],
+      ),
   );
+};
 
 export const FACTURA_RECIBIDA_ESTADOS: FacturaRecibidaEstado[] = [
   'pendiente_revision',
