@@ -85,10 +85,10 @@ const envaseLabel = (line: AlbaranEntradaLineaERP) =>
 
 const LineValue = ({ label, value }: { label: string; value: string }) => (
   <div className="min-w-0">
-    <dt className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+    <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
       {label}
     </dt>
-    <dd className="mt-1 break-words text-sm font-semibold text-slate-900 dark:text-slate-100">
+    <dd className="mt-0.5 break-words text-xs font-medium leading-4 text-slate-900 dark:text-slate-100">
       {value}
     </dd>
   </div>
@@ -148,7 +148,7 @@ const EntryLinesGrid = ({
       {state.items.map((line, index) => (
         <dl
           key={line.id ?? `${albaranId}-${line.linea ?? index}`}
-          className="grid gap-x-5 gap-y-4 px-4 py-4 sm:grid-cols-3 xl:grid-cols-6"
+          className="grid gap-x-4 gap-y-2.5 px-4 py-3 sm:grid-cols-4 xl:grid-cols-7"
           role="listitem"
         >
           <LineValue label="Línea" value={formatNumber(line.linea)} />
@@ -191,7 +191,7 @@ const MaterialLinesGrid = ({
       {lines.map((line, index) => (
         <dl
           key={line.id ?? `${line.posicion ?? index}-${line.articulo_id ?? 'linea'}`}
-          className="grid gap-x-5 gap-y-4 px-4 py-4 sm:grid-cols-3 xl:grid-cols-6"
+          className="grid grid-cols-[40px_55px_minmax(110px,1.5fr)_minmax(80px,1fr)_65px_55px_65px_minmax(75px,1fr)] gap-x-2 px-4 py-2.5"
           role="listitem"
         >
           <LineValue label="Línea" value={formatNumber(line.posicion ?? index + 1)} />
