@@ -120,9 +120,9 @@ Listado y detalle de facturas recibidas v0.2.2 exponen la identidad normalizada
 los campos especificos de acreedor y agricultor. Esta adenda describe el
 contrato del repositorio; su despliegue debe comprobarse por version y readback.
 
-## Adenda API v0.2.4: lineas MA bajo demanda (candidato local)
+## Adenda API v0.2.4: lineas MA bajo demanda (desplegada)
 
-El candidato v0.2.4 añade
+La API v0.2.4 añade
 `GET /albaranes/material/{material_id}/lineas`. `material_id` es el
 `AMA_idalb` positivo del albaran `albmaterial`; la respuesta `{items}` reutiliza
 la proyeccion de `albmateriallineas` con articulo, descripcion, referencia,
@@ -131,7 +131,8 @@ cantidad, precios, descuento, plastico, importe, observaciones y unidad.
 La ruta se consulta solo al desplegar una fila MA. El listado de punteables
 permanece formado por cabeceras y Supabase conserva unicamente la referencia
 estable; las lineas no se copian ni se incluyen en el contrato de escritura.
-El runtime vivo continua en v0.2.3 hasta promover y verificar este candidato.
+El runtime vivo v0.2.4 está verificado en `karma-box:8001` y mediante el túnel
+`18001`.
 
 ## Adenda API v0.2.3: lineas de albaran de entrada (2026-07-28)
 

@@ -514,7 +514,7 @@ existentes, no a proponer, seleccionar o enlazar nuevos albaranes de género.
 
 ### Líneas MA bajo demanda
 
-El candidato FastAPI v0.2.4 incorpora:
+La FastAPI v0.2.4 desplegada incorpora:
 
 ```http
 GET /albaranes/material/{material_id}/lineas
