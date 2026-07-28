@@ -148,7 +148,12 @@ describe('FacturaPunteosTable', () => {
     const onSelectionChange = vi.fn();
     const loadEntryLines = vi.fn().mockResolvedValue([line]);
     renderTable({
-      punteos: [{ ...punteo, albaran_id: null, seleccionado: false }],
+      punteos: [{
+        ...punteo,
+        source_table: 'albsalida_gastos',
+        albaran_id: null,
+        seleccionado: false,
+      }],
       readOnly: false,
       onSelectionChange,
       loadEntryLines,
@@ -165,6 +170,30 @@ describe('FacturaPunteosTable', () => {
       );
     });
     expect(loadEntryLines).not.toHaveBeenCalled();
+  });
+
+  it('muestra las líneas de una entrada nueva pero no permite seleccionarla para ERP', async () => {
+    const onSelectionChange = vi.fn();
+    const loadEntryLines = vi.fn().mockResolvedValue([line]);
+    renderTable({
+      punteos: [{
+        ...punteo,
+        source_table: 'albentrada',
+        source_id: 82548,
+        seleccionado: false,
+      }],
+      readOnly: false,
+      onSelectionChange,
+      loadEntryLines,
+    });
+
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByTitle(/referencia de entrada de solo lectura/i)).toHaveTextContent('No');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ver líneas' }));
+    expect(loadEntryLines).toHaveBeenCalledWith(82548);
+    expect(await screen.findByText('SANDIA MINI')).toBeInTheDocument();
+    expect(onSelectionChange).not.toHaveBeenCalled();
   });
 
   it('no confunde un albarán MA sin source_id válido con una cabecera de entrada GE', () => {

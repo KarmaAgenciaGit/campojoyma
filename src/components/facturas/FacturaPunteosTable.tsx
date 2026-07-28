@@ -72,6 +72,18 @@ const validMaterialSourceId = (punteo: FacturaRecibidaPunteo) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const selectablePunteoSources = new Set([
+  'albsalida_gastos',
+  'albentrada_hisgastos',
+  'albaranescompra_gastos',
+  'facturas_gastos',
+  'albarancoste',
+  'albmaterial',
+]);
+
+const isSelectablePunteo = (punteo: FacturaRecibidaPunteo) =>
+  selectablePunteoSources.has(punteo.source_table?.trim().toLowerCase() ?? '');
+
 const categoriaLabel = (line: AlbaranEntradaLineaERP) =>
   line.categoria_calibre_nombre ??
   ([line.categoria_nombre, line.categoria_calibre].filter(Boolean).join(' · ') || '-');
@@ -405,6 +417,7 @@ export const FacturaPunteosTable = ({
             const albaranId = validAlbaranId(punteo);
             const materialSourceId = validMaterialSourceId(punteo);
             const detailsAvailable = albaranId !== null || materialSourceId !== null;
+            const selectable = isSelectablePunteo(punteo);
             const expanded = detailsAvailable && expandedRowKey === rowKey;
             const detailsId =
               `punteo-lineas-${index}-${albaranId ?? `material-${materialSourceId ?? 'none'}`}`;
@@ -420,8 +433,16 @@ export const FacturaPunteosTable = ({
                   <td className="px-3 py-3 text-right">{formatMoney(punteo.importe_punteado)}</td>
                   <td className="px-3 py-3 text-right">{formatMoney(punteo.importe)}</td>
                   <td className="px-3 py-3 text-center">
-                    {readOnly ? (
-                      punteo.seleccionado ? 'Sí' : 'No'
+                    {readOnly || !selectable ? (
+                      <span
+                        title={
+                          selectable
+                            ? undefined
+                            : 'Referencia de entrada de solo lectura; no se puede seleccionar para enviar al ERP.'
+                        }
+                      >
+                        {punteo.seleccionado ? 'Sí' : 'No'}
+                      </span>
                     ) : (
                       <input
                         type="checkbox"

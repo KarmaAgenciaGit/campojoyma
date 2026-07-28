@@ -13,6 +13,7 @@ import {
   getValidationErrorsForFactura,
   hasBlockingERPValidationErrors,
   isRouteSetAuthorized,
+  isFacturaERPReadOnlyReference,
   isEligibleERPCommitAttempt,
   isAllowedERPConsulta,
   mergeValidationIssues,
@@ -28,6 +29,7 @@ import {
   requestHasServiceRoleCredential,
   resolveFacturaIngestAuthority,
   resolveFacturaERPAccountingRules,
+  resolveFacturaProveedorTipo,
   requireAgentToken,
   sanitizeAuditValue,
   sanitizeUntrustedFacturaAccountingFields,
@@ -278,6 +280,18 @@ Deno.test("import-samples preserva referencia ERP solo con credencial service ro
   assertEquals(result.frr, importedFrr);
   assertEquals(result.ctb, [{ FRC_id: 9, FRC_Cuenta: "60200000001", FRC_Importe: 100 }]);
   assertEquals(result.punteos, [{ S: true, source_table: "albmaterial", source_id: 88 }]);
+  assert(isFacturaERPReadOnlyReference({
+    is_readonly_reference: true,
+    source_kind: "erp_reference",
+  }));
+  assert(isFacturaERPReadOnlyReference({
+    is_readonly_reference: false,
+    source_kind: "erp_reference",
+  }));
+  assertEquals(isFacturaERPReadOnlyReference({
+    is_readonly_reference: false,
+    source_kind: "n8n_draft",
+  }), false);
 });
 
 Deno.test("error del backend de hashes falla cerrado con 500", async () => {
@@ -493,6 +507,16 @@ Deno.test("preflight de punteos exige identidad completa y no duplicada", () => 
   assertEquals(duplicate.length, 1);
   assertEquals(duplicate[0].field, "punteos.1.source_id");
   assert(duplicate[0].message.includes("duplicado"));
+
+  const readOnly = getSelectedPunteoPreflightIssues([
+    { S: true, source_table: "albentrada", source_id: 82285 },
+    { S: true, source_table: "albentrada_his", source_id: 211790 },
+  ]);
+  assertEquals(readOnly.map((issue) => issue.field), [
+    "punteos.0.source_table",
+    "punteos.1.source_table",
+  ]);
+  assert(readOnly.every((issue) => issue.message.includes("solo de lectura")));
 });
 
 Deno.test("excluye del writer candidatos sin seleccion explicita", () => {
@@ -954,6 +978,9 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "facturasrecibidas/buscar?empresa_id=1&ejercicio=25&proveedor_id=17&numero_factura=A-00748886",
     "facturasrecibidas/49305/punteos?include_lines=true&limit=100",
     "facturasrecibidas/49305/asiento",
+    "regimenes/2110/perfiles-iva",
+    "regimenes/2110/perfiles-iva?proveedor_id=17&tipo_factura=OT",
+    "regimenes/2110/perfiles-iva?tipo_factura=GE&schema=agroiris",
     "albaranes-gastos/punteables?empresa_id=1&proveedor_id=17&solo_pendientes=true&source_table=albmaterial&include_lines=true",
     "albaranes/entrada/82548/lineas",
     "albaranes/entrada/82548/lineas?schema=agroiris",
@@ -976,6 +1003,9 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "facturasrecibidas/49305/delete",
     "facturasrecibidas?redirect=https://attacker.invalid",
     "facturasrecibidas/49305/asiento?include_lines=true",
+    "regimenes/0/perfiles-iva",
+    "regimenes/2110/perfiles-iva?limit=1",
+    "regimenes/2110/perfiles-iva/delete",
     "albaranes-gastos/punteables?sql=drop",
     "albaranes/entrada/no-numerico/lineas",
     "albaranes/entrada/0/lineas",
@@ -987,6 +1017,22 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "albaranes/material/23210/lineas/extra",
   ];
   for (const consulta of denied) assert(!isAllowedERPConsulta(consulta), consulta);
+});
+
+Deno.test("perfiles IVA conserva el permiso exclusivo de facturas", () => {
+  assertEquals(
+    getERPReadAuthorizedRoutes(
+      "regimenes/2110/perfiles-iva?proveedor_id=17&tipo_factura=OT",
+    ),
+    ["/facturas-recibidas"],
+  );
+  assert(
+    !isRouteSetAuthorized(
+      "authenticated",
+      ["/pedidos"],
+      getERPReadAuthorizedRoutes("regimenes/2110/perfiles-iva"),
+    ),
+  );
 });
 
 Deno.test("lectura de lineas de entrada conserva el permiso exclusivo de facturas", () => {
@@ -1207,6 +1253,36 @@ Deno.test("preflight ERP bloquea acreedor inactivo o inactivo por RGPD", () => {
   ]);
 });
 
+Deno.test("detalle y preflight ERP validan agricultores con su propio maestro", () => {
+  const payload = {
+    agricultor: {
+      AGR_Idagricultor: 1957,
+      AGR_Cuenta: "40090001957",
+      AGR_Activo: "S",
+      AGR_bloqueado: "N",
+    },
+  };
+  const parsed = parseERPProviderDetailResponse(payload, "agricultor");
+  assertEquals(parsed.ok, true);
+  assertEquals(
+    getERPProviderPreflightIssues(
+      { FRR_idproveedor: 1957, FRR_idcuenta: "40090001957" },
+      parsed.provider,
+      "agricultor",
+    ),
+    [],
+  );
+  assertEquals(resolveFacturaProveedorTipo({ FRR_tipofactura: "GE" }), "agricultor");
+  assertEquals(resolveFacturaProveedorTipo({ FRR_tipofactura: "OT" }), "acreedor");
+  assertEquals(resolveFacturaProveedorTipo({ FRR_tipofactura: "MA" }), "acreedor");
+  assertEquals(resolveFacturaProveedorTipo({ FRR_tipofactura: "XX" }), "acreedor");
+  assertEquals(resolveFacturaProveedorTipo({ FRR_tipofactura: null }), null);
+  assertEquals(
+    resolveFacturaProveedorTipo({ FRR_tipofactura: "GE" }, "acreedor"),
+    "agricultor",
+  );
+});
+
 Deno.test("duplicado ERP usa la clave exacta y conserva candidatos utiles", () => {
   const consulta = buildERPDuplicateConsulta({
     FRR_Idempresa: 1,
@@ -1320,7 +1396,7 @@ Deno.test("reglas contables aplican precedencia proveedor sobre empresa y comple
       fecha_ctb_policy: "invoice_date",
       activo: true,
     },
-  ]);
+  ], "acreedor");
 
   assertEquals(resolution.factura.FRR_ejercicio, 25);
   assertEquals(resolution.factura.FRR_tipofactura, "OT");
@@ -1381,7 +1457,7 @@ Deno.test("politica CTB manual no deduce fecha e ignora reglas inactivas", () =>
       fecha_ctb_policy: "invoice_date",
       activo: false,
     },
-  ]);
+  ], "acreedor");
 
   assertEquals(resolution.factura.FRR_ejercicio, 25);
   assertEquals(resolution.factura.FRR_fechactb, undefined);
@@ -1396,11 +1472,67 @@ Deno.test("reglas activas incompatibles en el mismo scope fallan sin elegir valo
   }, [
     { empresa_id: 1, proveedor_id: 17, tipo_factura: "OT", activo: true },
     { empresa_id: 1, proveedor_id: 17, tipo_factura: "MA", activo: true },
-  ]);
+  ], "acreedor");
 
   assertEquals(resolution.factura.FRR_tipofactura, undefined);
   assertEquals(resolution.applied, {});
   assertEquals(resolution.issues.length, 1);
   assertEquals(resolution.issues[0].field, "FRR_tipofactura");
   assertEquals(resolution.issues[0].severity, "error");
+});
+
+Deno.test("una regla de acreedor no se aplica a un agricultor con el mismo id", () => {
+  const rows = [
+    {
+      empresa_id: 1,
+      proveedor_id: null,
+      ejercicio_erp: 25,
+      activo: true,
+    },
+    {
+      empresa_id: 1,
+      proveedor_id: 17,
+      tipo_factura: "OT",
+      regimen_id: 2110,
+      activo: true,
+    },
+  ];
+  const agricultorResolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_tipofactura: "GE",
+  }, rows, "agricultor");
+  const unknownResolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+  }, rows);
+
+  assertEquals(agricultorResolution.factura.FRR_ejercicio, 25);
+  assertEquals(agricultorResolution.factura.FRR_tipofactura, "GE");
+  assertEquals(agricultorResolution.factura.FRR_idregimen, undefined);
+  assertEquals(unknownResolution.factura.FRR_ejercicio, 25);
+  assertEquals(unknownResolution.factura.FRR_tipofactura, undefined);
+  assertEquals(unknownResolution.factura.FRR_idregimen, undefined);
+});
+
+Deno.test("la cabecera confirmada gana al hint y una discrepancia queda bloqueada", () => {
+  const resolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_tipofactura: "GE",
+  }, [{
+    empresa_id: 1,
+    proveedor_id: 17,
+    regimen_id: 2110,
+    activo: true,
+  }], "acreedor");
+
+  assertEquals(resolution.factura.FRR_tipofactura, "GE");
+  assertEquals(resolution.factura.FRR_idregimen, undefined);
+  assertEquals(resolution.issues, [{
+    field: "FRR_tipofactura",
+    message:
+      "El tipo de factura confirmado no coincide con el maestro de proveedor sugerido por la extraccion.",
+    severity: "error",
+  }]);
 });

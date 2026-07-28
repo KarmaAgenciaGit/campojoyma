@@ -21,6 +21,7 @@ import {
   requireAgentToken,
   requestHasServiceRoleCredential,
   resolveFacturaIngestAuthority,
+  resolveFacturaProveedorTipo,
   rpcErrorStatus,
   sanitizeAuditValue,
   text,
@@ -157,7 +158,15 @@ Deno.serve(async (req) => {
       try {
         const requestId = requestIdValue(input.request_id ?? (inputs.length === 1 ? envelope.request_id : null));
         const normalized = normalizeOnePayload(input, trustedImportSignal);
-        const accountingRules = await loadAndResolveFacturaERPAccountingRules(supabase, normalized.frr);
+        const proveedorTipo = text(
+          pick(asObject(normalized.matchEvidence.proveedor), ["entity_type", "proveedor_tipo"]),
+          null,
+        );
+        const accountingRules = await loadAndResolveFacturaERPAccountingRules(
+          supabase,
+          normalized.frr,
+          proveedorTipo,
+        );
         normalized.frr = accountingRules.factura;
         const pdfResult = await ensureArchivoPdf(supabase, normalized.pdfBase64, normalized.fileName);
 
@@ -178,8 +187,18 @@ Deno.serve(async (req) => {
         const ejercicio = integerValue(normalized.frr.FRR_ejercicio, null);
         const proveedorId = integerValue(normalized.frr.FRR_idproveedor, null);
         const numeroFactura = text(normalized.frr.FRR_numerofactura, null);
-        if (empresaId && ejercicio && proveedorId && numeroFactura) {
-          const { data: supplierDup, error: supplierDupError } = await supabase
+        const resolvedProveedorTipo = resolveFacturaProveedorTipo(
+          normalized.frr,
+          proveedorTipo,
+        );
+        if (
+          empresaId &&
+          ejercicio &&
+          proveedorId &&
+          numeroFactura &&
+          resolvedProveedorTipo
+        ) {
+          let supplierQuery = supabase
             .from("facturasrecibidas")
             .select("id")
             .eq("FRR_Idempresa", empresaId)
@@ -187,8 +206,12 @@ Deno.serve(async (req) => {
             .eq("FRR_idproveedor", proveedorId)
             .eq("FRR_numerofactura", numeroFactura)
             .neq("estado", "duplicada")
-            .neq("estado", "descartada")
-            .limit(1);
+            .neq("estado", "descartada");
+          supplierQuery = resolvedProveedorTipo === "agricultor"
+            ? supplierQuery.eq("FRR_tipofactura", "GE")
+            : supplierQuery.neq("FRR_tipofactura", "GE");
+          const { data: supplierDup, error: supplierDupError } =
+            await supplierQuery.limit(1);
           if (supplierDupError) throw supplierDupError;
           if (supplierDup?.[0]?.id) duplicateCandidates.push(supplierDup[0].id);
         }

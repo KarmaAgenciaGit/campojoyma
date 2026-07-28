@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import type { FacturaRecibidaIvaTramo } from '@/services/apiContracts';
 
 /**
  * Sugerencias derivadas del historico real del ERP.
@@ -51,6 +52,39 @@ export type SugerenciasFactura = {
   regimen_id: Sugerencia<number>;
 };
 
+export type EstadoPerfilIva = 'sin_historial' | 'dominante' | 'ambiguo';
+
+export type PlantillaIvaSugerida = {
+  porcentajes: [
+    number | null,
+    number | null,
+    number | null,
+    number | null,
+    number | null,
+  ];
+  usos: number;
+  confianza: number;
+  criterio: 'perfil_historico_dominante';
+};
+
+export type PerfilesIvaRegimen = {
+  regimen_id: number;
+  filtros: {
+    proveedor_id: number | null;
+    tipo_factura: string | null;
+  };
+  total_facturas: number;
+  estado: EstadoPerfilIva;
+  ambiguo: boolean;
+  plantilla_sugerida: PlantillaIvaSugerida | null;
+};
+
+export type ResultadoAplicacionPlantillaIva = {
+  aplicada: boolean;
+  motivo: 'aplicada' | 'sin_historial' | 'ambigua';
+  tramos: FacturaRecibidaIvaTramo[];
+};
+
 const sinHistorial = <T>(): Sugerencia<T> => ({
   valor: null,
   total: 0,
@@ -70,6 +104,95 @@ const numeroONull = (value: unknown): number | null => {
 const textoONull = (value: unknown): string | null => {
   const cleaned = String(value ?? '').trim();
   return cleaned || null;
+};
+
+const enteroPositivoONull = (value: unknown): number | null => {
+  const parsed = numeroONull(value);
+  return parsed !== null && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const normalizarPorcentaje = (value: unknown): number | null | undefined => {
+  if (value === null) return null;
+  const parsed = numeroONull(value);
+  return parsed !== null && parsed >= 0 && parsed <= 100 ? parsed : undefined;
+};
+
+const normalizarPlantillaIva = (value: unknown): PlantillaIvaSugerida | null => {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.porcentajes) || source.porcentajes.length !== 5) {
+    return null;
+  }
+  const porcentajes = source.porcentajes.map(normalizarPorcentaje);
+  if (porcentajes.some((porcentaje) => porcentaje === undefined)) return null;
+  const usos = enteroPositivoONull(source.usos);
+  const confianza = numeroONull(source.confianza);
+  if (
+    usos === null ||
+    confianza === null ||
+    confianza < 0 ||
+    confianza > 1 ||
+    source.criterio !== 'perfil_historico_dominante'
+  ) {
+    return null;
+  }
+  return {
+    porcentajes: porcentajes as PlantillaIvaSugerida['porcentajes'],
+    usos,
+    confianza,
+    criterio: 'perfil_historico_dominante',
+  };
+};
+
+const normalizarPerfilesIvaRegimen = (
+  payload: unknown,
+  regimenIdEsperado: number,
+  proveedorIdEsperado: number | null,
+  tipoFacturaEsperado: string | null,
+): PerfilesIvaRegimen => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('La respuesta del histórico de IVA no es válida.');
+  }
+  const source = payload as Record<string, unknown>;
+  const regimenId = enteroPositivoONull(source.regimen_id);
+  const totalFacturas = numeroONull(source.total_facturas);
+  const estado = textoONull(source.estado);
+  const filtrosSource =
+    source.filtros && typeof source.filtros === 'object'
+      ? (source.filtros as Record<string, unknown>)
+      : {};
+  const proveedorIdRespuesta = enteroPositivoONull(filtrosSource.proveedor_id);
+  const tipoFacturaRespuesta = textoONull(filtrosSource.tipo_factura)?.toUpperCase() ?? null;
+  if (
+    regimenId !== regimenIdEsperado ||
+    proveedorIdRespuesta !== proveedorIdEsperado ||
+    tipoFacturaRespuesta !== tipoFacturaEsperado ||
+    totalFacturas === null ||
+    !Number.isInteger(totalFacturas) ||
+    totalFacturas < 0 ||
+    !['sin_historial', 'dominante', 'ambiguo'].includes(estado ?? '') ||
+    typeof source.ambiguo !== 'boolean'
+  ) {
+    throw new Error('La respuesta del histórico de IVA no respeta el contrato.');
+  }
+
+  const plantilla = normalizarPlantillaIva(source.plantilla_sugerida);
+  const esDominante = estado === 'dominante' && source.ambiguo === false;
+  if ((esDominante && !plantilla) || (!esDominante && source.plantilla_sugerida !== null)) {
+    throw new Error('La plantilla histórica de IVA no es coherente con su estado.');
+  }
+
+  return {
+    regimen_id: regimenId,
+    filtros: {
+      proveedor_id: proveedorIdRespuesta,
+      tipo_factura: tipoFacturaRespuesta,
+    },
+    total_facturas: totalFacturas,
+    estado: estado as EstadoPerfilIva,
+    ambiguo: source.ambiguo,
+    plantilla_sugerida: plantilla,
+  };
 };
 
 /**
@@ -165,6 +288,82 @@ const erpRead = async <T>(consulta: string): Promise<T> => {
   return data as T;
 };
 
+/**
+ * Consulta el perfil histórico de porcentajes para un régimen.
+ *
+ * Un proveedor siempre se envía junto a su tipo de factura: el ERP reutiliza
+ * identificadores numéricos entre acreedores y agricultores, así que nunca se
+ * filtra solo por ID. El tipo también puede limitar por sí solo un perfil global.
+ */
+export const obtenerPerfilesIvaRegimen = async ({
+  regimenId,
+  proveedorId = null,
+  tipoFactura = null,
+}: {
+  regimenId: number;
+  proveedorId?: number | null;
+  tipoFactura?: string | null;
+}): Promise<PerfilesIvaRegimen> => {
+  const normalizedRegimenId = enteroPositivoONull(regimenId);
+  if (normalizedRegimenId === null) {
+    throw new Error('El régimen IVA ERP no es válido.');
+  }
+  const normalizedProveedorId = enteroPositivoONull(proveedorId);
+  const normalizedTipoFactura = textoONull(tipoFactura)?.toUpperCase() ?? null;
+  if (normalizedProveedorId !== null && !normalizedTipoFactura) {
+    throw new Error('El tipo de factura es obligatorio al filtrar el histórico por proveedor.');
+  }
+
+  const params = new URLSearchParams();
+  if (normalizedProveedorId !== null) {
+    params.set('proveedor_id', String(normalizedProveedorId));
+  }
+  if (normalizedTipoFactura) {
+    params.set('tipo_factura', normalizedTipoFactura);
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  const payload = await erpRead<unknown>(
+    `regimenes/${encodeURIComponent(String(normalizedRegimenId))}/perfiles-iva${suffix}`,
+  );
+  return normalizarPerfilesIvaRegimen(
+    payload,
+    normalizedRegimenId,
+    normalizedProveedorId,
+    normalizedTipoFactura,
+  );
+};
+
+/**
+ * Aplica exclusivamente los cinco porcentajes de una plantilla dominante.
+ * Bases, cuotas, posición y cualquier otro dato del tramo se conservan literalmente.
+ */
+export const aplicarPlantillaIvaHistorica = (
+  tramos: FacturaRecibidaIvaTramo[],
+  perfiles: PerfilesIvaRegimen,
+): ResultadoAplicacionPlantillaIva => {
+  if (
+    perfiles.estado !== 'dominante' ||
+    perfiles.ambiguo ||
+    perfiles.plantilla_sugerida === null
+  ) {
+    return {
+      aplicada: false,
+      motivo: perfiles.estado === 'sin_historial' ? 'sin_historial' : 'ambigua',
+      tramos,
+    };
+  }
+
+  const porcentajes = perfiles.plantilla_sugerida.porcentajes;
+  return {
+    aplicada: true,
+    motivo: 'aplicada',
+    tramos: tramos.map((tramo) => ({
+      ...tramo,
+      porcentaje: porcentajes[tramo.posicion - 1],
+    })),
+  };
+};
+
 const extraerFilas = (payload: unknown): Array<Record<string, unknown>> => {
   if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
   if (!payload || typeof payload !== 'object') return [];
@@ -211,6 +410,8 @@ export const describirSugerencia = (sugerencia: Sugerencia<string | number>): st
 export const facturasRecibidasHistorial = {
   historial: obtenerHistorialProveedor,
   sugerencias: obtenerSugerenciasProveedor,
+  perfilesIvaRegimen: obtenerPerfilesIvaRegimen,
+  aplicarPlantillaIva: aplicarPlantillaIvaHistorica,
   calcular: calcularSugerencias,
   concepto: construirConceptoFactura,
   describir: describirSugerencia,

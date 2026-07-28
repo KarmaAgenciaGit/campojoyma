@@ -18,6 +18,7 @@ import {
   prepareFacturaExtractionPersistence,
   requestIdValue,
   requireRouteUser,
+  resolveFacturaProveedorTipo,
   rpcErrorStatus,
   sanitizeUntrustedFacturaAccountingFields,
   sanitizeUntrustedPunteoSelections,
@@ -259,9 +260,19 @@ Deno.serve(async (req) => {
       ctb: [],
       punteos: sanitizeUntrustedPunteoSelections(normalized.punteos),
     });
+    const normalizedMatchEvidence = asObject(
+      normalized.metadata.match_evidence ??
+        normalized.extraction.match_evidence ??
+        normalized.extraction.matching,
+    );
+    const proveedorTipo = text(
+      pick(asObject(normalizedMatchEvidence.proveedor), ["entity_type", "proveedor_tipo"]),
+      null,
+    );
     const accountingRules = await loadAndResolveFacturaERPAccountingRules(
       serviceClient,
       extractionPersistence.factura,
+      proveedorTipo,
     );
     const resolvedFrr = accountingRules.factura;
     const persistedFrr = {
@@ -293,8 +304,18 @@ Deno.serve(async (req) => {
     const ejercicio = integerValue(resolvedFrr.FRR_ejercicio, null);
     const proveedorId = integerValue(resolvedFrr.FRR_idproveedor, null);
     const numeroFactura = text(resolvedFrr.FRR_numerofactura, null);
-    if (empresaId && ejercicio && proveedorId && numeroFactura) {
-      const { data: supplierDuplicates, error: supplierDupError } = await serviceClient
+    const resolvedProveedorTipo = resolveFacturaProveedorTipo(
+      resolvedFrr,
+      proveedorTipo,
+    );
+    if (
+      empresaId &&
+      ejercicio &&
+      proveedorId &&
+      numeroFactura &&
+      resolvedProveedorTipo
+    ) {
+      let supplierQuery = serviceClient
         .from("facturasrecibidas")
         .select("id")
         .eq("FRR_Idempresa", empresaId)
@@ -302,8 +323,12 @@ Deno.serve(async (req) => {
         .eq("FRR_idproveedor", proveedorId)
         .eq("FRR_numerofactura", numeroFactura)
         .neq("estado", "duplicada")
-        .neq("estado", "descartada")
-        .limit(2);
+        .neq("estado", "descartada");
+      supplierQuery = resolvedProveedorTipo === "agricultor"
+        ? supplierQuery.eq("FRR_tipofactura", "GE")
+        : supplierQuery.neq("FRR_tipofactura", "GE");
+      const { data: supplierDuplicates, error: supplierDupError } =
+        await supplierQuery.limit(2);
       if (supplierDupError) throw supplierDupError;
       for (const candidate of asArray(supplierDuplicates)) {
         const id = text(asObject(candidate).id, null);
@@ -343,11 +368,7 @@ Deno.serve(async (req) => {
       remote_frr_id: null,
       is_readonly_reference: false,
       match_status: normalized.warnings.length > 0 || hasBlockingErrors ? "ambiguous" : "matched",
-      match_evidence: asObject(
-        normalized.metadata.match_evidence ??
-          normalized.extraction.match_evidence ??
-          normalized.extraction.matching,
-      ),
+      match_evidence: normalizedMatchEvidence,
       extraction: {
         ...normalized.extraction,
         metadata: normalized.metadata,

@@ -82,10 +82,12 @@ import type { AgroIrisAcreedor } from '../services/agroirisAcreedores';
 import { useConfirmacion } from '../hooks/useConfirmacion';
 import { useToast } from '../hooks/use-toast';
 import {
+  aplicarPlantillaIvaHistorica,
   calcularSugerencias,
   construirConceptoFactura,
   describirSugerencia,
   obtenerHistorialProveedor,
+  obtenerPerfilesIvaRegimen,
   type FacturaHistorica,
   type Sugerencia,
 } from '../services/facturasRecibidasHistorial';
@@ -109,6 +111,10 @@ type ModalMessage = {
 type FacturaSortOrder = 'created_desc' | 'created_asc' | 'fecha_desc' | 'fecha_asc' | 'total_desc' | 'total_asc';
 type FacturaERPListState = 'registered' | 'reference' | 'unregistered' | 'checking' | 'unknown';
 type FacturaUploadStep = 'idle' | 'uploading' | 'analyzing' | 'done';
+type RegimenIvaFeedback = {
+  estado: 'consultando' | 'aplicada' | 'ambigua' | 'sin_historial' | 'error';
+  mensaje: string;
+};
 
 declare global {
   interface Window {
@@ -1039,6 +1045,8 @@ const Facturas = () => {
   const [regimenes, setRegimenes] = useState<FacturaRegimenOption[]>([]);
   const [historialProveedor, setHistorialProveedor] = useState<FacturaHistorica[]>([]);
   const historialRunRef = useRef(0);
+  const regimenIvaRunRef = useRef(0);
+  const [regimenIvaFeedback, setRegimenIvaFeedback] = useState<RegimenIvaFeedback | null>(null);
   const [ivaTramosExtra, setIvaTramosExtra] = useState(0);
   const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
   const { toast } = useToast();
@@ -1140,6 +1148,8 @@ const Facturas = () => {
   // Al cambiar de factura se vuelve a colapsar el desglose de IVA.
   useEffect(() => {
     setIvaTramosExtra(0);
+    regimenIvaRunRef.current += 1;
+    setRegimenIvaFeedback(null);
   }, [draft?.id]);
 
   useEffect(() => {
@@ -1147,7 +1157,9 @@ const Facturas = () => {
     if (activeProviderScopeRef.current && activeProviderScopeRef.current !== scope) {
       providerDetailRunRef.current += 1;
       punteablesRunRef.current += 1;
+      regimenIvaRunRef.current += 1;
       setPunteosLoading(false);
+      setRegimenIvaFeedback(null);
     }
     activeProviderScopeRef.current = scope;
   }, [draft?.fr_alm, draft?.fr_sufa, draft?.id, draft?.proveedor_codigo]);
@@ -1741,9 +1753,11 @@ const Facturas = () => {
       const nextDraft = draft ? { ...draft, [key]: value } : null;
       providerDetailRunRef.current += 1;
       punteablesRunRef.current += 1;
+      regimenIvaRunRef.current += 1;
       activeProviderScopeRef.current = facturaProviderScopeKey(nextDraft);
       setPunteosLoading(false);
       setPunteosLoadError(null);
+      setRegimenIvaFeedback(null);
     }
 
     setDraft((current) =>
@@ -1755,6 +1769,72 @@ const Facturas = () => {
           }
         : current,
     );
+  };
+
+  const changeRegimenIva = async (value: string) => {
+    const runId = regimenIvaRunRef.current + 1;
+    regimenIvaRunRef.current = runId;
+    await updateDraft('tipo_iva_codigo', value);
+
+    const regimenId = Number.parseInt(value, 10);
+    if (!Number.isInteger(regimenId) || regimenId <= 0) {
+      setRegimenIvaFeedback(null);
+      return;
+    }
+
+    const proveedorId = proveedorErpId;
+    const tipoFactura = tipoFacturaRadioValue(draft?.fr_sufa);
+    setRegimenIvaFeedback({
+      estado: 'consultando',
+      mensaje: 'Consultando los porcentajes usados anteriormente con este régimen…',
+    });
+
+    try {
+      const perfiles = await obtenerPerfilesIvaRegimen({
+        regimenId,
+        proveedorId,
+        tipoFactura,
+      });
+      if (regimenIvaRunRef.current !== runId) return;
+
+      if (perfiles.estado === 'dominante' && !perfiles.ambiguo && perfiles.plantilla_sugerida) {
+        setDraft((current) => {
+          if (!current || cleanOptionalString(current.tipo_iva_codigo) !== value) return current;
+          const source = current.iva_tramos?.length
+            ? current.iva_tramos
+            : createEmptyDraft().iva_tramos ?? [];
+          const resultado = aplicarPlantillaIvaHistorica(source, perfiles);
+          return resultado.aplicada ? { ...current, iva_tramos: resultado.tramos } : current;
+        });
+        setRegimenIvaFeedback({
+          estado: 'aplicada',
+          mensaje: `Porcentajes actualizados según ${perfiles.plantilla_sugerida.usos} de ${perfiles.total_facturas} facturas históricas. Bases y cuotas se han conservado.`,
+        });
+        return;
+      }
+
+      if (perfiles.estado === 'ambiguo' || perfiles.ambiguo) {
+        setRegimenIvaFeedback({
+          estado: 'ambigua',
+          mensaje:
+            'El histórico no tiene una plantilla IVA dominante. Revisa y ajusta los porcentajes manualmente en el desglose.',
+        });
+        return;
+      }
+
+      setRegimenIvaFeedback({
+        estado: 'sin_historial',
+        mensaje:
+          'No hay histórico suficiente para este régimen. Revisa los porcentajes manualmente en el desglose.',
+      });
+    } catch {
+      if (regimenIvaRunRef.current !== runId) return;
+      setRegimenIvaFeedback({
+        estado: 'error',
+        mensaje:
+          'No se pudo consultar el histórico de este régimen. Los porcentajes no se han modificado; revísalos manualmente.',
+      });
+    }
   };
 
   const changeTipoFactura = async (nextTipo: 'GE' | 'OT') => {
@@ -1782,8 +1862,10 @@ const Facturas = () => {
 
     providerDetailRunRef.current += 1;
     punteablesRunRef.current += 1;
+    regimenIvaRunRef.current += 1;
     setPunteosLoading(false);
     setPunteosLoadError(null);
+    setRegimenIvaFeedback(null);
     setPreflightIssues([]);
     setDuplicateCandidate(null);
     setModalMessage(null);
@@ -1951,6 +2033,8 @@ const Facturas = () => {
     key: 'base' | 'porcentaje' | 'cuota',
     value: number | null,
   ) => {
+    regimenIvaRunRef.current += 1;
+    setRegimenIvaFeedback(null);
     setDraft((current) => {
       if (!current) return current;
       const source = current.iva_tramos?.length
@@ -3147,7 +3231,7 @@ const Facturas = () => {
                     <FilterSelect
                       value={draft.tipo_iva_codigo ?? ''}
                       options={regimenOptions}
-                      onChange={(value) => updateDraft('tipo_iva_codigo', value)}
+                      onChange={(value) => void changeRegimenIva(value)}
                       ariaLabel="Seleccionar régimen de IVA"
                       disabled={isReadOnlyDetail}
                       triggerClassName={detailInputClass}
@@ -3156,8 +3240,22 @@ const Facturas = () => {
                       sugerencia={sugerenciasHistorial.regimen_id}
                       actual={draft.tipo_iva_codigo}
                       disabled={isReadOnlyDetail}
-                      onAplicar={(valor) => updateDraft('tipo_iva_codigo', valor)}
+                      onAplicar={(valor) => void changeRegimenIva(valor)}
                     />
+                    {regimenIvaFeedback ? (
+                      <p
+                        role="status"
+                        className={`mt-1.5 text-xs font-medium ${
+                          regimenIvaFeedback.estado === 'ambigua' || regimenIvaFeedback.estado === 'error'
+                            ? 'text-amber-700 dark:text-amber-300'
+                            : regimenIvaFeedback.estado === 'aplicada'
+                              ? 'text-emerald-700 dark:text-emerald-300'
+                              : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      >
+                        {regimenIvaFeedback.mensaje}
+                      </p>
+                    ) : null}
                   </Field>
                   {draft.asiento_numero ? (
                     <Field label="N.º de asiento">

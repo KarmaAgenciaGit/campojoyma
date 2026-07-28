@@ -999,6 +999,15 @@ export const toERPCtbPayload = (linea: JsonObject, position: number) =>
 export const isPunteoExplicitlySelected = (punteo: JsonObject) =>
   punteo.S === true || punteo.S === "S";
 
+const ERP_WRITABLE_PUNTEO_SOURCES = new Set([
+  "albsalida_gastos",
+  "albentrada_hisgastos",
+  "albaranescompra_gastos",
+  "facturas_gastos",
+  "albarancoste",
+  "albmaterial",
+]);
+
 export const getSelectedPunteoPreflightIssues = (punteos: readonly JsonObject[]) => {
   const issues: FacturaValidationIssue[] = [];
   const seenIdentities = new Map<string, number>();
@@ -1015,6 +1024,13 @@ export const getSelectedPunteoPreflightIssues = (punteos: readonly JsonObject[])
         message: `El punteo seleccionado en posicion ${position} no tiene source_table.`,
         severity: "error",
       });
+    } else if (!ERP_WRITABLE_PUNTEO_SOURCES.has(sourceTable)) {
+      issues.push({
+        field: `punteos.${index}.source_table`,
+        message:
+          `El origen ${sourceTable} del punteo seleccionado en posicion ${position} es solo de lectura y no se puede enviar al ERP.`,
+        severity: "error",
+      });
     }
     if (sourceId === null || sourceId <= 0) {
       issues.push({
@@ -1023,7 +1039,12 @@ export const getSelectedPunteoPreflightIssues = (punteos: readonly JsonObject[])
         severity: "error",
       });
     }
-    if (!sourceTable || sourceId === null || sourceId <= 0) return;
+    if (
+      !sourceTable ||
+      !ERP_WRITABLE_PUNTEO_SOURCES.has(sourceTable) ||
+      sourceId === null ||
+      sourceId <= 0
+    ) return;
 
     const identity = `${sourceTable}:${sourceId}`;
     const firstPosition = seenIdentities.get(identity);
@@ -1531,29 +1552,59 @@ export const parseERPArrayEnvelope = (
   return { ok: false, items: [], error: "La respuesta ERP no contiene un array reconocido." };
 };
 
+export type FacturaProveedorTipo = "acreedor" | "agricultor";
+
+export const resolveFacturaProveedorTipo = (
+  factura: JsonObject,
+  hintedType: unknown = null,
+): FacturaProveedorTipo | null => {
+  const tipoFactura = text(factura.FRR_tipofactura, null)?.toUpperCase() ?? null;
+  if (tipoFactura === "GE") return "agricultor";
+  if (tipoFactura) return "acreedor";
+  const normalizedHint = text(hintedType, null)?.toLowerCase() ?? null;
+  return normalizedHint === "acreedor" || normalizedHint === "agricultor"
+    ? normalizedHint
+    : null;
+};
+
+export const isFacturaERPReadOnlyReference = (factura: JsonObject) =>
+  booleanValue(factura.is_readonly_reference, false) === true ||
+  text(factura.source_kind, null) === "erp_reference";
+
 export const parseERPProviderDetailResponse = (
   payload: unknown,
+  providerType: FacturaProveedorTipo = "acreedor",
 ): { ok: boolean; provider: JsonObject; error: string | null } => {
+  const providerLabel = providerType === "agricultor" ? "agricultor" : "acreedor";
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { ok: false, provider: {}, error: "El detalle de acreedor ERP no es un objeto." };
+    return { ok: false, provider: {}, error: `El detalle de ${providerLabel} ERP no es un objeto.` };
   }
   const envelope = payload as JsonObject;
   let provider = envelope;
-  for (const key of ["acreedor", "provider", "data", "result", "item"]) {
+  for (const key of [providerLabel, "provider", "data", "result", "item"]) {
     if (!hasOwn(envelope, key)) continue;
     const candidate = envelope[key];
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      return { ok: false, provider: {}, error: "El envelope de acreedor ERP es invalido." };
+      return { ok: false, provider: {}, error: `El envelope de ${providerLabel} ERP es invalido.` };
     }
     provider = candidate as JsonObject;
     break;
   }
   const providerId = integerValue(
-    pick(provider, ["id", "codigo", "acreedor_id", "ACR_Codigo"]),
+    pick(
+      provider,
+      providerType === "agricultor"
+        ? ["id", "codigo", "agricultor_id", "AGR_Idagricultor", "AGR_Codigo"]
+        : ["id", "codigo", "acreedor_id", "ACR_Codigo"],
+    ),
     null,
   );
   if (!providerId || providerId <= 0) {
-    return { ok: false, provider: {}, error: "El detalle ERP no contiene un id de acreedor positivo." };
+    return {
+      ok: false,
+      provider: {},
+      error: `El detalle ERP no contiene un id de ${providerLabel} positivo.`,
+    };
   }
   return { ok: true, provider, error: null };
 };
@@ -1563,7 +1614,8 @@ export const buildERPDuplicateConsulta = (factura: JsonObject): string | null =>
   const ejercicio = integerValue(factura.FRR_ejercicio, null);
   const proveedorId = integerValue(factura.FRR_idproveedor, null);
   const numeroFactura = text(factura.FRR_numerofactura, null);
-  if (!empresaId || empresaId < 1 || !ejercicio || ejercicio < 1 || !proveedorId || proveedorId < 1 || !numeroFactura) {
+  const tipoFactura = text(factura.FRR_tipofactura, null)?.toUpperCase() ?? null;
+  if (!empresaId || empresaId < 1 || !ejercicio || ejercicio < 1 || !proveedorId || proveedorId < 1 || !numeroFactura || !tipoFactura) {
     return null;
   }
 
@@ -1572,6 +1624,7 @@ export const buildERPDuplicateConsulta = (factura: JsonObject): string | null =>
     ejercicio: String(ejercicio),
     proveedor_id: String(proveedorId),
     numero_factura: numeroFactura,
+    tipo_factura: tipoFactura,
     limit: "10",
   });
   return `facturasrecibidas/buscar?${params.toString()}`;
@@ -1580,16 +1633,28 @@ export const buildERPDuplicateConsulta = (factura: JsonObject): string | null =>
 export const getERPProviderPreflightIssues = (
   factura: JsonObject,
   providerPayload: unknown,
+  providerType: FacturaProveedorTipo = "acreedor",
 ): FacturaValidationIssue[] => {
+  const providerLabel = providerType === "agricultor" ? "agricultor" : "acreedor";
   const provider = unwrapERPObject(providerPayload);
   const expectedProviderId = integerValue(factura.FRR_idproveedor, null);
   const actualProviderId = integerValue(
-    pick(provider, ["id", "codigo", "acreedor_id", "ACR_Codigo"]),
+    pick(
+      provider,
+      providerType === "agricultor"
+        ? ["id", "codigo", "agricultor_id", "AGR_Idagricultor", "AGR_Codigo"]
+        : ["id", "codigo", "acreedor_id", "ACR_Codigo"],
+    ),
     null,
   );
   const expectedAccount = text(factura.FRR_idcuenta, null);
   const actualAccount = text(
-    pick(provider, ["cuenta_id", "ACR_IdCuenta", "ACR_Cuenta", "cuenta", "cuenta_contable"]),
+    pick(
+      provider,
+      providerType === "agricultor"
+        ? ["cuenta_id", "AGR_Cuenta", "AGR_IdCuenta", "cuenta", "cuenta_contable"]
+        : ["cuenta_id", "ACR_IdCuenta", "ACR_Cuenta", "cuenta", "cuenta_contable"],
+    ),
     null,
   );
   const issues: FacturaValidationIssue[] = [];
@@ -1603,28 +1668,40 @@ export const getERPProviderPreflightIssues = (
     const key = keys.find((candidate) => hasOwn(provider, candidate));
     return key ? { present: true, value: provider[key] } : { present: false, value: undefined };
   };
-  const activo = firstOwnedFlag(["activo", "ACR_Activo"]);
-  const bloqueado = firstOwnedFlag(["bloqueado", "ACR_Bloqueado"]);
-  const inactivoRgpd = firstOwnedFlag(["inactivo_rgpd", "ACR_InactivoRGPD"]);
+  const activo = firstOwnedFlag(
+    providerType === "agricultor"
+      ? ["activo", "AGR_Activo"]
+      : ["activo", "ACR_Activo"],
+  );
+  const bloqueado = firstOwnedFlag(
+    providerType === "agricultor"
+      ? ["bloqueado", "AGR_Bloqueado", "AGR_bloqueado"]
+      : ["bloqueado", "ACR_Bloqueado"],
+  );
+  const inactivoRgpd = firstOwnedFlag(
+    providerType === "agricultor"
+      ? []
+      : ["inactivo_rgpd", "ACR_InactivoRGPD"],
+  );
 
   if (activo.present && !booleanValue(activo.value, false)) {
     issues.push({
       field: "FRR_idproveedor",
-      message: "El acreedor seleccionado no esta activo en el ERP.",
+      message: `El ${providerLabel} seleccionado no esta activo en el ERP.`,
       severity: "error",
     });
   }
   if (bloqueado.present && !falseOperationalFlag(bloqueado.value)) {
     issues.push({
       field: "FRR_idproveedor",
-      message: "El acreedor seleccionado esta bloqueado en el ERP.",
+      message: `El ${providerLabel} seleccionado esta bloqueado en el ERP.`,
       severity: "error",
     });
   }
   if (inactivoRgpd.present && !falseOperationalFlag(inactivoRgpd.value)) {
     issues.push({
       field: "FRR_idproveedor",
-      message: "El acreedor seleccionado esta inactivo por RGPD en el ERP.",
+      message: `El ${providerLabel} seleccionado esta inactivo por RGPD en el ERP.`,
       severity: "error",
     });
   }
@@ -1632,14 +1709,14 @@ export const getERPProviderPreflightIssues = (
   if (!expectedProviderId || !actualProviderId || actualProviderId !== expectedProviderId) {
     issues.push({
       field: "FRR_idproveedor",
-      message: "El acreedor seleccionado no coincide con el detalle devuelto por el ERP.",
+      message: `El ${providerLabel} seleccionado no coincide con el detalle devuelto por el ERP.`,
       severity: "error",
     });
   }
   if (!actualAccount) {
     issues.push({
       field: "FRR_idcuenta",
-      message: "El ERP no devuelve una cuenta contable para el acreedor seleccionado.",
+      message: `El ERP no devuelve una cuenta contable para el ${providerLabel} seleccionado.`,
       severity: "error",
     });
   } else if (!expectedAccount || actualAccount !== expectedAccount) {
@@ -1716,12 +1793,14 @@ export const validateERPDuplicateSearchResponse = (
     FRR_ejercicio: integerValue(factura.FRR_ejercicio, null),
     FRR_idproveedor: integerValue(factura.FRR_idproveedor, null),
     FRR_numerofactura: text(factura.FRR_numerofactura, null),
+    FRR_tipofactura: text(factura.FRR_tipofactura, null)?.toUpperCase() ?? null,
   };
   if (
     !expected.FRR_Idempresa ||
     !expected.FRR_ejercicio ||
     !expected.FRR_idproveedor ||
-    !expected.FRR_numerofactura
+    !expected.FRR_numerofactura ||
+    !expected.FRR_tipofactura
   ) {
     return { ok: false, total: null, candidates: [], error: "La clave esperada de duplicado esta incompleta." };
   }
@@ -1739,6 +1818,10 @@ export const validateERPDuplicateSearchResponse = (
       FRR_ejercicio: integerValue(candidate.FRR_ejercicio ?? candidate.ejercicio, null),
       FRR_idproveedor: integerValue(candidate.FRR_idproveedor ?? candidate.proveedor_id, null),
       FRR_numerofactura: text(candidate.FRR_numerofactura ?? candidate.numero_factura, null),
+      FRR_tipofactura: text(
+        candidate.FRR_tipofactura ?? candidate.tipo_factura,
+        null,
+      )?.toUpperCase() ?? null,
     };
     if (
       !normalized.FRR_id ||
@@ -1746,7 +1829,9 @@ export const validateERPDuplicateSearchResponse = (
       normalized.FRR_Idempresa !== expected.FRR_Idempresa ||
       normalized.FRR_ejercicio !== expected.FRR_ejercicio ||
       normalized.FRR_idproveedor !== expected.FRR_idproveedor ||
-      normalized.FRR_numerofactura !== expected.FRR_numerofactura
+      normalized.FRR_numerofactura !== expected.FRR_numerofactura ||
+      (normalized.FRR_tipofactura === "GE") !==
+        (expected.FRR_tipofactura === "GE")
     ) {
       return {
         ok: false,
@@ -1857,7 +1942,7 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
   },
   {
     path: /^facturasrecibidas\/buscar$/,
-    keys: new Set(["empresa_id", "ejercicio", "proveedor_id", "numero_factura", "schema", "limit", "offset"]),
+    keys: new Set(["empresa_id", "ejercicio", "proveedor_id", "numero_factura", "tipo_factura", "schema", "limit", "offset"]),
   },
   { path: /^facturasrecibidas\/\d+$/, keys: new Set(["schema"]) },
   { path: /^facturasrecibidas\/\d+\/ctb$/, keys: new Set(["schema"]) },
@@ -1869,6 +1954,10 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
   { path: /^facturasrecibidas\/tipos$/, keys: new Set(["schema"]) },
   { path: /^facturasrecibidas_ctb$/, keys: new Set(["schema", "limit", "offset"]) },
   { path: /^(?:tipos-iva|tipos_iva|regimenes|regimenes-iva|regimenes_iva)$/, keys: new Set(["schema"]) },
+  {
+    path: /^regimenes\/[1-9]\d*\/perfiles-iva$/,
+    keys: new Set(["schema", "proveedor_id", "tipo_factura"]),
+  },
   {
     path: /^albaranes-gastos\/punteables$/,
     keys: new Set([
@@ -2018,14 +2107,30 @@ const ruleScopeValue = (
 export const resolveFacturaERPAccountingRules = (
   factura: JsonObject,
   rows: FacturaERPAccountingRuleRow[],
+  hintedProviderType: unknown = null,
 ): FacturaERPAccountingRuleResolution => {
   const resolved = { ...factura };
   const applied: JsonObject = {};
   const issues: FacturaValidationIssue[] = [];
   const empresaId = positiveRuleInteger(factura.FRR_Idempresa);
   const proveedorId = positiveRuleInteger(factura.FRR_idproveedor);
+  const providerType = resolveFacturaProveedorTipo(factura, hintedProviderType);
+  const explicitProviderType = resolveFacturaProveedorTipo(factura);
+  const hintedOnlyProviderType = resolveFacturaProveedorTipo({}, hintedProviderType);
 
   if (!empresaId) return { factura: resolved, applied, issues };
+  if (
+    explicitProviderType &&
+    hintedOnlyProviderType &&
+    explicitProviderType !== hintedOnlyProviderType
+  ) {
+    issues.push({
+      field: "FRR_tipofactura",
+      message:
+        "El tipo de factura confirmado no coincide con el maestro de proveedor sugerido por la extraccion.",
+      severity: "error",
+    });
+  }
 
   const activeRows = rows.filter((row) =>
     row.activo === true &&
@@ -2033,7 +2138,10 @@ export const resolveFacturaERPAccountingRules = (
     (row.proveedor_id === null || row.proveedor_id === undefined || positiveRuleInteger(row.proveedor_id) === proveedorId)
   );
   const companyRows = activeRows.filter((row) => row.proveedor_id === null || row.proveedor_id === undefined);
-  const providerRows = proveedorId
+  // Las reglas por proveedor existentes se definieron para el maestro de
+  // acreedores. Los ids de acreedor y agricultor no son globalmente únicos:
+  // ante tipo desconocido o GE se aplican solo las reglas generales de empresa.
+  const providerRows = proveedorId && providerType === "acreedor"
     ? activeRows.filter((row) => positiveRuleInteger(row.proveedor_id) === proveedorId)
     : [];
 
@@ -2085,17 +2193,19 @@ export const resolveFacturaERPAccountingRules = (
 export const loadAndResolveFacturaERPAccountingRules = async (
   supabase: ReturnType<typeof createServiceClient>,
   factura: JsonObject,
+  hintedProviderType: unknown = null,
 ): Promise<FacturaERPAccountingRuleResolution> => {
   const empresaId = positiveRuleInteger(factura.FRR_Idempresa);
   const proveedorId = positiveRuleInteger(factura.FRR_idproveedor);
-  if (!empresaId) return resolveFacturaERPAccountingRules(factura, []);
+  const providerType = resolveFacturaProveedorTipo(factura, hintedProviderType);
+  if (!empresaId) return resolveFacturaERPAccountingRules(factura, [], providerType);
 
   let query = supabase
     .from("facturas_recibidas_erp_rules")
     .select("empresa_id, proveedor_id, ejercicio_erp, tipo_factura, regimen_id, fecha_ctb_policy, activo")
     .eq("empresa_id", empresaId)
     .eq("activo", true);
-  query = proveedorId
+  query = proveedorId && providerType === "acreedor"
     ? query.or(`proveedor_id.is.null,proveedor_id.eq.${proveedorId}`)
     : query.is("proveedor_id", null);
 
@@ -2106,6 +2216,7 @@ export const loadAndResolveFacturaERPAccountingRules = async (
   return resolveFacturaERPAccountingRules(
     factura,
     Array.isArray(data) ? data as FacturaERPAccountingRuleRow[] : [],
+    providerType,
   );
 };
 

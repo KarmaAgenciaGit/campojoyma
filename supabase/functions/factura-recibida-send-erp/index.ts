@@ -11,6 +11,7 @@ import {
   getValidationErrorsForFactura,
   integerValue,
   hasBlockingERPValidationErrors,
+  isFacturaERPReadOnlyReference,
   isEligibleERPCommitAttempt,
   jsonResponse,
   loadAndResolveFacturaERPAccountingRules,
@@ -23,6 +24,7 @@ import {
   parseJsonResponse,
   requestIdValue,
   requireRouteUser,
+  resolveFacturaProveedorTipo,
   rpcErrorStatus,
   signJwtHs256,
   text,
@@ -94,6 +96,17 @@ Deno.serve(async (req) => {
       return jsonResponse(
         { error: facturaError?.message ?? "Factura no encontrada." },
         facturaError ? 500 : 404,
+      );
+    }
+    if (isFacturaERPReadOnlyReference(factura as JsonObject)) {
+      return jsonResponse(
+        {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
+          code: "ERP_REFERENCE_READ_ONLY",
+          error: "Esta factura es una referencia importada del ERP y no se puede volver a enviar.",
+        },
+        409,
       );
     }
 
@@ -654,9 +667,28 @@ Deno.serve(async (req) => {
     }
 
     const proveedorId = integerValue(authoritativeFactura.FRR_idproveedor, null);
+    const proveedorTipo = resolveFacturaProveedorTipo(authoritativeFactura);
+    if (!proveedorTipo) {
+      return jsonResponse(
+        {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          request_id: requestId,
+          code: "ERP_PROVIDER_TYPE_INVALID",
+          error: "El tipo de factura no permite determinar si el proveedor es acreedor o agricultor.",
+          validation_errors: [{
+            field: "FRR_tipofactura",
+            message: "Falta un tipo de factura ERP valido para resolver el maestro del proveedor.",
+            severity: "error",
+          }],
+        },
+        422,
+      );
+    }
+    const proveedorLabel = proveedorTipo === "agricultor" ? "agricultor" : "acreedor";
+    const proveedorRoute = proveedorTipo === "agricultor" ? "agricultores" : "acreedores";
     let providerCall: Awaited<ReturnType<typeof callReadResponse>>;
     try {
-      providerCall = await callReadResponse(`acreedores/${proveedorId}`);
+      providerCall = await callReadResponse(`${proveedorRoute}/${proveedorId}`);
     } catch (error) {
       const details = error instanceof Error ? error.message : "La API ERP no esta disponible.";
       return jsonResponse(
@@ -664,7 +696,7 @@ Deno.serve(async (req) => {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
           code: "ERP_PROVIDER_UNAVAILABLE",
-          error: "No se pudo validar el acreedor contra el ERP.",
+          error: `No se pudo validar el ${proveedorLabel} contra el ERP.`,
           details,
         },
         503,
@@ -682,10 +714,10 @@ Deno.serve(async (req) => {
             contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
             request_id: requestId,
             code: "ERP_PROVIDER_NOT_FOUND",
-            error: "El acreedor seleccionado no existe en el ERP.",
+            error: `El ${proveedorLabel} seleccionado no existe en el ERP.`,
             validation_errors: [{
               field: "FRR_idproveedor",
-              message: "El acreedor seleccionado no existe en el ERP.",
+              message: `El ${proveedorLabel} seleccionado no existe en el ERP.`,
               severity: "error",
             }],
           },
@@ -697,35 +729,39 @@ Deno.serve(async (req) => {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
           code: "ERP_PROVIDER_UNAVAILABLE",
-          error: "No se pudo validar el acreedor contra el ERP.",
+          error: `No se pudo validar el ${proveedorLabel} contra el ERP.`,
           details: providerCall.result.message,
         },
         503,
       );
     }
 
-    const providerDetail = parseERPProviderDetailResponse(providerCall.payload);
+    const providerDetail = parseERPProviderDetailResponse(providerCall.payload, proveedorTipo);
     if (!providerDetail.ok) {
       return jsonResponse(
         {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
           code: "ERP_PROVIDER_INVALID_RESPONSE",
-          error: "El ERP devolvio un detalle de acreedor no verificable.",
+          error: `El ERP devolvio un detalle de ${proveedorLabel} no verificable.`,
           details: providerDetail.error,
         },
         503,
       );
     }
 
-    const providerIssues = getERPProviderPreflightIssues(authoritativeFactura, providerDetail.provider);
+    const providerIssues = getERPProviderPreflightIssues(
+      authoritativeFactura,
+      providerDetail.provider,
+      proveedorTipo,
+    );
     if (providerIssues.length > 0) {
       return jsonResponse(
         {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
           code: "ERP_PROVIDER_MISMATCH",
-          error: "El acreedor o su cuenta no coinciden con el maestro ERP.",
+          error: `El ${proveedorLabel} o su cuenta no coinciden con el maestro ERP.`,
           validation_errors: providerIssues,
         },
         422,

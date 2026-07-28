@@ -1,16 +1,30 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+}));
+
+vi.mock('@/integrations/supabase/client', () => ({
+  supabase: {
+    functions: { invoke: invokeMock },
+  },
+}));
 
 import {
   LONGITUD_CONCEPTO,
   MIN_HISTORIAL_SUGERENCIA,
+  aplicarPlantillaIvaHistorica,
   calcularSugerencias,
   construirConceptoFactura,
   describirSugerencia,
   normalizarFacturaHistorica,
+  obtenerPerfilesIvaRegimen,
   type FacturaHistorica,
+  type PerfilesIvaRegimen,
 } from './facturasRecibidasHistorial';
+import type { FacturaRecibidaIvaTramo } from './apiContracts';
 
 const factura = (overrides: Partial<FacturaHistorica> = {}): FacturaHistorica => ({
   tipo_factura: 'OT',
@@ -22,6 +36,38 @@ const factura = (overrides: Partial<FacturaHistorica> = {}): FacturaHistorica =>
 
 const repetir = (n: number, overrides: Partial<FacturaHistorica> = {}) =>
   Array.from({ length: n }, () => factura(overrides));
+
+const tramosIva = (
+  overrides: Partial<Record<FacturaRecibidaIvaTramo['posicion'], Partial<FacturaRecibidaIvaTramo>>> = {},
+): FacturaRecibidaIvaTramo[] =>
+  [1, 2, 3, 4, 5].map((posicion) => ({
+    posicion: posicion as FacturaRecibidaIvaTramo['posicion'],
+    base: posicion * 100,
+    porcentaje: posicion,
+    cuota: posicion * 10,
+    ...overrides[posicion as FacturaRecibidaIvaTramo['posicion']],
+  }));
+
+const perfilesDominantes = (
+  overrides: Partial<PerfilesIvaRegimen> = {},
+): PerfilesIvaRegimen => ({
+  regimen_id: 2110,
+  filtros: { proveedor_id: 17, tipo_factura: 'OT' },
+  total_facturas: 10,
+  estado: 'dominante',
+  ambiguo: false,
+  plantilla_sugerida: {
+    porcentajes: [21, 10, 4, 5, 0],
+    usos: 9,
+    confianza: 0.9,
+    criterio: 'perfil_historico_dominante',
+  },
+  ...overrides,
+});
+
+beforeEach(() => {
+  invokeMock.mockReset();
+});
 
 describe('construirConceptoFactura', () => {
   it('aplica la convencion FRA. + nombre observada en el 100% del historico', () => {
@@ -144,5 +190,81 @@ describe('describirSugerencia', () => {
   it('no describe nada sin historico', () => {
     const vacio = calcularSugerencias([]);
     expect(describirSugerencia(vacio.tipo_factura)).toBeNull();
+  });
+});
+
+describe('perfil histórico de IVA por régimen', () => {
+  it('consulta el régimen con proveedor y tipo de factura al cambiar el selector', async () => {
+    invokeMock.mockResolvedValue({
+      data: {
+        ...perfilesDominantes(),
+        plantilla_sugerida: {
+          porcentajes: ['21.00', '10.00', '4.00', '5.00', null],
+          usos: 9,
+          confianza: 0.9,
+          criterio: 'perfil_historico_dominante',
+        },
+      },
+      error: null,
+    });
+
+    const result = await obtenerPerfilesIvaRegimen({
+      regimenId: 2110,
+      proveedorId: 17,
+      tipoFactura: 'ot',
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith('facturas-recibidas-erp-read', {
+      body: {
+        consulta: 'regimenes/2110/perfiles-iva?proveedor_id=17&tipo_factura=OT',
+      },
+    });
+    expect(result.plantilla_sugerida?.porcentajes).toEqual([21, 10, 4, 5, null]);
+  });
+
+  it('no sobrescribe ningún tramo cuando el histórico es ambiguo', () => {
+    const originales = tramosIva();
+    const result = aplicarPlantillaIvaHistorica(
+      originales,
+      perfilesDominantes({
+        estado: 'ambiguo',
+        ambiguo: true,
+        plantilla_sugerida: null,
+      }),
+    );
+
+    expect(result).toMatchObject({ aplicada: false, motivo: 'ambigua' });
+    expect(result.tramos).toBe(originales);
+    expect(result.tramos).toEqual(tramosIva());
+  });
+
+  it('aplica la plantilla por posición aunque base1 sea cero y exista un tramo posterior', () => {
+    const originales = tramosIva({
+      1: { base: 0, cuota: 0 },
+      2: { base: 423.41, cuota: 42.34 },
+    });
+
+    const result = aplicarPlantillaIvaHistorica(originales, perfilesDominantes());
+
+    expect(result.aplicada).toBe(true);
+    expect(result.tramos.map((tramo) => tramo.porcentaje)).toEqual([21, 10, 4, 5, 0]);
+    expect(result.tramos[0]).toMatchObject({ base: 0, cuota: 0 });
+    expect(result.tramos[1]).toMatchObject({ base: 423.41, cuota: 42.34 });
+  });
+
+  it('preserva literalmente todas las bases y cuotas al actualizar porcentajes', () => {
+    const originales = tramosIva({
+      1: { base: 42_341.52, cuota: 8_891.72 },
+      2: { base: -12.34, cuota: -1.23 },
+      3: { base: null, cuota: null },
+      4: { base: 0, cuota: 0 },
+      5: { base: 99.99, cuota: 7.77 },
+    });
+    const importesOriginales = originales.map(({ base, cuota }) => ({ base, cuota }));
+
+    const result = aplicarPlantillaIvaHistorica(originales, perfilesDominantes());
+
+    expect(result.tramos.map(({ base, cuota }) => ({ base, cuota }))).toEqual(importesOriginales);
+    expect(result.tramos.map((tramo) => tramo.porcentaje)).toEqual([21, 10, 4, 5, 0]);
   });
 });
