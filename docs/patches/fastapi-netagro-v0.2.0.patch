@@ -5,14 +5,14 @@ index 6d586f1..f7c46ef 100644
 @@ -11,6 +11,12 @@ from fastapi import HTTPException, Query
  from pymysql.connections import Connection
  from pymysql.cursors import DictCursor
-
+ 
 +from .mariadb_permissions import (
 +    READ_ONLY_MARIADB_PRIVILEGES,
 +    WRITE_MARIADB_PRIVILEGES,
 +    unsafe_mariadb_grants,
 +)
 +
-
+ 
  DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
  DB_PORT = int(os.getenv("DB_PORT", "3306"))
 @@ -24,8 +30,8 @@ DB_ALLOWED_SCHEMAS = {
@@ -32,13 +32,13 @@ index 6d586f1..f7c46ef 100644
  }
 -
 +DB_READ_ALLOWED_SCHEMAS = DB_ALLOWED_SCHEMAS | DB_ALLOWED_ACCOUNT_SCHEMAS
-
+ 
  def normalize_value(value: Any) -> Any:
      if isinstance(value, Decimal):
 @@ -92,6 +98,32 @@ def schema_query() -> Any:
      return Query(description="Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au")
-
-
+ 
+ 
 +def verify_runtime_database_permissions(
 +    connection: Connection,
 +    user: str,
@@ -283,12 +283,12 @@ index 0000000..fa9d36c
 +        "error": None,
 +    }
 diff --git app/main.py app/main.py
-index 3676c6c..e18b562 100644
+index 3676c6c..5bda030 100644
 --- app/main.py
 +++ app/main.py
 @@ -1,9 +1,15 @@
  from __future__ import annotations
-
+ 
 +import hashlib
 +import json
 +import logging
@@ -300,7 +300,7 @@ index 3676c6c..e18b562 100644
  from decimal import Decimal
  from typing import Annotated, Any, Literal
 +from uuid import UUID
-
+ 
  from fastapi import FastAPI, HTTPException, Query
  from pydantic import BaseModel, ConfigDict, Field
 @@ -12,6 +18,7 @@ from .db import (
@@ -325,8 +325,8 @@ index 3676c6c..e18b562 100644
 +
 +
 +LOGGER = logging.getLogger(__name__)
-
-
+ 
+ 
 -app = FastAPI(title=os.getenv("API_TITLE", "Netagro Test API"))
 +@asynccontextmanager
 +async def lifespan(_: FastAPI):
@@ -343,9 +343,9 @@ index 3676c6c..e18b562 100644
 +
 +app = FastAPI(
 +    title=os.getenv("API_TITLE", "Netagro Test API"),
-+    # 0.2.2: identidad agricultor/acreedor correcta en facturas recibidas y
-+    # punteos GE de solo lectura desde albentrada_his.
-+    version="0.2.2",
++    # 0.2.3: lineas de entrada enriquecidas con las etiquetas que muestra el
++    # ERP, manteniendo el contrato anterior de forma aditiva.
++    version="0.2.3",
 +    description=(
 +        "API interna de la copia de pruebas de Netagro. El contrato v2 es aditivo; "
 +        "la contabilizacion queda bloqueada mientras no exista un mecanismo oficial "
@@ -353,10 +353,10 @@ index 3676c6c..e18b562 100644
 +    ),
 +    lifespan=lifespan,
 +)
-
+ 
  Limit = Annotated[int, Query(ge=1, le=200)]
  Offset = Annotated[int, Query(ge=0)]
-
+ 
  ACCOUNT_SCHEMA_DESCRIPTIONS = ", ".join(sorted(DB_ALLOWED_ACCOUNT_SCHEMAS))
 -
 +ACCOUNTING_MECHANISM = "unavailable"
@@ -403,8 +403,8 @@ index 3676c6c..e18b562 100644
 +            ON COALESCE(f.FRR_tipofactura, '') <> 'GE'
 +           AND a.ACR_Codigo = f.FRR_idproveedor
 +    """
-
-
+ 
+ 
  class PunteoSeleccionado(BaseModel):
 @@ -142,6 +218,7 @@ class PunteoSeleccionado(BaseModel):
          "albaranescompra_gastos",
@@ -417,15 +417,15 @@ index 3676c6c..e18b562 100644
 @@ -150,11 +227,71 @@ class PunteoSeleccionado(BaseModel):
  class FacturaRecibidaCreateRequest(BaseModel):
      model_config = ConfigDict(extra="forbid")
-
+ 
 +    contract_version: Literal[1, 2] = 1
 +    request_id: UUID | None = None
 +    dry_run: bool | None = None
      cabecera: dict[str, Any]
      ctb: list[dict[str, Any]] = Field(default_factory=list)
      punteos: list[PunteoSeleccionado] = Field(default_factory=list)
-
-
+ 
+ 
 +class AccountingState(BaseModel):
 +    requested: bool
 +    created: bool
@@ -485,11 +485,11 @@ index 3676c6c..e18b562 100644
 +
  def paging(limit: int, offset: int) -> dict[str, int]:
      return {"limit": limit, "offset": offset}
-
+ 
 @@ -188,6 +325,606 @@ def normalize_payload_values(values: dict[str, Any]) -> dict[str, Any]:
      return normalized
-
-
+ 
+ 
 +def _readback_value_matches(expected: Any, actual: Any) -> bool:
 +    if expected is None or actual is None:
 +        return expected is actual
@@ -1095,8 +1095,8 @@ index 3676c6c..e18b562 100644
      unknown = sorted(set(cabecera) - FRR_COLUMN_SET)
 @@ -219,8 +956,60 @@ def validate_frc_payload(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
      return errors
-
-
+ 
+ 
 +def validate_v2_technical_fields(
 +    cabecera: dict[str, Any],
 +    ctb_rows: list[dict[str, Any]],
@@ -1156,8 +1156,8 @@ index 3676c6c..e18b562 100644
      quoted_columns = ", ".join(quote_column(column, allowed_columns) for column in columns)
      sql = f"INSERT INTO {table} ({quoted_columns}) VALUES ({', '.join(placeholders)})"
 @@ -228,11 +1017,15 @@ def insert_row(cursor: Any, table: str, values: dict[str, Any], allowed_columns:
-
-
+ 
+ 
  def factura_recibida_duplicate_where() -> str:
 +    # TRIM en ambos lados: el historico real de ejercicios 22-25 contiene 72
 +    # numeros de factura con espacios accidentales que una igualdad estricta
@@ -1170,8 +1170,8 @@ index 3676c6c..e18b562 100644
 -        AND FRR_numerofactura = %(FRR_numerofactura)s
 +        AND TRIM(FRR_numerofactura) = TRIM(%(FRR_numerofactura)s)
      """
-
-
+ 
+ 
 @@ -258,7 +1051,8 @@ def punteos_union_sql(selected: str) -> str:
              g.ASG_idgasto AS gasto_id,
              gc.GCO_Nombre AS gasto_nombre,
@@ -1222,7 +1222,7 @@ index 3676c6c..e18b562 100644
          FROM {selected}.albarancoste a
          LEFT JOIN (
              SELECT ALN_IdAlbaran, SUM(ALN_Importe) AS importe
-@@ -379,9 +1177,352 @@ def punteos_union_sql(selected: str) -> str:
+@@ -379,9 +1177,353 @@ def punteos_union_sql(selected: str) -> str:
              GROUP BY ALN_IdAlbaran
          ) lineas ON lineas.ALN_IdAlbaran = a.ALB_Id
          LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = a.ALB_IdAcreedor
@@ -1258,8 +1258,8 @@ index 3676c6c..e18b562 100644
 +        FROM {selected}.albmaterial m
 +        LEFT JOIN {selected}.acreedores acr ON acr.ACR_Codigo = m.AMA_idacreedor
      """
-
-
+ 
+ 
 +def ge_allocated_invoice_amount_sql(selected: str) -> str:
 +    """Allocate the invoice base across linked GE receipts with exact cent totals.
 +
@@ -1520,6 +1520,7 @@ index 3676c6c..e18b562 100644
 +                l.AHL_idcategoria AS category_id,
 +                NULLIF(cat.CAE_categoria, '') AS category_name,
 +                l.AHL_idtipocultivo AS crop_type_id,
++                NULLIF(TRIM(tcu.TCU_Abreviatura), '') AS crop_type_abbreviation,
 +                NULLIF(tcu.TCU_Nombre, '') AS crop_type_name,
 +                l.AHL_muestreo AS lot_id,
 +                l.AHL_idlineaentrada AS entry_line_id,
@@ -1575,7 +1576,7 @@ index 3676c6c..e18b562 100644
  def count_from(selected: str, table_and_joins: str, where: str, params: dict[str, Any]) -> int:
      row = fetch_one(
          f"""
-@@ -398,34 +1539,68 @@ def count_from(selected: str, table_and_joins: str, where: str, params: dict[str
+@@ -398,34 +1540,68 @@ def count_from(selected: str, table_and_joins: str, where: str, params: dict[str
  def root() -> dict[str, Any]:
      return {
          "service": "netagro-test-api",
@@ -1586,8 +1587,8 @@ index 3676c6c..e18b562 100644
 +        "accounting_mechanism": ACCOUNTING_MECHANISM,
 +        "albmaterial_writes_enabled": ALBMATERIAL_WRITES_ENABLED,
      }
-
-
+ 
+ 
  @app.get("/health")
  def health() -> dict[str, Any]:
      row = fetch_one("SELECT 1 AS ok, @@hostname AS db_host, @@version AS db_version")
@@ -1600,8 +1601,8 @@ index 3676c6c..e18b562 100644
 +        "writes_enabled": DB_WRITES_ENABLED,
 +        "idempotency_store": idempotency,
 +    }
-
-
+ 
+ 
  @app.get("/meta/tables")
 -def meta_tables(schema: Annotated[str | None, schema_query()] = None) -> dict[str, Any]:
 -    selected = resolve_schema(schema)
@@ -1651,10 +1652,10 @@ index 3676c6c..e18b562 100644
      )
 -    return {"schema": selected, "tables": rows}
 +    return {"schema": selected, "filter": q, "tables": rows}
-
-
+ 
+ 
  @app.get("/empresas")
-@@ -752,7 +1927,16 @@ def list_facturas_recibidas(
+@@ -752,7 +1928,16 @@ def list_facturas_recibidas(
          clauses.append("f.FRR_idproveedor = %(proveedor_id)s")
      if proveedor_nif:
          params["proveedor_nif"] = f"%{proveedor_nif.strip()}%"
@@ -1672,9 +1673,9 @@ index 3676c6c..e18b562 100644
      if numero_factura:
          params["numero_factura"] = f"%{numero_factura.strip()}%"
          clauses.append("f.FRR_numerofactura LIKE %(numero_factura)s")
-@@ -764,10 +1948,8 @@ def list_facturas_recibidas(
+@@ -764,10 +1949,8 @@ def list_facturas_recibidas(
          clauses.append("f.FRR_tipofactura = %(tipo_factura)s")
-
+ 
      where = " WHERE " + " AND ".join(clauses) if clauses else ""
 -    table_and_joins = (
 -        "facturasrecibidas f "
@@ -1685,7 +1686,7 @@ index 3676c6c..e18b562 100644
      total = count_from(selected, table_and_joins, where, params)
      params.update(paging(limit, offset))
      rows = fetch_all(
-@@ -780,8 +1962,32 @@ def list_facturas_recibidas(
+@@ -780,8 +1963,32 @@ def list_facturas_recibidas(
              f.FRR_numerofactura AS numero_factura,
              f.FRR_ejercicio AS ejercicio,
              f.FRR_idproveedor AS proveedor_id,
@@ -1720,7 +1721,7 @@ index 3676c6c..e18b562 100644
              f.FRR_base1 AS base1,
              f.FRR_iva1 AS iva1,
              f.FRR_cuota1 AS cuota1,
-@@ -793,7 +1999,7 @@ def list_facturas_recibidas(
+@@ -793,7 +2000,7 @@ def list_facturas_recibidas(
              f.FRR_Idempresa AS empresa_id,
              f.FRR_fechactb AS fecha_contable
          FROM {selected}.facturasrecibidas f
@@ -1729,7 +1730,7 @@ index 3676c6c..e18b562 100644
          {where}
          ORDER BY f.FRR_fechafactura DESC, f.FRR_id DESC
          LIMIT %(limit)s OFFSET %(offset)s
-@@ -991,6 +2197,26 @@ def get_factura_recibida(
+@@ -991,6 +2198,26 @@ def get_factura_recibida(
          f"""
          SELECT
              f.*,
@@ -1756,7 +1757,7 @@ index 3676c6c..e18b562 100644
              a.ACR_Codigo AS acreedor_codigo,
              a.ACR_Nombre AS acreedor_nombre,
              a.ACR_Nif AS acreedor_nif,
-@@ -998,9 +2224,16 @@ def get_factura_recibida(
+@@ -998,9 +2225,16 @@ def get_factura_recibida(
              a.ACR_IdCuenta AS acreedor_cuenta_id,
              a.ACR_Cuentagasto AS acreedor_cuenta_gasto,
              a.ACR_Bloqueado AS acreedor_bloqueado,
@@ -1775,10 +1776,10 @@ index 3676c6c..e18b562 100644
          WHERE f.FRR_id = %(factura_id)s
          """,
          {"factura_id": factura_id},
-@@ -1008,6 +2241,49 @@ def get_factura_recibida(
+@@ -1008,6 +2242,49 @@ def get_factura_recibida(
      return ensure_found(row, "factura recibida")
-
-
+ 
+ 
 +@app.get(
 +    "/facturasrecibidas/{factura_id}/asiento",
 +    response_model=FacturaRecibidaAsientoResponse,
@@ -1825,7 +1826,7 @@ index 3676c6c..e18b562 100644
  @app.get("/facturasrecibidas/{factura_id}/ctb")
  def get_factura_recibida_ctb(
      factura_id: int,
-@@ -1051,20 +2327,36 @@ def get_factura_recibida_punteos(
+@@ -1051,20 +2328,36 @@ def get_factura_recibida_punteos(
      schema: Annotated[str | None, schema_query()] = None,
      limit: Limit = 200,
      offset: Offset = 0,
@@ -1862,10 +1863,10 @@ index 3676c6c..e18b562 100644
 +        "total": int(total_row["total"]) if total_row else 0,
 +        "include_lines": include_lines,
 +    }
-
-
+ 
+ 
  @app.get("/albaranes-gastos/punteables")
-@@ -1078,6 +2370,7 @@ def list_albaranes_gastos_punteables(
+@@ -1078,6 +2371,7 @@ def list_albaranes_gastos_punteables(
          "albaranescompra_gastos",
          "facturas_gastos",
          "albarancoste",
@@ -1873,10 +1874,10 @@ index 3676c6c..e18b562 100644
      ]
      | None = None,
      proveedor_id: int | None = None,
-@@ -1129,22 +2422,96 @@ def list_albaranes_gastos_punteables(
+@@ -1129,22 +2423,96 @@ def list_albaranes_gastos_punteables(
      return {"items": rows, "limit": limit, "offset": offset, "total": int(total_row["total"]) if total_row else 0}
-
-
+ 
+ 
 -@app.post("/facturasrecibidas")
 +@app.post("/facturasrecibidas", response_model=FacturaRecibidaWriteResponse)
  def create_factura_recibida(
@@ -1970,13 +1971,13 @@ index 3676c6c..e18b562 100644
 +                ),
 +            }
 +        )
-
+ 
      duplicate = None
      duplicate_fields = ("FRR_Idempresa", "FRR_ejercicio", "FRR_idproveedor", "FRR_numerofactura")
-@@ -1188,33 +2555,42 @@ def create_factura_recibida(
+@@ -1188,33 +2556,42 @@ def create_factura_recibida(
          )
          generated_numero = int(number_row["next_numero"]) if number_row else None
-
+ 
 -    if dry_run or validation_errors:
 -        return {
 -            "ok": not validation_errors,
@@ -2019,7 +2020,7 @@ index 3676c6c..e18b562 100644
 +            duplicate=duplicate,
 +            punteos_requested=punteos_requested,
 +        )
-
+ 
 -    with get_write_connection() as connection:
 -        try:
 +    linked_punteos: list[dict[str, Any]] = []
@@ -2040,7 +2041,7 @@ index 3676c6c..e18b562 100644
                  lock_row = cursor.fetchone()
                  if not lock_row or int(lock_row["got_lock"]) != 1:
                      raise HTTPException(status_code=409, detail="could not acquire invoice creation lock")
-@@ -1231,22 +2607,16 @@ def create_factura_recibida(
+@@ -1231,22 +2608,16 @@ def create_factura_recibida(
                  duplicate_row = cursor.fetchone()
                  if duplicate_row:
                      connection.rollback()
@@ -2070,22 +2071,22 @@ index 3676c6c..e18b562 100644
 +                            "duplicate": normalize_row(duplicate_row),
 +                        },
 +                    )
-
+ 
                  cursor.execute(f"SELECT COALESCE(MAX(FRR_id), 0) + 1 AS next_id FROM {selected}.facturasrecibidas")
                  generated_frr_id = int(cursor.fetchone()["next_id"])
-@@ -1284,7 +2654,7 @@ def create_factura_recibida(
+@@ -1284,7 +2655,7 @@ def create_factura_recibida(
                      next_frc_id += 1
-
+ 
                  for punteo in payload.punteos:
 -                    table_name, id_column, link_column, amount_column = punteo_config[punteo.source_table]
 +                    table_name, id_column, link_column, amount_column = PUNTEO_CONFIG[punteo.source_table]
                      cursor.execute(
                          f"""
                          SELECT {id_column} AS source_id, {link_column} AS linked_invoice
-@@ -1340,25 +2710,43 @@ def create_factura_recibida(
+@@ -1340,25 +2711,43 @@ def create_factura_recibida(
                          }
                      )
-
+ 
 -                cursor.execute("SELECT RELEASE_LOCK(%(lock_name)s)", {"lock_name": f"{selected_name}:facturasrecibidas:create"})
              connection.commit()
 -        except HTTPException:
@@ -2094,7 +2095,7 @@ index 3676c6c..e18b562 100644
 -        except Exception:
 -            connection.rollback()
 -            raise
-
+ 
 -    return {
 -        "ok": True,
 -        "dry_run": dry_run,
@@ -2140,9 +2141,65 @@ index 3676c6c..e18b562 100644
 +                    exc_info=True,
 +                )
 +        raise
-
-
+ 
+ 
  @app.get("/facturas")
+@@ -1691,20 +3080,41 @@ def get_albaran_entrada_lineas(
+     rows = fetch_all(
+         f"""
+         SELECT
+-            AEL_idlinea AS id,
+-            AEL_idalbaran AS albaran_id,
+-            AEL_idgenero AS genero_id,
+-            AEL_idcategoria AS categoria_id,
+-            AEL_kilosbrutos AS kilos_brutos,
+-            AEL_kilosnetos AS kilos_netos,
+-            AEL_palets AS palets,
+-            AEL_bultos AS bultos,
+-            AEL_piezas AS piezas,
+-            AEL_precio AS precio,
+-            AEL_Importe AS importe
+-        FROM {selected}.albentrada_lineas
+-        WHERE AEL_idalbaran = %(albaran_id)s
+-        ORDER BY AEL_idlinea
++            l.AEL_idlinea AS id,
++            l.AEL_idalbaran AS albaran_id,
++            l.AEL_linea AS linea,
++            l.AEL_muestreo AS partida,
++            l.AEL_idgenero AS genero_id,
++            NULLIF(TRIM(g.GEN_NombreGenero), '') AS genero_nombre,
++            l.AEL_idcategoria AS categoria_id,
++            NULLIF(TRIM(cat.CAE_categoria), '') AS categoria_nombre,
++            NULLIF(TRIM(cat.CAE_calibre), '') AS categoria_calibre,
++            NULLIF(TRIM(cat.CAE_categoriacalibre), '') AS categoria_calibre_nombre,
++            l.AEL_idenvase AS envase_id,
++            NULLIF(TRIM(env.ENV_nombre), '') AS envase_nombre,
++            l.AEL_idcultivo AS cultivo_id,
++            l.AEL_IdTipoCultivo AS tipo_cultivo_id,
++            NULLIF(TRIM(tcu.TCU_Abreviatura), '') AS tipo_cultivo_abreviatura,
++            NULLIF(TRIM(tcu.TCU_Nombre), '') AS tipo_cultivo_nombre,
++            NULLIF(TRIM(l.AEL_Calidad), '') AS calidad_codigo,
++            l.AEL_kilosbrutos AS kilos_brutos,
++            l.AEL_kilosnetos AS kilos_netos,
++            l.AEL_palets AS palets,
++            l.AEL_bultos AS bultos,
++            l.AEL_piezas AS piezas,
++            l.AEL_precio AS precio,
++            l.AEL_Importe AS importe
++        FROM {selected}.albentrada_lineas l
++        LEFT JOIN {selected}.generos g
++            ON g.GEN_IdGenero = l.AEL_idgenero
++        LEFT JOIN {selected}.envases env
++            ON env.ENV_idenvase = l.AEL_idenvase
++        LEFT JOIN {selected}.categoriasentrada cat
++            ON cat.CAE_id = l.AEL_idcategoria
++        LEFT JOIN {selected}.tipocultivo tcu
++            ON tcu.TCU_Id = l.AEL_IdTipoCultivo
++        WHERE l.AEL_idalbaran = %(albaran_id)s
++        ORDER BY l.AEL_idlinea
+         """,
+         {"albaran_id": albaran_id},
+     )
 diff --git app/mariadb_permissions.py app/mariadb_permissions.py
 new file mode 100644
 index 0000000..b61b7db

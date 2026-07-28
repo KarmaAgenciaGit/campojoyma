@@ -15,7 +15,8 @@ estado de homologación y los límites de la API se documentan en
 el OpenAPI verificable está en
 [openapi/netagro-test-api-v0.2.0.json](openapi/netagro-test-api-v0.2.0.json).
 El nombre del fichero se mantiene por compatibilidad; su contenido corresponde
-a la API v0.2.2 desplegada y verificada mediante readback el 28/07/2026.
+a la API v0.2.3, cuya ampliación de líneas de albarán de entrada se verificó
+contra el caso real `25 / A26 / 8436` el 28/07/2026.
 
 La API de escritura sigue en modo <code>reference_only</code>. La copia de
 Netagro no expone el mecanismo oficial que crea el asiento ni permite verificar
@@ -95,6 +96,12 @@ un ejemplo `25 / A26 / 8436`. La cabecera corresponde a `albentrada` y la
 rejilla muestra sus partidas, género, cultivo/calidad, envase, bultos, kilos,
 precio e importe. En el ejemplo existen pesos pero precio e importe son cero:
 la recepción logística puede preceder a su valoración contable.
+
+El cruce del ejemplo con la base identifica la cabecera como
+<code>albentrada.AEN_idalbaran=82548</code> y su única línea como
+<code>albentrada_lineas.AEL_idlinea=87097</code>, con partida
+<code>AEL_muestreo=10843601</code>. Esta identidad técnica se usa para consultar
+el detalle; la identidad visible sigue siendo campaña, serie y número.
 
 ![Albarán de entrada vacío](evidencias/facturas-recibidas/actualizacion-proyecto-2026-07-28/06-erp-albaran-entrada-formulario-vacio.png)
 
@@ -204,7 +211,7 @@ Endpoints relevantes:
 | <code>GET /facturasrecibidas_ctb?factura_id={id}</code> | Alias de consulta CTB. |
 | <code>GET /facturasrecibidas/{factura_id}/punteos</code> | Punteos ya ligados; en GE incluye histórico de entrada de solo lectura. |
 | <code>GET /albaranes/entrada</code> | Cabeceras vigentes de albaranes de género. |
-| <code>GET /albaranes/entrada/{albaran_id}/lineas</code> | Detalle logístico del albarán bajo demanda. |
+| <code>GET /albaranes/entrada/{albaran_id}/lineas</code> | Detalle logístico v0.2.3: línea, partida, género, categoría/calibre, envase, cultivo, tipo de cultivo, calidad, pesos, unidades, precio e importe. |
 
 Los listados responden con:
 
@@ -216,6 +223,31 @@ Los listados responden con:
   "total": 0
 }
 ~~~
+
+La respuesta de
+<code>GET /albaranes/entrada/{albaran_id}/lineas</code> conserva
+<code>id</code>, <code>albaran_id</code>, <code>genero_id</code>,
+<code>categoria_id</code>, <code>kilos_brutos</code>,
+<code>kilos_netos</code>, <code>palets</code>, <code>bultos</code>,
+<code>piezas</code>, <code>precio</code> e <code>importe</code>. La v0.2.3
+añade:
+
+- <code>linea</code> y <code>partida</code>;
+- <code>genero_nombre</code>;
+- <code>categoria_nombre</code>, <code>categoria_calibre</code> y
+  <code>categoria_calibre_nombre</code>;
+- <code>envase_id</code> y <code>envase_nombre</code>;
+- <code>cultivo_id</code>, conservado como identificador crudo;
+- <code>tipo_cultivo_id</code>, <code>tipo_cultivo_abreviatura</code> y
+  <code>tipo_cultivo_nombre</code>;
+- <code>calidad_codigo</code>.
+
+Las columnas `TCUL` y `PCAL` de la pantalla no pertenecen a dos maestros
+distintos. Ambas proceden de <code>tipocultivo</code>: `TCUL` es la abreviatura
+<code>BIO</code> y `PCAL` es el nombre <code>ECOLOGICO</code> del mismo registro.
+Para el albarán visible `8436`, la respuesta se obtiene con
+<code>/albaranes/entrada/82548/lineas</code> y devuelve la línea
+<code>87097</code>, partida <code>10843601</code>.
 
 La búsqueda interactiva de terceros debe ser acotada y con debounce. Tras
 seleccionar uno se consulta su detalle en el maestro correspondiente; no se

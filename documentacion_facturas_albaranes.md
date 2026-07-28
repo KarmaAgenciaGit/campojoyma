@@ -10,8 +10,8 @@
 Generado a partir de la copia local `netagrocomer` el `2026-06-29T16:01:26Z`.
 Actualizado el `2026-07-15` con auditoria completa de la FastAPI, sus 41 operaciones,
 los endpoints de agricultores y catalogos, el contrato de escritura y el estado real
-de despliegue. La adenda funcional y de lectura v0.2.2 se incorporo el
-`2026-07-28`.
+de despliegue. La adenda funcional y de lectura v0.2.2 y la ampliacion de lineas de
+albaran de entrada v0.2.3 se incorporaron el `2026-07-28`.
 
 ## Alcance y cautelas
 
@@ -119,6 +119,43 @@ Listado y detalle de facturas recibidas v0.2.2 exponen la identidad normalizada
 `proveedor_tipo`, `proveedor_id`, `proveedor_nombre` y `proveedor_nif`, ademas de
 los campos especificos de acreedor y agricultor. Esta adenda describe el
 contrato del repositorio; su despliegue debe comprobarse por version y readback.
+
+## Adenda API v0.2.3: lineas de albaran de entrada (2026-07-28)
+
+La API v0.2.3 amplia de forma aditiva
+`GET /albaranes/entrada/{albaran_id}/lineas`. Conserva los campos existentes y
+anade las identidades y etiquetas necesarias para reproducir la rejilla del ERP
+sin obligar al consumidor a conocer los maestros internos de Netagro.
+
+| Grupo | Campos de respuesta |
+|---|---|
+| Identidad | `id`, `albaran_id`, `linea`, `partida` |
+| Genero | `genero_id`, `genero_nombre` |
+| Categoria/calibre | `categoria_id`, `categoria_nombre`, `categoria_calibre`, `categoria_calibre_nombre` |
+| Envase | `envase_id`, `envase_nombre` |
+| Cultivo | `cultivo_id` |
+| Tipo de cultivo | `tipo_cultivo_id`, `tipo_cultivo_abreviatura`, `tipo_cultivo_nombre` |
+| Calidad | `calidad_codigo` |
+| Magnitudes conservadas | `kilos_brutos`, `kilos_netos`, `palets`, `bultos`, `piezas`, `precio`, `importe` |
+
+`cultivo_id` conserva el valor crudo de `AEL_idcultivo`; no se presenta como una
+descripcion confirmada. En cambio, las columnas visuales `TCUL` y `PCAL` salen
+del mismo maestro `tipocultivo`: `TCUL` corresponde a
+`tipo_cultivo_abreviatura` y `PCAL` a `tipo_cultivo_nombre`. En el caso
+contrastado sus valores son `BIO` y `ECOLOGICO`, respectivamente. No se debe
+buscar `PCAL` en un supuesto maestro separado de calidad.
+
+El ejemplo funcional `25 / A26 / 8436` queda identificado de extremo a extremo:
+
+| Elemento | Valor |
+|---|---:|
+| Cabecera `albentrada.AEN_idalbaran` | `82548` |
+| Linea `albentrada_lineas.AEL_idlinea` | `87097` |
+| Partida `albentrada_lineas.AEL_muestreo` | `10843601` |
+| Genero | `161100` - `SANDIA MINI` |
+| Tipo de cultivo | `1` - `BIO` - `ECOLOGICO` |
+| Bultos | `88` |
+| Kilos netos / brutos | `21194,00` / `24225,00` |
 
 ## Resumen ejecutivo
 
@@ -293,7 +330,7 @@ recuento nuevo de toda la superficie:
 | `GET /albaranes/salida/{albaran_id}/lineas` | Lineas de albaran de salida. |
 | `GET /albaranes/entrada` | Lista paginada de albaranes de entrada. |
 | `GET /albaranes/entrada/{albaran_id}` | Cabecera de albaran de entrada. |
-| `GET /albaranes/entrada/{albaran_id}/lineas` | Lineas de albaran de entrada. |
+| `GET /albaranes/entrada/{albaran_id}/lineas` | Lineas de albaran de entrada; en v0.2.3 incluye partida y etiquetas legibles de genero, categoria/calibre, envase y tipo de cultivo. |
 | `GET /facturas-agricultores` | Lista paginada de facturas/liquidaciones a agricultores. |
 
 Los listados paginados nuevos de `empresas`, `acreedores` y `facturasrecibidas` devuelven:
@@ -832,7 +869,7 @@ escrito en produccion.
 | `GET /albaranes/salida/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con genero, categoria, kilos, palets, bultos, piezas, precio e importe | `albsalida_lineas` |
 | `GET /albaranes/entrada` | `schema`, `limit=50`, `offset=0`, fechas, `agricultor_id`, `serie`, `numero` | `{items,limit,offset}`; campana, agricultor, punto de venta, centro, referencia y empresa | `albentrada` |
 | `GET /albaranes/entrada/{albaran_id}` | `albaran_id:int`, `schema` | Todas las columnas `AEN_*`; `404` si no existe | `albentrada` |
-| `GET /albaranes/entrada/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con genero, categoria, kilos, palets, bultos, piezas, precio e importe | `albentrada_lineas` |
+| `GET /albaranes/entrada/{albaran_id}/lineas` | `albaran_id:int`, `schema` | `{items}` con `id`, `albaran_id`, `linea`, `partida`; genero, categoria/calibre, envase y tipo de cultivo con id y etiquetas; `cultivo_id` crudo, `calidad_codigo`, kilos, palets, bultos, piezas, precio e importe | `albentrada_lineas` + maestros `generos`, `categoriasentrada`, `envases`, `tipocultivo` |
 | `GET /facturas-agricultores` | `schema`, `limit=50`, `offset=0`, fechas, `agricultor_id`, `serie`, `numero` | `{items,limit,offset}`; id, serie, numero, fecha, agricultor, empresa, total, base, IVA y retencion | `facturaagr` |
 
 Los filtros de estas operaciones son exactos salvo los rangos de fecha, que son
