@@ -32,6 +32,26 @@ SHA-256 bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102
 modo 600
 ```
 
+### Cómo reconocer el workflow correcto en el editor
+
+La topología desplegada se identifica visualmente por estos elementos:
+
+- dos entradas a `Normalizar entrada`: `Webhook Factura Campojoyma` y
+  `Email Trigger (IMAP)`, este último desactivado;
+- la cadena de preparación
+  `Calcular SHA-256 PDF` → `Derivar request_id estable` → `PDF a base64` →
+  `PDF a imágenes` → `Reconstruir imágenes binarias`;
+- un único `AI Agent`, conectado solamente al modelo `5.6 LUNA` y al
+  `Structured Output Parser`, sin conexiones `ai_tool`;
+- `Normalizar salida IA literal` seguido de
+  `Enriquecer por API Campojoyma`: la consulta ERP ocurre en código
+  determinista después de la extracción;
+- ramas finales separadas para webhook, correo, documento no procesable y
+  errores.
+
+Si aparecen tools HTTP conectadas al agente, más de un paso generativo o una
+topología distinta de 27 nodos, no se está viendo la versión v4 validada.
+
 Para regenerar y validar de forma idempotente el workflow canónico:
 
 ```powershell

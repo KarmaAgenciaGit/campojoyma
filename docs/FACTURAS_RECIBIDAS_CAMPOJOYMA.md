@@ -221,6 +221,25 @@ La UI:
 - conserva la selección de punteos como acción manual;
 - no muestra <code>reference_only</code> como asiento creado.
 
+### Diagnóstico del visor PDF en blanco
+
+La incidencia observada el 29/07/2026 combinaba un servidor Vite local detenido
+con una carrera durante la inicialización de <code>pdf.js</code>. Una pestaña
+ya abierta podía conservar la aplicación anterior en memoria aunque
+<code>127.0.0.1:8080</code> hubiera dejado de responder.
+
+Ante un visor vacío:
+
+1. comprobar primero que el servidor local responde;
+2. verificar que la descarga comienza por <code>%PDF-</code>, no solo que la
+   respuesta HTTP sea 200;
+3. usar abrir o descargar para distinguir un fallo del renderizador de un
+   documento inaccesible.
+
+El visor actual publica el PDF original en cuanto valida sus bytes. Por eso
+abrir y descargar siguen disponibles aunque la carga diferida de
+<code>pdf.js</code> falle o tarde más que la descarga.
+
 ## Errores que bloquean el envío
 
 - Falta empresa, ejercicio, proveedor, cuenta, número o fecha de factura.
