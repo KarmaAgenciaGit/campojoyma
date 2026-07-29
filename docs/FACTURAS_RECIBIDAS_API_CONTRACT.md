@@ -37,8 +37,10 @@ ejercicio forman parte del contrato vigente.
 - Las filas `FRC_*` son el desglose CTB real. No se fabrican a partir de los gastos.
 - Un asiento es el conjunto verificable de apuntes Debe/Haber del diario oficial.
 - `FRR_IdAsientoNet` es solo el identificador técnico. No es el número visible.
-- La copia actual no contiene el diario ni el mecanismo oficial de contabilización.
-  Por ello el estado verificable máximo actual es `reference_only`.
+- La copia actual permite leer el diario y verificar asientos históricos, pero no
+  contiene el mecanismo oficial para crear un asiento nuevo. `created` solo es
+  válido tras readback exacto; el POST escritor sigue bloqueando
+  `FRR_Contabilizar="S"`.
 
 ## Alta o preflight
 
@@ -511,6 +513,7 @@ Filtros:
 source_table
 proveedor_id
 empresa_id
+referencia
 fecha_desde
 fecha_hasta
 solo_pendientes
@@ -519,6 +522,11 @@ offset
 ```
 
 La respuesta es `{items, limit, offset, total}`.
+
+`referencia` es opcional, elimina únicamente los espacios exteriores y exige
+igualdad exacta contra el campo `Ref`. Se combina mediante `AND` con
+`source_table`, proveedor, empresa, fechas y estado pendiente; no hace búsqueda
+parcial ni selecciona por sí sola un albarán.
 
 `albentrada_his` queda expresamente fuera de este endpoint y de todas las
 mutaciones. La evidencia disponible solo autoriza a leer vínculos GE ya
@@ -555,25 +563,34 @@ Forma:
   "factura_id": 49305,
   "accounting": {
     "requested": true,
-    "created": false,
-    "status": "reference_only",
+    "created": true,
+    "status": "created",
     "technical_id": 390305,
-    "visible_number": null,
+    "visible_number": "48732",
     "date": "2026-06-30",
     "concept": "FRA. ONDUSPAN, S.A",
-    "balanced": null,
-    "total_debit": null,
-    "total_credit": null
+    "balanced": true,
+    "total_debit": "51233.24",
+    "total_credit": "51233.24"
   },
-  "entries": [],
+  "entries": [
+    {"position": 1, "account": "41000000017", "debit": "0.00", "credit": "51233.24"},
+    {"position": 2, "account": "60200000001", "debit": "42341.52", "credit": "0.00"},
+    {"position": 3, "account": "47200000008", "debit": "8891.72", "credit": "0.00"}
+  ],
   "source": {
     "schema": "netagrocomer",
-    "mechanism": null,
-    "ledger_available": false,
+    "account_schema": "contabilidad",
+    "mechanism": "ledger_readback",
+    "creation_mechanism": "unavailable",
+    "ledger_available": true,
     "available_accounting_tables": [
+      "asientos",
+      "asientolineas",
+      "ivasoportado",
       "cuentas"
     ],
-    "missing_capability": "Servicio/procedimiento oficial de Netagro y diario de asientos con mapeo entre FRR_IdAsientoNet y el numero visible"
+    "missing_capability": "Endpoint o procedimiento oficial de Netagro para crear el asiento"
   },
   "warnings": []
 }
@@ -585,12 +602,13 @@ Estados admitidos:
 |---|---|
 | `not_requested` | La factura no solicita contabilización. |
 | `pending` | Reservado para un mecanismo oficial que haya aceptado el trabajo pero aún no lo confirme. |
-| `created` | Reservado para asiento oficial leído, identificado y verificable. |
+| `created` | Asiento del diario leído, origen `FR` coincidente y Debe/Haber cuadrado. |
 | `reference_only` | Existe ID técnico, pero no diario para verificar número visible ni Debe/Haber. |
 | `unavailable` | Se solicitó contabilización, pero el mecanismo oficial no está disponible. |
 | `error` | El mecanismo oficial devolvió un error confirmado. |
 
-En la copia actual nunca se devuelve `created=true`.
+La copia puede devolver `created=true` para asientos históricos verificados. Esto
+no implica que la API pueda crear asientos nuevos.
 
 ## Listados, búsqueda y catálogos
 

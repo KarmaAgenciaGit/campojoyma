@@ -5,6 +5,7 @@ import {
   buildERPDuplicateConsulta,
   buildERPContractV2,
   corsHeaders,
+  forceFacturaERPAccountingDisabled,
   getFacturaSyncEntryDecision,
   getFacturaProveedorTipoFromMatchEvidence,
   getSelectedPunteoPreflightIssues,
@@ -277,7 +278,7 @@ Deno.serve(async (req) => {
         factura as JsonObject,
         matchedProveedorTipo,
       );
-      authoritativeFactura = accountingRules.factura;
+      authoritativeFactura = forceFacturaERPAccountingDisabled(accountingRules.factura);
       const structuralIssues = await getValidationErrorsForFactura(authoritativeFactura);
       const validationErrors = mergeValidationIssues(
         [...accountingRules.issues, ...structuralIssues],

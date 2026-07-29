@@ -1608,6 +1608,26 @@
             }
           },
           {
+            "description": "Referencia documental exacta devuelta en el campo Ref.",
+            "in": "query",
+            "name": "referencia",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Referencia documental exacta devuelta en el campo Ref.",
+              "title": "Referencia"
+            }
+          },
+          {
             "in": "query",
             "name": "fecha_desde",
             "required": false,

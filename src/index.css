@@ -315,14 +315,14 @@
     border-right-color: #f0e8df;
   }
 
-  body.facturas-iberica-shell .app-sidebar .sidebar-nav-link[href="/facturas-recibidas"] {
+  body.facturas-iberica-shell .app-sidebar .sidebar-nav-link[aria-current="page"] {
     background: linear-gradient(135deg, hsl(var(--primary)), #60a5fa) !important;
     color: #ffffff !important;
     border-color: transparent !important;
     box-shadow: 0 10px 18px hsl(var(--primary) / 0.18) !important;
   }
 
-  body.facturas-iberica-shell .app-sidebar .sidebar-nav-link[href="/facturas-recibidas"] svg {
+  body.facturas-iberica-shell .app-sidebar .sidebar-nav-link[aria-current="page"] svg {
     color: #ffffff;
     stroke: currentColor;
   }
@@ -338,7 +338,7 @@
     border-right-color: hsl(var(--sidebar-border));
   }
 
-  html.dark body.facturas-iberica-shell .app-sidebar .sidebar-nav-link[href="/facturas-recibidas"] {
+  html.dark body.facturas-iberica-shell .app-sidebar .sidebar-nav-link[aria-current="page"] {
     box-shadow: 0 12px 22px hsl(214 84% 24% / 0.28) !important;
   }
 

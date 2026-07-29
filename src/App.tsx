@@ -79,6 +79,8 @@ const AppContent = () => {
         <Route path={ROUTE_BASES.dashboard} element={<Index />} />
         <Route path={ROUTE_BASES.facturasRecibidas} element={<Index />} />
         <Route path={`${ROUTE_BASES.facturasRecibidas}/:facturaId`} element={<Index />} />
+        <Route path={ROUTE_BASES.albaranes} element={<Index />} />
+        <Route path={`${ROUTE_BASES.albaranes}/:albaranId`} element={<Index />} />
         <Route path="/usuarios" element={<Index />} />
         <Route path="/auth" element={<Auth />} />
         <Route path="*" element={<NotFound />} />

@@ -7,6 +7,7 @@ export const ROUTE_BASES = {
   cambios: '/cambios',
   cuentas: '/cuentas',
   facturasRecibidas: '/facturas-recibidas',
+  albaranes: '/albaranes',
 } as const;
 
 const DETAIL_ROUTE_BASES = [
@@ -15,6 +16,7 @@ const DETAIL_ROUTE_BASES = [
   ROUTE_BASES.cambios,
   ROUTE_BASES.cuentas,
   ROUTE_BASES.facturasRecibidas,
+  ROUTE_BASES.albaranes,
 ] as const;
 
 export const normalizeRoutePath = (path: string) => {
@@ -44,3 +46,6 @@ export const buildCuentaDetailPath = (cuentaId: number | string) =>
 
 export const buildFacturaRecibidaDetailPath = (facturaId: number | string) =>
   `${ROUTE_BASES.facturasRecibidas}/${facturaId}`;
+
+export const buildAlbaranEntradaDetailPath = (albaranId: number | string) =>
+  `${ROUTE_BASES.albaranes}/${albaranId}`;

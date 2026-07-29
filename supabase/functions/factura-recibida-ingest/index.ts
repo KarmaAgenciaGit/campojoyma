@@ -5,6 +5,8 @@ import {
   corsHeaders,
   createServiceClient,
   ensureArchivoPdf,
+  fetchERPReadConsulta,
+  getFacturaERPDocumentedReferenceIssues,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   loadAndResolveFacturaERPAccountingRules,
@@ -28,6 +30,7 @@ import {
   syncFacturaERPAccountingMatchEvidence,
   text,
   timestampValue,
+  verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
 
@@ -119,6 +122,7 @@ const normalizeOnePayload = (raw: JsonObject, trustedImportSignal: boolean) => {
     frr,
     ctb,
     punteos,
+    requestedPunteos: ingestAuthority.isERPReference ? [] : normalizedPunteos,
     extraction,
     pdfBase64,
     fileName,
@@ -174,6 +178,30 @@ Deno.serve(async (req) => {
           normalized.matchEvidence,
           accountingRules,
         );
+        let punteoVerificationIssues: Awaited<
+          ReturnType<typeof verifyFacturaERPExactMAPunteos>
+        >["issues"] = [];
+        if (!normalized.isERPReference) {
+          const punteoVerification = await verifyFacturaERPExactMAPunteos(
+            normalized.frr,
+            normalized.requestedPunteos,
+            fetchERPReadConsulta,
+          );
+          normalized.punteos = punteoVerification.punteos;
+          punteoVerificationIssues = punteoVerification.issues;
+          normalized.matchEvidence = {
+            ...normalized.matchEvidence,
+            punteos_edge_verification: punteoVerification.evidence,
+          };
+        }
+        const documentedReferenceIssues = normalized.isERPReference
+          ? []
+          : getFacturaERPDocumentedReferenceIssues({
+            factura: normalized.frr,
+            extraction: normalized.extraction,
+            matchEvidence: normalized.matchEvidence,
+            punteos: normalized.punteos,
+          });
         const pdfResult = await ensureArchivoPdf(supabase, normalized.pdfBase64, normalized.fileName);
 
         const duplicateCandidates = [];
@@ -224,7 +252,12 @@ Deno.serve(async (req) => {
 
         const baseValidationErrors = await getValidationErrorsForFactura(normalized.frr);
         const validationErrors = mergeValidationIssues(
-          [...accountingRules.issues, ...baseValidationErrors],
+          [
+            ...accountingRules.issues,
+            ...punteoVerificationIssues,
+            ...documentedReferenceIssues,
+            ...baseValidationErrors,
+          ],
           normalized.auditMetadata.warnings,
         );
         const duplicateOf = duplicateCandidates[0] ?? null;

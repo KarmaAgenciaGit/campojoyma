@@ -30,6 +30,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { agroirisClients } from '@/services/agroirisClients';
 import {
   facturasRecibidasErpRules,
+  type FacturaContabilizarDefault,
   type FacturaFechaCtbPolicy,
   type FacturaRecibidaErpRule,
 } from '@/services/facturasRecibidasErpRules';
@@ -73,7 +74,10 @@ type FacturaErpRuleDraft = {
   ejercicioErp: string;
   tipoFactura: string;
   regimenId: string;
-  fechaCtbPolicy: FacturaFechaCtbPolicy;
+  fechaCtbPolicy: FacturaFechaCtbPolicy | 'inherit';
+  cuentaGastoDefault: string;
+  conceptoTemplate: string;
+  contabilizarDefault: FacturaContabilizarDefault | 'manual';
   activo: boolean;
   approvalNote: string;
 };
@@ -85,7 +89,10 @@ const emptyFacturaErpRuleDraft = (): FacturaErpRuleDraft => ({
   ejercicioErp: '',
   tipoFactura: '',
   regimenId: '',
-  fechaCtbPolicy: 'manual',
+  fechaCtbPolicy: 'inherit',
+  cuentaGastoDefault: '',
+  conceptoTemplate: '',
+  contabilizarDefault: 'N',
   activo: true,
   approvalNote: '',
 });
@@ -519,7 +526,10 @@ const AdminSettings = () => {
       ejercicioErp: rule.ejercicio_erp === null ? '' : String(rule.ejercicio_erp),
       tipoFactura: rule.tipo_factura ?? '',
       regimenId: rule.regimen_id === null ? '' : String(rule.regimen_id),
-      fechaCtbPolicy: rule.fecha_ctb_policy,
+      fechaCtbPolicy: rule.fecha_ctb_policy ?? 'inherit',
+      cuentaGastoDefault: rule.cuenta_gasto_default ?? '',
+      conceptoTemplate: rule.concepto_template ?? '',
+      contabilizarDefault: 'N',
       activo: rule.activo,
       approvalNote: rule.approval_note ?? '',
     });
@@ -540,7 +550,13 @@ const AdminSettings = () => {
         ejercicio_erp: parseOptionalPositiveInteger(facturaErpRuleDraft.ejercicioErp, 'El ejercicio ERP'),
         tipo_factura: facturaErpRuleDraft.tipoFactura,
         regimen_id: parseOptionalPositiveInteger(facturaErpRuleDraft.regimenId, 'El r\u00e9gimen IVA'),
-        fecha_ctb_policy: facturaErpRuleDraft.fechaCtbPolicy,
+        fecha_ctb_policy:
+          facturaErpRuleDraft.fechaCtbPolicy === 'inherit'
+            ? null
+            : facturaErpRuleDraft.fechaCtbPolicy,
+        cuenta_gasto_default: facturaErpRuleDraft.cuentaGastoDefault,
+        concepto_template: facturaErpRuleDraft.conceptoTemplate,
+        contabilizar_default: 'N',
         activo: facturaErpRuleDraft.activo,
         approval_note: facturaErpRuleDraft.approvalNote,
       });
@@ -1586,7 +1602,7 @@ const AdminSettings = () => {
                     onValueChange={(value) =>
                       setFacturaErpRuleDraft((current) => ({
                         ...current,
-                        fechaCtbPolicy: value as FacturaFechaCtbPolicy,
+                        fechaCtbPolicy: value as FacturaFechaCtbPolicy | 'inherit',
                       }))
                     }
                     disabled={facturaErpRuleSaving}
@@ -1595,10 +1611,73 @@ const AdminSettings = () => {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="inherit">
+                        {facturaErpRuleDraft.proveedorId === null ? 'Sin regla' : 'Heredar regla general'}
+                      </SelectItem>
                       <SelectItem value="manual">Revisi\u00f3n manual</SelectItem>
                       <SelectItem value="invoice_date">Fecha de factura (requiere aprobaci\u00f3n)</SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {facturaErpRuleDraft.proveedorId === null
+                      ? 'Sin regla, la fecha CTB queda para revisi\u00f3n manual.'
+                      : 'Heredar conserva la pol\u00edtica general de la empresa.'}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-cuenta-gasto">Cuenta de gasto por defecto</Label>
+                  <Input
+                    id="factura-rule-cuenta-gasto"
+                    inputMode="numeric"
+                    value={facturaErpRuleDraft.cuentaGastoDefault}
+                    onChange={(event) =>
+                      setFacturaErpRuleDraft((current) => ({
+                        ...current,
+                        cuentaGastoDefault: event.target.value,
+                      }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                    maxLength={11}
+                    placeholder="Selecci\u00f3n manual"
+                  />
+                  <p className="text-xs text-muted-foreground">Debe tener 11 d\u00edgitos.</p>
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="factura-rule-concepto">Plantilla de concepto</Label>
+                  <Input
+                    id="factura-rule-concepto"
+                    value={facturaErpRuleDraft.conceptoTemplate}
+                    onChange={(event) =>
+                      setFacturaErpRuleDraft((current) => ({
+                        ...current,
+                        conceptoTemplate: event.target.value,
+                      }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                    maxLength={50}
+                    placeholder="FRA. {proveedor}"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Usa <span className="font-mono">{'{proveedor}'}</span> para insertar el nombre del acreedor.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-contabilizar">Contabilizar por defecto</Label>
+                  <Select
+                    value="N"
+                    onValueChange={() => undefined}
+                    disabled
+                  >
+                    <SelectTrigger id="factura-rule-contabilizar">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="N">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Fijo en No mientras Netagro TEST no tenga disponible el servicio oficial.
+                  </p>
                 </div>
               </div>
 
@@ -1616,7 +1695,7 @@ const AdminSettings = () => {
                   placeholder="Indica qui\u00e9n aprob\u00f3 la regla y la evidencia utilizada."
                 />
                 <p className="text-xs text-muted-foreground">
-                  Es obligatoria si se configura ejercicio, tipo, r\u00e9gimen o una fecha CTB autom\u00e1tica.
+                  Es obligatoria si la regla completa cualquier valor de la factura.
                 </p>
               </div>
 
@@ -1648,6 +1727,7 @@ const AdminSettings = () => {
                       <TableHead>Tipo</TableHead>
                       <TableHead>R\u00e9gimen</TableHead>
                       <TableHead>Fecha CTB</TableHead>
+                      <TableHead>Valores contables</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead>Evidencia</TableHead>
                       <TableHead className="text-right">Acci\u00f3n</TableHead>
@@ -1664,7 +1744,33 @@ const AdminSettings = () => {
                         <TableCell>{rule.tipo_factura ?? 'Manual'}</TableCell>
                         <TableCell>{rule.regimen_id ?? 'Manual'}</TableCell>
                         <TableCell>
-                          {rule.fecha_ctb_policy === 'invoice_date' ? 'Fecha de factura' : 'Manual'}
+                          {rule.fecha_ctb_policy === 'invoice_date'
+                            ? 'Fecha de factura'
+                            : rule.fecha_ctb_policy === 'manual'
+                              ? 'Manual'
+                              : rule.proveedor_id === null
+                                ? 'Sin regla'
+                                : 'Heredar'}
+                        </TableCell>
+                        <TableCell className="min-w-[220px] text-sm">
+                          {rule.cuenta_gasto_default ||
+                          rule.concepto_template ||
+                          rule.contabilizar_default ? (
+                            <div className="space-y-1">
+                              <div>Cuenta: {rule.cuenta_gasto_default ?? 'Manual'}</div>
+                              <div>Concepto: {rule.concepto_template ?? 'Manual'}</div>
+                              <div>
+                                Contabilizar:{' '}
+                                {rule.contabilizar_default === 'S'
+                                  ? 'S\u00ed'
+                                  : rule.contabilizar_default === 'N'
+                                    ? 'No'
+                                    : 'Manual'}
+                              </div>
+                            </div>
+                          ) : (
+                            'Manual'
+                          )}
                         </TableCell>
                         <TableCell>{rule.activo ? 'Activa' : 'Inactiva'}</TableCell>
                         <TableCell className="max-w-[280px] whitespace-normal text-sm text-muted-foreground">

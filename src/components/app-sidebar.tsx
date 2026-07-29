@@ -1,4 +1,4 @@
-import { BarChart3, ChevronRight, FileText, LifeBuoy, Settings, Users, X } from "lucide-react";
+import { BarChart3, ChevronRight, FileBox, FileText, LifeBuoy, Settings, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
@@ -18,6 +18,12 @@ const facturasRoute: NavRoute = {
   path: "/facturas-recibidas",
   label: "Facturas",
   Icon: FileText,
+};
+
+const albaranesRoute: NavRoute = {
+  path: "/albaranes",
+  label: "Albaranes",
+  Icon: FileBox,
 };
 
 const dashboardRoute: NavRoute = {
@@ -47,6 +53,8 @@ export function AppSidebar({ isCollapsed, isMobileOpen, onMobileClose }: AppSide
   const isDashboardActive = currentPath === dashboardRoute.path || currentPath.startsWith(`${dashboardRoute.path}/`);
   const isFacturasActive =
     currentPath === facturasRoute.path || currentPath.startsWith(`${facturasRoute.path}/`);
+  const isAlbaranesActive =
+    currentPath === albaranesRoute.path || currentPath.startsWith(`${albaranesRoute.path}/`);
   const isAdminRouteActive = currentPath === adminRoute.path || currentPath.startsWith(`${adminRoute.path}/`);
   const [isAdminExpanded, setIsAdminExpanded] = useState(isAdminRouteActive);
 
@@ -148,6 +156,28 @@ export function AppSidebar({ isCollapsed, isMobileOpen, onMobileClose }: AppSide
             >
               <facturasRoute.Icon className="h-4 w-4 shrink-0" />
               {!isCollapsed && <span className="min-w-0 truncate">{facturasRoute.label}</span>}
+            </NavLink>
+          </section>
+
+          <section className={isCollapsed ? "space-y-1" : "space-y-2"}>
+            {!isCollapsed && (
+              <h2 className="px-2 text-xs font-semibold leading-5 text-sidebar-foreground/70">
+                Albaranes
+              </h2>
+            )}
+            <NavLink
+              to={albaranesRoute.path}
+              end
+              onClick={onMobileClose}
+              className={`
+                sidebar-nav-link
+                ${navBaseClass}
+                ${isCollapsed ? "justify-center" : ""}
+                ${getNavClasses(isAlbaranesActive)}
+              `}
+            >
+              <albaranesRoute.Icon className="h-4 w-4 shrink-0" />
+              {!isCollapsed && <span className="min-w-0 truncate">{albaranesRoute.label}</span>}
             </NavLink>
           </section>
 

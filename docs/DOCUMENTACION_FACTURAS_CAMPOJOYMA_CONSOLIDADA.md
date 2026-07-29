@@ -19,11 +19,21 @@ a la API v0.2.4 desplegada. La ampliación de líneas de albarán de entrada se
 verificó contra el caso real `25 / A26 / 8436` y la de material contra
 `AMA_idalb=23210` el 28/07/2026.
 
-La API de escritura sigue en modo <code>reference_only</code>. La copia de
-Netagro no expone el mecanismo oficial que crea el asiento ni permite verificar
-su número y sus apuntes Debe/Haber. Una respuesta de referencia, un dry-run
-correcto o un registro guardado en Supabase no significan que exista un asiento
-en ERP.
+La creación por API sigue deshabilitada: <code>DB_WRITES_ENABLED=false</code>,
+<code>ACCOUNTING_MECHANISM=unavailable</code> y
+<code>ALBMATERIAL_WRITES_ENABLED=false</code>. La copia de Netagro no expone el
+mecanismo oficial que crea un asiento nuevo. Sí existe lectura del diario para
+verificar asientos históricos: el caso Onduspan `FRR_id=49305` confirma el
+asiento visible `48732`, tres apuntes y Debe/Haber de `51.233,24 €`. Un dry-run
+o una referencia técnica sin ese readback exacto no prueban una creación.
+
+`DB_WRITES_ENABLED=false` bloquea literalmente el DML de la API. No se mantiene
+así por confundir esta copia con producción, sino porque activar solo ese
+interruptor permitiría como máximo una cabecera sin garantizar en la misma
+operación ni el asiento oficial ni los enlaces MA. Eso sería una prueba parcial,
+no el alta completa solicitada. El alta parcial deberá habilitarse como un modo
+de prueba explícito (`FRR_Contabilizar=N` y sin afirmar enlaces no escritos), o
+bien esperar a que estén implementados los dos mecanismos restantes.
 
 Estado de aplicación a 29/07/2026: Supabase incorpora la finalización contra el
 dry-run original, el default <code>S=false</code> de punteos, la unicidad por
@@ -31,18 +41,38 @@ circuito y el cierre de privilegios mutantes de tabla para clientes sobre
 cabecera, CTB y punteos. Tras la confirmación expresa,
 <code>acreedores_cache</code> se retiró físicamente y sus cinco filas quedaron
 exportadas como evidencia recuperable. Las Edge Functions saneadas están
-desplegadas. El extractor n8n v4 está activo en remoto; la exportación local
-permanece inactiva por seguridad. El frontend está validado en local y su
-despliegue externo sigue pendiente. El escritor n8n v2 continúa desactivado.
+desplegadas. El extractor n8n v4.2 está activo con el ID
+<code>FIO92NfGcsWYsHC5</code>: 32 nodos, cinco tools GET, cinco conexiones
+<code>ai_tool</code>, webhook <code>campojoyma-factura-extraer</code>
+registrado y <code>PROMPT_VERSION: 4.2</code>. El parser mantiene
+<code>autoFix=false</code>; el agente repite como máximo una vez la extracción
+completa si la salida no cumple el esquema y después falla cerrado. La copia
+canónica local conserva <code>active=false</code> para evitar activaciones
+accidentales al importar. El frontend está validado en local y su despliegue
+externo sigue pendiente. El escritor n8n v2 continúa desactivado.
 
-La sustitución remota del extractor se realizó mediante
-<code>n8n import:workflow</code>. El resultado verificado tiene 27 nodos, cero
-<code>httpRequestTool</code> y el webhook
-<code>campojoyma-factura-extraer</code> registrado. El backup inmediatamente
-anterior es
-<code>/root/campojoyma-pre-full-replace-20260729T143008.json</code>, modo
-<code>600</code>, SHA-256
-<code>bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102</code>.
+Artefactos del despliegue, todos con modo <code>600</code>:
+
+- backup previo:
+  <code>/root/campojoyma-pre-agent-v4.2-20260729T154205Z.json</code>,
+  SHA-256
+  <code>1441938ba666da9f9ca27e6c5aea60dac10f3e57eed3d2e550fb9261c940b501</code>;
+- candidato importado:
+  <code>/root/campojoyma-agent-v4.2-20260729T154205Z.json</code>,
+  SHA-256
+  <code>7a32d91a9cd99171f27a41c8269795fda3167b3a1298e09fd71cee4970b883ce</code>;
+- exportación posterior:
+  <code>/root/campojoyma-post-agent-v4.2-20260729T154205Z.json</code>,
+  SHA-256
+  <code>f949cd6a1461734953a7de697d7e08ea1ad22000763d388dc960f9931a205b95</code>.
+
+La revisión v4.2 mantiene `schema_version: 4` y el contrato externo v2, pero
+añade orquestación con cinco tools GET. El agente busca acreedor por
+NIF/nombre, confirma su detalle, consulta la sugerencia histórica de régimen y
+busca referencias MA. El Code posterior repite y revalida todas esas consultas;
+ninguna respuesta del modelo es autoridad ERP. Cuando hay NIF y nombre visibles,
+el detalle debe confirmar ambos; solo se consideran equivalentes las variantes
+jurídicas con núcleo idéntico de las familias `SL`/`SLU` y `SA`/`SAU`.
 
 ## Estado vigente
 
@@ -55,11 +85,8 @@ La arquitectura activa se rige por estas decisiones:
   `acreedores`. No existe una fuente ni un fallback local.
 - Antes de enviar se repite un preflight contra ERP: existencia del proveedor
   en su maestro canónico, coincidencia de su cuenta y duplicado exacto.
-- El ejercicio nunca se acepta desde la extracción ni se calcula desde la
-  fecha. Se obtiene de una regla explícita o de una factura ERP ya existente
-  que coincida de forma única por empresa, proveedor, número normalizado de
-  forma alfanumérica en Edge, fecha y circuito. Onduspan (acreedor ERP 17)
-  conserva además su seed 25.
+- El ejercicio del circuito actual de Campojoyma es la regla explícita 25. No se
+  calcula desde la fecha ni se acepta como deducción del modelo.
 - La fecha CTB hereda la fecha de factura mediante la política de Campojoyma
   confirmada el 29/07/2026.
 - El régimen IVA se resuelve desde una regla explícita o, si falta, desde el
@@ -170,26 +197,39 @@ Secuencia operativa:
 1. El usuario incorpora un PDF.
 2. El PDF se guarda en <code>archivos_pdf</code>.
 3. <code>factura-recibida-extraer</code> envía su contenido al extractor n8n.
-4. La IA extrae únicamente datos visibles y no recibe herramientas HTTP. Un
-   nodo determinista de n8n busca después candidatos de acreedor y agricultor
-   sin mezclar sus identificadores.
-5. La Edge Function normaliza y guarda cabecera, CTB explícito y propuestas de
-   punteo sin seleccionar.
-6. Los errores bloqueantes y avisos quedan visibles para revisión.
-7. Antes del envío se consulta de nuevo ERP y se rechaza cualquier proveedor
+4. La IA extrae los datos visibles y orquesta cinco tools GET acotadas. Por
+   ahora solo resuelve acreedores; `erp_lookup` es evidencia provisional.
+5. Un nodo determinista de n8n repite la resolución del acreedor, comprueba
+   duplicado, resuelve el régimen por histórico y busca hasta 25 referencias MA.
+   Si encuentra una factura ERP exacta y única, recupera en su lugar los punteos
+   ya ligados mediante `/facturasrecibidas/{id}/punteos` y los muestra
+   obligatoriamente con `S=false`.
+   Los cinco slots IVA distinguen un placeholder explícito `0/10/0`, que se
+   limpia como `0/0/0`, de un tramo parcialmente desconocido como
+   `null/10/null` o `0/10/null`, que conserva los `null` y bloquea el borrador.
+6. El borrador de extracción fija ejercicio 25, fecha CTB igual a fecha de
+   factura, tipo OT, gasto 60200000001, concepto/AEAT `FRA. <acreedor>`,
+   contabilizar S y ningún vencimiento ERP. En TEST, la regla viva de Supabase y
+   la defensa final del writer convierten `FRR_Contabilizar` a `N`: todavía no
+   se puede presentar la contabilización como realizada. La Edge vuelve a
+   validar antes de persistir.
+7. Los errores bloqueantes y avisos quedan visibles para revisión.
+8. Antes del envío se consulta de nuevo ERP y se rechaza cualquier proveedor
    inexistente, cuenta incoherente o duplicado exacto.
-8. Mientras el escritor continúe en <code>reference_only</code>, el resultado
+9. Mientras el escritor continúe en <code>reference_only</code>, el resultado
    solo acredita validación/referencia, nunca la creación de un asiento.
 
-El parser interno usa <code>schema_version: 4</code> y rechaza una salida
-inválida sin pedir a otro paso generativo que la repare. Las consultas ERP se
-ejecutan únicamente en el enriquecedor determinista, con parámetros derivados
-de los literales normalizados. El contrato externo del workflow continúa
-siendo v2; son versiones de capas distintas.
+El parser interno usa <code>schema_version: 4</code>. Ante una salida inválida
+repite una sola vez la extracción completa con las imágenes originales; nunca
+repara a ciegas el JSON fallido. Las consultas ERP del agente son orientativas y
+se repiten en el enriquecedor determinista con
+parámetros derivados de los literales normalizados. El contrato externo del
+workflow continúa siendo v2; son versiones de capas distintas.
 
-El modelo no tiene HTTP tools ni conexiones <code>ai_tool</code>.
-<code>erp_lookup</code> debe salir como <code>not_consulted</code> y cualquier
-intento del modelo de poblarlo se ignora. El parser usa
+El modelo tiene exactamente cinco HTTP tools GET conectadas por
+<code>ai_tool</code>. <code>erp_lookup</code> puede conservar una coincidencia
+provisional internamente coherente; el Code la vuelve a validar y degrada
+cualquier ambigüedad. El parser usa
 <code>autoFix=false</code>. JWT, ingest, renderizador PDF y OpenAI se resuelven
 mediante credenciales administradas por n8n; sus valores no aparecen en el JSON
 versionado.
@@ -600,19 +640,21 @@ Pendientes externos:
 2. Confirmar las descripciones funcionales pendientes de algunos tipos.
 3. Confirmar el contrato oficial de selección y mutación de albaranes GE antes
    de sacarlos del modo de solo lectura.
-4. Confirmar cualquier nueva regla de tipo, régimen o vencimiento
-   antes de automatizarla.
-5. Desplegar externamente el frontend; el extractor n8n v4 ya se sustituyó de
-   forma controlada y conserva una exportación recuperable de la versión
-   previa.
+4. Completar aceptación funcional de los defaults v4.2 y del régimen histórico
+   cuando no alcanza el umbral de confianza.
+5. Desplegar externamente el frontend; n8n v4.2 ya está importado, activo y
+   respaldado.
 6. Completar la aceptación autenticada del envío real al ERP.
 
-## Validación final del lote tratado (29/07/2026)
+## Línea base funcional del lote tratado, previa a v4.1 (29/07/2026)
 
 Se reprocesaron las diez facturas de
 `Downloads/facturas campojoyma/tratadas` contra n8n v4, Edge y la API ya
 endurecidos. Resultado: **10/10 sin errores bloqueantes**. Todas quedaron con
 fecha CTB igual a la fecha de factura, ejercicio 25, régimen 2110 y tipo OT.
+
+Esta tabla conserva la línea base de v4. No representa una regresión real de la
+revisión de prompt v4.1.
 
 Los vínculos se mantuvieron como referencias ERP sin selección automática:
 
@@ -628,6 +670,20 @@ Los vínculos se mantuvieron como referencias ERP sin selección automática:
 | Petit | 15 | 19 |
 | Repsol | 0 | 0 |
 | Smurfit | 1 | 3 |
+
+### Regresión no persistente del prompt v4.1
+
+Tras publicar la revisión v4.1 se enviaron de nuevo los diez PDF tratados
+directamente al webhook autenticado. Resultado: **10/10 HTTP 200 y
+`ok=true`**. Esta ruta termina en `Respond to Webhook`; no llama a la Edge de
+ingesta y no creó ni modificó facturas en Supabase.
+
+Las ejecuciones correctas no se conservan por la política de privacidad del
+workflow. Para evitar confundirlas con el lote v4 histórico se verificó
+directamente el estado publicado de n8n: `activeVersionId` y `versionId`
+coincidían en `e9e831a8-0be3-4277-bccf-036c71a8d602`. Esa versión activa tiene
+27 nodos, cero tools HTTP y un mensaje de sistema que comienza por
+`PROMPT_VERSION: 4.1`.
 
 El visor PDF corregido se verificó en la UI. Descarga y valida los bytes
 <code>%PDF-</code>, reconstruye el <code>Blob</code> con

@@ -186,6 +186,12 @@ export const getERPReadAuthorizedRoutes = (consulta: string): readonly string[] 
     if (path === "acreedores" || /^acreedores\/\d+(?:\/gastos)?$/.test(path)) {
       return ERP_ACREEDORES_CONSUMER_ROUTES;
     }
+    if (path === "albaranes/entrada") {
+      return ["/albaranes", "/facturas-recibidas"];
+    }
+    if (/^albaranes\/entrada\/[1-9]\d*\/lineas$/.test(path)) {
+      return ["/facturas-recibidas", "/albaranes"];
+    }
   } catch {
     // La ruta exclusiva de facturas es el fallback cerrado para consultas no parseables.
   }
@@ -775,12 +781,15 @@ const EDGE_AUTHORITATIVE_ACCOUNTING_FIELDS = [
   "FRR_ctagasto2",
   "FRR_ctagasto3",
   "FRR_ctagasto4",
+  "FRR_Concepto",
+  "FRR_ObservacionesAEAT",
+  "FRR_CuotaNoDeducible",
+  "FRR_Contabilizar",
 ] as const;
 
 export const sanitizeUntrustedFacturaAccountingFields = (frr: JsonObject): JsonObject => {
   const sanitized = { ...frr };
   for (const field of EDGE_AUTHORITATIVE_ACCOUNTING_FIELDS) delete sanitized[field];
-  sanitized.FRR_Contabilizar = "N";
   return sanitized;
 };
 
@@ -944,6 +953,15 @@ export const prepareFacturaExtractionPersistence = ({
     punteos: null,
   };
 };
+
+/**
+ * Cierre operativo temporal para TEST: el alta de factura se conserva, pero
+ * nunca solicita una contabilización que el servicio oficial no puede atender.
+ */
+export const forceFacturaERPAccountingDisabled = (factura: JsonObject): JsonObject => ({
+  ...factura,
+  FRR_Contabilizar: "N",
+});
 
 export const applyGastosToFrr = (frr: JsonObject, gastos: unknown) => {
   if (!Array.isArray(gastos)) return frr;
@@ -1366,6 +1384,10 @@ export const validateERPReadbackAgainstWrite = ({
 
   const actualHeader = toERPFacturaPayload(headerRaw);
   for (const [key, expected] of Object.entries(cabecera)) {
+    // FastAPI omite los null al escribir para que MariaDB aplique sus defaults
+    // existentes. El readback puede devolver esos defaults (0, cadena o fecha
+    // vacia), por lo que un campo no informado no debe exigir igualdad literal.
+    if (expected === null || expected === undefined) continue;
     const tolerance = ERP_MONETARY_HEADER_FIELDS.has(key) ? 0.01 : 0;
     if (erpReadbackValueMatches(expected, actualHeader[key], tolerance)) continue;
     errors.push({
@@ -2057,10 +2079,24 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
       "source_table",
       "proveedor_id",
       "empresa_id",
+      "referencia",
       "fecha_desde",
       "fecha_hasta",
       "solo_pendientes",
       "include_lines",
+    ]),
+  },
+  {
+    path: /^albaranes\/entrada$/,
+    keys: new Set([
+      "schema",
+      "limit",
+      "offset",
+      "fecha_desde",
+      "fecha_hasta",
+      "agricultor_id",
+      "serie",
+      "numero",
     ]),
   },
   {
@@ -2121,6 +2157,9 @@ export type FacturaERPAccountingRuleRow = {
   tipo_factura?: unknown;
   regimen_id?: unknown;
   fecha_ctb_policy?: unknown;
+  cuenta_gasto_default?: unknown;
+  concepto_template?: unknown;
+  contabilizar_default?: unknown;
   activo?: unknown;
 };
 
@@ -2137,8 +2176,361 @@ export type FacturaERPAccountingRuleDependencies = {
 
 export type FacturaERPProviderTypeConfirmation = {
   providerType: FacturaProveedorTipo | null;
+  providerName: string | null;
   issues: FacturaValidationIssue[];
   evidence: JsonObject;
+};
+
+export type FacturaERPExactMAPunteoVerification = {
+  punteos: JsonObject[];
+  issues: FacturaValidationIssue[];
+  evidence: JsonObject;
+};
+
+export type FacturaERPDocumentedReferenceValidationInput = {
+  factura: JsonObject;
+  extraction: JsonObject;
+  matchEvidence?: JsonObject;
+  punteos: JsonObject[];
+};
+
+const normalizedDocumentedReference = (value: unknown): string | null => {
+  const parsed = text(value, null)
+    ?.toLocaleLowerCase("es-ES")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "") ?? null;
+  return parsed || null;
+};
+
+const jsonObjectOrEmpty = (value: unknown): JsonObject =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonObject
+    : {};
+
+const jsonObjectArray = (value: unknown): JsonObject[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is JsonObject =>
+      Boolean(item) && typeof item === "object" && !Array.isArray(item)
+    )
+    : [];
+
+/**
+ * Una señal positiva de n8n/IA nunca basta para resolver referencias. Edge
+ * deriva las referencias documentadas del detalle extraído y exige una
+ * selección MA revalidada, exacta, única y uno-a-uno para cada referencia.
+ * La evidencia de n8n solo amplía el conjunto que debe revisarse; nunca
+ * sustituye la verificación de los punteos seleccionados por Edge.
+ */
+export const getFacturaERPDocumentedReferenceIssues = ({
+  factura,
+  extraction,
+  matchEvidence = {},
+  punteos,
+}: FacturaERPDocumentedReferenceValidationInput): FacturaValidationIssue[] => {
+  if (resolveFacturaProveedorTipo(factura) !== "acreedor") return [];
+
+  const documentedReferences = new Map<string, string>();
+  const addReference = (value: unknown) => {
+    const literal = text(value, null);
+    const key = normalizedDocumentedReference(literal);
+    if (literal && key && !documentedReferences.has(key)) {
+      documentedReferences.set(key, literal);
+    }
+  };
+
+  for (
+    const albaran of jsonObjectArray(extraction.albaranes_referenciados)
+  ) {
+    addReference(albaran.referencia);
+  }
+  for (const linea of jsonObjectArray(extraction.lineas)) {
+    addReference(linea.referencia_albaran);
+  }
+
+  const punteoEvidence = jsonObjectOrEmpty(matchEvidence.punteos);
+  for (const reference of jsonObjectArray(punteoEvidence.references)) {
+    addReference(reference.referencia);
+  }
+  const evidenceDocumentedCount = integerValue(
+    punteoEvidence.documented_count,
+    null,
+  );
+  const expectedReferenceCount = Math.max(
+    documentedReferences.size,
+    evidenceDocumentedCount && evidenceDocumentedCount > 0
+      ? evidenceDocumentedCount
+      : 0,
+  );
+  if (expectedReferenceCount === 0) return [];
+
+  if (documentedReferences.size !== expectedReferenceCount) {
+    return [{
+      field: "punteos",
+      message:
+        `La factura declara ${expectedReferenceCount} referencias de albaran, pero solo ${documentedReferences.size} contienen una identidad literal verificable por Edge.`,
+      severity: "error",
+    }];
+  }
+
+  const selectedPunteos = punteos.filter(isPunteoExplicitlySelected);
+  const edgeEvidence = jsonObjectOrEmpty(
+    matchEvidence.punteos_edge_verification,
+  );
+  const edgeStatus = text(edgeEvidence.status, null);
+  const edgeVerifiedCount = integerValue(edgeEvidence.verified, null);
+  const selectedByReference = new Map<string, JsonObject[]>();
+  const selectedSourceIdentities = new Set<string>();
+  let hasInvalidSelectedIdentity = false;
+
+  for (const punteo of selectedPunteos) {
+    const raw = jsonObjectOrEmpty(punteo.raw);
+    const referenceKey = normalizedDocumentedReference(
+      punteo.referencia_documentada ??
+        raw.referencia_documentada ??
+        punteo.Ref,
+    );
+    const sourceTable = text(punteo.source_table, null)?.toLowerCase() ?? null;
+    const sourceId = positiveIdentityInteger(punteo.source_id);
+    if (
+      !referenceKey ||
+      sourceTable !== "albmaterial" ||
+      !sourceId
+    ) {
+      hasInvalidSelectedIdentity = true;
+      continue;
+    }
+    const matches = selectedByReference.get(referenceKey) ?? [];
+    matches.push(punteo);
+    selectedByReference.set(referenceKey, matches);
+    const sourceIdentity = `${sourceTable}:${sourceId}`;
+    if (selectedSourceIdentities.has(sourceIdentity)) {
+      hasInvalidSelectedIdentity = true;
+    }
+    selectedSourceIdentities.add(sourceIdentity);
+  }
+
+  const unresolvedReferences = [...documentedReferences.entries()]
+    .filter(([key]) => (selectedByReference.get(key)?.length ?? 0) !== 1)
+    .map(([, literal]) => literal);
+  const exactOneToOne =
+    !hasInvalidSelectedIdentity &&
+    unresolvedReferences.length === 0 &&
+    selectedPunteos.length === expectedReferenceCount &&
+    selectedSourceIdentities.size === expectedReferenceCount;
+  const edgeVerified =
+    edgeStatus === "verified" &&
+    edgeVerifiedCount === expectedReferenceCount;
+
+  if (exactOneToOne && edgeVerified) return [];
+
+  const unresolvedDetail = unresolvedReferences.length > 0
+    ? ` Referencias pendientes o ambiguas: ${unresolvedReferences.slice(0, 5).join(", ")}${unresolvedReferences.length > 5 ? "..." : ""}.`
+    : "";
+  return [{
+    field: "punteos",
+    message:
+      `Las ${expectedReferenceCount} referencias de albaran documentadas no tienen una resolucion MA exacta, unica y revalidada por Edge.${unresolvedDetail}`,
+    severity: "error",
+  }];
+};
+
+export const buildFacturaERPExactMAPunteoConsulta = (
+  factura: JsonObject,
+  punteo: JsonObject,
+): string | null => {
+  if (resolveFacturaProveedorTipo(factura) !== "acreedor") return null;
+  const empresaId = positiveIdentityInteger(factura.FRR_Idempresa);
+  const proveedorId = positiveIdentityInteger(factura.FRR_idproveedor);
+  const sourceTable = text(punteo.source_table, null)?.toLowerCase() ?? null;
+  const sourceId = positiveIdentityInteger(punteo.source_id);
+  const referencia = text(punteo.Ref, null);
+  if (
+    !empresaId ||
+    !proveedorId ||
+    sourceTable !== "albmaterial" ||
+    !sourceId ||
+    !referencia ||
+    referencia.length > 255
+  ) {
+    return null;
+  }
+
+  const params = new URLSearchParams({
+    source_table: "albmaterial",
+    proveedor_id: String(proveedorId),
+    empresa_id: String(empresaId),
+    referencia,
+    solo_pendientes: "true",
+    limit: "2",
+    offset: "0",
+  });
+  return `albaranes-gastos/punteables?${params.toString()}`;
+};
+
+/**
+ * Revalida desde Edge cada solicitud de seleccion MA. La decision es atomica:
+ * cualquier respuesta ambigua, incompleta o discordante conserva todos los
+ * candidatos sin seleccionar.
+ */
+export const verifyFacturaERPExactMAPunteos = async (
+  factura: JsonObject,
+  requestedPunteos: JsonObject[],
+  readERP: (consulta: string) => Promise<unknown>,
+): Promise<FacturaERPExactMAPunteoVerification> => {
+  const sanitized = sanitizeUntrustedPunteoSelections(requestedPunteos);
+  const requestedIndexes = requestedPunteos
+    .map((punteo, index) => isPunteoExplicitlySelected(punteo) ? index : -1)
+    .filter((index) => index >= 0);
+  if (requestedIndexes.length === 0) {
+    return {
+      punteos: sanitized,
+      issues: [],
+      evidence: {
+        source: "erp_exact_ma_reference",
+        status: "not_requested",
+        requested: 0,
+        verified: 0,
+      },
+    };
+  }
+
+  const rejectAll = (
+    reason: string,
+    message: string,
+  ): FacturaERPExactMAPunteoVerification => ({
+    punteos: sanitized,
+    issues: [{
+      field: "punteos",
+      message,
+      severity: "error",
+    }],
+    evidence: {
+      source: "erp_exact_ma_reference",
+      status: "rejected",
+      reason,
+      requested: requestedIndexes.length,
+      verified: 0,
+    },
+  });
+
+  if (requestedIndexes.length > 25) {
+    return rejectAll(
+      "too_many_candidates",
+      "Hay mas de 25 punteos solicitados; no se selecciona ninguno automaticamente.",
+    );
+  }
+  if (resolveFacturaProveedorTipo(factura) !== "acreedor") {
+    return rejectAll(
+      "unsupported_provider_type",
+      "La seleccion automatica de punteos solo esta habilitada para acreedores MA.",
+    );
+  }
+
+  const identities = new Set<string>();
+  const requests: Array<{
+    index: number;
+    consulta: string;
+    sourceId: number;
+    referencia: string;
+  }> = [];
+  for (const index of requestedIndexes) {
+    const punteo = requestedPunteos[index];
+    const consulta = buildFacturaERPExactMAPunteoConsulta(factura, punteo);
+    const sourceId = positiveIdentityInteger(punteo.source_id);
+    const referencia = text(punteo.Ref, null);
+    if (!consulta || !sourceId || !referencia) {
+      return rejectAll(
+        "invalid_candidate_identity",
+        "Un punteo solicitado no contiene una identidad MA completa y verificable.",
+      );
+    }
+    const identity = `albmaterial:${sourceId}`;
+    if (identities.has(identity)) {
+      return rejectAll(
+        "duplicate_candidate_identity",
+        "La solicitud contiene el mismo punteo MA mas de una vez.",
+      );
+    }
+    identities.add(identity);
+    requests.push({ index, consulta, sourceId, referencia });
+  }
+
+  const empresaId = positiveIdentityInteger(factura.FRR_Idempresa);
+  const proveedorId = positiveIdentityInteger(factura.FRR_idproveedor);
+  try {
+    const responses = await Promise.all(
+      requests.map(async (request) => ({
+        request,
+        payload: await readERP(request.consulta),
+      })),
+    );
+    for (const { request, payload } of responses) {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return rejectAll(
+          "invalid_response",
+          "El ERP no devolvio un catalogo valido para verificar los punteos MA.",
+        );
+      }
+      const envelope = payload as JsonObject;
+      if (
+        !Array.isArray(envelope.items) ||
+        envelope.items.length !== 1 ||
+        envelope.total !== 1
+      ) {
+        return rejectAll(
+          "non_unique_reference",
+          "Una referencia MA no tiene una coincidencia exacta y unica pendiente; no se selecciona ningun punteo.",
+        );
+      }
+      const item = envelope.items[0];
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return rejectAll(
+          "invalid_candidate",
+          "El ERP devolvio un candidato MA malformado.",
+        );
+      }
+      const candidate = item as JsonObject;
+      const linkedInvoiceId = integerValue(
+        candidate.factura_recibida_id,
+        null,
+      );
+      if (
+        text(candidate.source_table, null)?.toLowerCase() !== "albmaterial" ||
+        positiveIdentityInteger(candidate.source_id) !== request.sourceId ||
+        text(candidate.Ref, null) !== request.referencia ||
+        positiveIdentityInteger(candidate.empresa) !== empresaId ||
+        positiveIdentityInteger(candidate.acreedor_id) !== proveedorId ||
+        (linkedInvoiceId !== null && linkedInvoiceId !== 0)
+      ) {
+        return rejectAll(
+          "candidate_mismatch",
+          "La identidad devuelta por el ERP no coincide exactamente con el punteo MA solicitado.",
+        );
+      }
+    }
+
+    const verifiedIndexes = new Set(requests.map((request) => request.index));
+    return {
+      punteos: sanitized.map((punteo, index) =>
+        verifiedIndexes.has(index)
+          ? { ...punteo, S: true, Ver: true }
+          : punteo
+      ),
+      issues: [],
+      evidence: {
+        source: "erp_exact_ma_reference",
+        status: "verified",
+        requested: requestedIndexes.length,
+        verified: requestedIndexes.length,
+      },
+    };
+  } catch {
+    return rejectAll(
+      "erp_unavailable",
+      "No se pudo verificar de forma completa el catalogo MA; todos los punteos quedan sin seleccionar.",
+    );
+  }
 };
 
 const REGIMEN_HISTORY_MIN_INVOICES = 3;
@@ -2338,8 +2730,22 @@ export const resolveFacturaERPRegimenFromHistory = (
 };
 
 type AccountingRuleField = {
-  ruleKey: "ejercicio_erp" | "tipo_factura" | "regimen_id" | "fecha_ctb_policy";
-  facturaKey: "FRR_ejercicio" | "FRR_tipofactura" | "FRR_idregimen" | "FRR_fechactb";
+  ruleKey:
+    | "ejercicio_erp"
+    | "tipo_factura"
+    | "regimen_id"
+    | "fecha_ctb_policy"
+    | "cuenta_gasto_default"
+    | "concepto_template"
+    | "contabilizar_default";
+  facturaKey:
+    | "FRR_ejercicio"
+    | "FRR_tipofactura"
+    | "FRR_idregimen"
+    | "FRR_fechactb"
+    | "FRR_ctagasto1"
+    | "FRR_Concepto"
+    | "FRR_Contabilizar";
   normalize: (value: unknown) => string | number | null;
 };
 
@@ -2347,6 +2753,22 @@ const positiveRuleInteger = (value: unknown) => {
   const parsed = integerValue(value, null);
   return parsed !== null && parsed > 0 ? parsed : null;
 };
+
+const normalizedDefaultExpenseAccount = (value: unknown) => {
+  const account = text(value, null);
+  return account && /^\d{11}$/.test(account) ? account : null;
+};
+
+const normalizedConceptTemplate = (value: unknown) => {
+  const template = text(value, null);
+  return template &&
+      template.length <= 50 &&
+      template.includes("{proveedor}")
+    ? template
+    : null;
+};
+
+const normalizedDefaultSn = (value: unknown) => snValue(value, null);
 
 /**
  * Reconfirma contra el maestro ERP el circuito sugerido por la evidencia del
@@ -2364,6 +2786,7 @@ export const confirmFacturaProveedorTipoFromERP = async (
   if (!providerType || !providerId) {
     return {
       providerType: null,
+      providerName: null,
       issues: [],
       evidence: {
         source: "erp_provider_detail",
@@ -2382,6 +2805,7 @@ export const confirmFacturaProveedorTipoFromERP = async (
     if (!parsed.ok) {
       return {
         providerType: null,
+        providerName: null,
         issues: [{
           field: "FRR_tipofactura",
           message:
@@ -2405,6 +2829,7 @@ export const confirmFacturaProveedorTipoFromERP = async (
     if (preflightIssues.length > 0) {
       return {
         providerType: null,
+        providerName: null,
         issues: preflightIssues,
         evidence: {
           source: "erp_provider_detail",
@@ -2415,8 +2840,19 @@ export const confirmFacturaProveedorTipoFromERP = async (
       };
     }
 
+    const providerName = text(
+      pick(
+        parsed.provider,
+        providerType === "agricultor"
+          ? ["nombre", "proveedor_nombre", "AGR_Nombre"]
+          : ["nombre", "proveedor_nombre", "ACR_Nombre"],
+      ),
+      null,
+    );
+
     return {
       providerType,
+      providerName,
       issues: [],
       evidence: {
         source: "erp_provider_detail",
@@ -2428,6 +2864,7 @@ export const confirmFacturaProveedorTipoFromERP = async (
   } catch {
     return {
       providerType: null,
+      providerName: null,
       issues: [{
         field: "FRR_tipofactura",
         message:
@@ -2832,6 +3269,260 @@ export const resolveFacturaERPAccountingRules = (
   return { factura: resolved, applied, issues };
 };
 
+export type FacturaERPDeterministicDefaultsContext = {
+  providerType?: unknown;
+  providerName?: unknown;
+};
+
+const deterministicDefaultRuleFields = {
+  expenseAccount: {
+    ruleKey: "cuenta_gasto_default",
+    facturaKey: "FRR_ctagasto1",
+    normalize: normalizedDefaultExpenseAccount,
+  },
+  conceptTemplate: {
+    ruleKey: "concepto_template",
+    facturaKey: "FRR_Concepto",
+    normalize: normalizedConceptTemplate,
+  },
+  contabilizar: {
+    ruleKey: "contabilizar_default",
+    facturaKey: "FRR_Contabilizar",
+    normalize: normalizedDefaultSn,
+  },
+} satisfies Record<string, AccountingRuleField>;
+
+/**
+ * Materializa defaults contables solo desde reglas aprobadas y contexto ERP ya
+ * confirmado. Los importes documentales (bases, cuotas y retencion visible) se
+ * conservan; solo los slots IVA realmente inactivos y los defaults fiscales
+ * ausentes se convierten en cero. Un tramo activo incompleto queda bloqueado.
+ */
+export const applyFacturaERPDeterministicDefaults = (
+  factura: JsonObject,
+  rows: FacturaERPAccountingRuleRow[],
+  context: FacturaERPDeterministicDefaultsContext = {},
+): FacturaERPAccountingRuleResolution => {
+  const resolved = { ...factura };
+  const applied: JsonObject = {};
+  const issues: FacturaValidationIssue[] = [];
+  const empresaId = positiveRuleInteger(resolved.FRR_Idempresa);
+  const proveedorId = positiveRuleInteger(resolved.FRR_idproveedor);
+  const providerType = resolveFacturaProveedorTipo(
+    resolved,
+    context.providerType,
+  );
+  const providerName = text(context.providerName, null);
+  let hasMissingActiveBase = false;
+
+  const assignNumber = (key: string, value: number) => {
+    if (numberValue(resolved[key], null) === value) return;
+    resolved[key] = value;
+    applied[key] = value;
+  };
+  const assignText = (key: string, value: string) => {
+    if (text(resolved[key], null) === value) return;
+    resolved[key] = value;
+    applied[key] = value;
+  };
+
+  for (let position = 1; position <= 5; position += 1) {
+    const baseKey = `FRR_base${position}`;
+    const rateKey = `FRR_iva${position}`;
+    const quotaKey = `FRR_cuota${position}`;
+    const base = numberValue(resolved[baseKey], null);
+    const rate = numberValue(resolved[rateKey], null);
+    const quota = numberValue(resolved[quotaKey], null);
+    const hasActiveAmount =
+      Math.abs(base ?? 0) >= IVA_ACTIVE_AMOUNT_EPSILON ||
+      Math.abs(quota ?? 0) >= IVA_ACTIVE_AMOUNT_EPSILON;
+    const amountsAreExplicitlyZero =
+      base !== null &&
+      quota !== null &&
+      Math.abs(base) < IVA_ACTIVE_AMOUNT_EPSILON &&
+      Math.abs(quota) < IVA_ACTIVE_AMOUNT_EPSILON;
+    const hasNonzeroRate =
+      Math.abs(rate ?? 0) >= IVA_ACTIVE_AMOUNT_EPSILON;
+    const active =
+      hasActiveAmount ||
+      (hasNonzeroRate && !amountsAreExplicitlyZero);
+
+    if (!active) {
+      assignNumber(baseKey, 0);
+      assignNumber(rateKey, 0);
+      assignNumber(quotaKey, 0);
+      continue;
+    }
+
+    for (const [key, value, label] of [
+      [baseKey, base, "base"],
+      [rateKey, rate, "tipo"],
+      [quotaKey, quota, "cuota"],
+    ] as const) {
+      if (value !== null) continue;
+      if (label === "base") hasMissingActiveBase = true;
+      issues.push({
+        field: key,
+        message:
+          `El tramo IVA activo ${position} no contiene ${label}; no se completa automaticamente.`,
+        severity: "error",
+      });
+    }
+  }
+
+  const retentionFields = [
+    ["FRR_baseret", "base"],
+    ["FRR_ret", "porcentaje"],
+    ["FRR_cuotaret", "cuota"],
+  ] as const;
+  const retentionValues = retentionFields.map(([key]) =>
+    numberValue(resolved[key], null)
+  );
+  if (retentionValues.every((value) => value === null)) {
+    for (const [key] of retentionFields) assignNumber(key, 0);
+  } else {
+    retentionFields.forEach(([key, label], index) => {
+      if (retentionValues[index] !== null) return;
+      issues.push({
+        field: key,
+        message:
+          `La retencion contiene datos, pero falta ${label}; no se completa automaticamente.`,
+        severity: "error",
+      });
+    });
+  }
+  if (numberValue(resolved.FRR_CuotaNoDeducible, null) === null) {
+    assignNumber("FRR_CuotaNoDeducible", 0);
+  }
+
+  const activeRows = empresaId
+    ? rows.filter((row) =>
+      row.activo === true &&
+      positiveRuleInteger(row.empresa_id) === empresaId &&
+      (
+        row.proveedor_id === null ||
+        row.proveedor_id === undefined ||
+        positiveRuleInteger(row.proveedor_id) === proveedorId
+      )
+    )
+    : [];
+  const companyRows = activeRows.filter((row) =>
+    row.proveedor_id === null || row.proveedor_id === undefined
+  );
+  const providerRows = proveedorId && providerType === "acreedor"
+    ? activeRows.filter((row) =>
+      positiveRuleInteger(row.proveedor_id) === proveedorId
+    )
+    : [];
+  const effectiveRule = (field: AccountingRuleField) => {
+    const providerValue = ruleScopeValue(
+      providerRows,
+      field,
+      `proveedor ${proveedorId}`,
+    );
+    return providerValue.defined
+      ? providerValue
+      : ruleScopeValue(companyRows, field, `empresa ${empresaId}`);
+  };
+
+  // Estos defaults se han confirmado para el circuito de acreedores. No se
+  // trasladan a agricultores: sus cuentas y apuntes siguen otra semantica.
+  if (providerType === "acreedor") {
+    const expenseAccount = effectiveRule(
+      deterministicDefaultRuleFields.expenseAccount,
+    );
+    if (expenseAccount.issue) {
+      issues.push(expenseAccount.issue);
+    } else if (
+      expenseAccount.defined &&
+      typeof expenseAccount.value === "string"
+    ) {
+      if (!hasUsableValue(resolved.FRR_ctagasto1)) {
+        assignText("FRR_ctagasto1", expenseAccount.value);
+      }
+      if (
+        !hasUsableValue(resolved.FRR_igasto1) &&
+        !hasMissingActiveBase
+      ) {
+        const totalBase = [1, 2, 3, 4, 5].reduce(
+          (sum, position) =>
+            sum + (numberValue(resolved[`FRR_base${position}`], 0) ?? 0),
+          0,
+        );
+        assignNumber("FRR_igasto1", Number(totalBase.toFixed(2)));
+      }
+    }
+
+    const conceptTemplate = effectiveRule(
+      deterministicDefaultRuleFields.conceptTemplate,
+    );
+    if (conceptTemplate.issue) {
+      issues.push(conceptTemplate.issue);
+    } else if (
+      conceptTemplate.defined &&
+      typeof conceptTemplate.value === "string"
+    ) {
+      if (!hasUsableValue(resolved.FRR_Concepto) && !providerName) {
+        issues.push({
+          field: "FRR_Concepto",
+          message:
+            "No se pudo construir el concepto porque el maestro ERP no devolvio el nombre del acreedor.",
+          severity: "error",
+        });
+      } else {
+        if (!hasUsableValue(resolved.FRR_Concepto) && providerName) {
+          assignText(
+            "FRR_Concepto",
+            conceptTemplate.value
+              .replaceAll("{proveedor}", providerName)
+              .slice(0, frrDescriptiveTextLimits.FRR_Concepto),
+          );
+        }
+        const concept = text(resolved.FRR_Concepto, null);
+        if (concept && !hasUsableValue(resolved.FRR_ObservacionesAEAT)) {
+          assignText(
+            "FRR_ObservacionesAEAT",
+            concept.slice(0, frrDescriptiveTextLimits.FRR_ObservacionesAEAT),
+          );
+        }
+      }
+    }
+
+    const contabilizar = effectiveRule(
+      deterministicDefaultRuleFields.contabilizar,
+    );
+    if (contabilizar.issue) {
+      issues.push(contabilizar.issue);
+    } else if (
+      contabilizar.defined &&
+      typeof contabilizar.value === "string" &&
+      !hasUsableValue(resolved.FRR_Contabilizar)
+    ) {
+      assignText("FRR_Contabilizar", contabilizar.value);
+    }
+  }
+
+  // Sin una regla aplicable se mantiene el comportamiento fail-closed.
+  if (!hasUsableValue(resolved.FRR_Contabilizar)) {
+    assignText("FRR_Contabilizar", "N");
+  }
+
+  return {
+    factura: resolved,
+    applied,
+    issues,
+    evidence: {
+      source: "supabase_edge_defaults",
+      status: issues.some((issue) => issue.severity === "error")
+        ? "partial"
+        : "applied",
+      provider_type: providerType,
+      provider_name_confirmed: Boolean(providerName),
+      applied_fields: Object.keys(applied),
+    },
+  };
+};
+
 export const loadAndResolveFacturaERPAccountingRules = async (
   supabase: ReturnType<typeof createServiceClient>,
   factura: JsonObject,
@@ -2844,22 +3535,24 @@ export const loadAndResolveFacturaERPAccountingRules = async (
   const explicitProviderType = resolveFacturaProveedorTipo(factura);
   const hintedOnlyProviderType = resolveFacturaProveedorTipo({}, hintedProviderType);
   let confirmedHintedProviderType: FacturaProveedorTipo | null = null;
+  let confirmedProviderName: string | null = null;
   let providerConfirmationEvidence: JsonObject | undefined;
   let providerConfirmationIssues: FacturaValidationIssue[] = [];
 
-  // Una cabecera explícita ya es autoridad Edge/usuario. La evidencia solo se
-  // consulta cuando haría falta para derivar el circuito o cuando contradice a
-  // esa cabecera; una sugerencia no reconfirmada nunca llega al resolver.
-  if (
-    hintedOnlyProviderType &&
-    (!explicitProviderType || explicitProviderType !== hintedOnlyProviderType)
-  ) {
+  // El circuito sugerido nunca se materializa sin reconfirmar id y cuenta. Una
+  // cabecera explicita conserva su autoridad, pero el maestro tambien aporta el
+  // nombre canonico necesario para construir defaults de concepto.
+  const providerTypeToConfirm = hintedOnlyProviderType ?? explicitProviderType;
+  if (providerTypeToConfirm) {
     const confirmation = await confirmFacturaProveedorTipoFromERP(
       factura,
-      hintedOnlyProviderType,
+      providerTypeToConfirm,
       readERP,
     );
-    confirmedHintedProviderType = confirmation.providerType;
+    if (hintedOnlyProviderType) {
+      confirmedHintedProviderType = confirmation.providerType;
+    }
+    confirmedProviderName = confirmation.providerName;
     providerConfirmationIssues = confirmation.issues;
     providerConfirmationEvidence = confirmation.evidence;
   }
@@ -2871,7 +3564,9 @@ export const loadAndResolveFacturaERPAccountingRules = async (
   if (empresaId) {
     let query = supabase
       .from("facturas_recibidas_erp_rules")
-      .select("empresa_id, proveedor_id, ejercicio_erp, tipo_factura, regimen_id, fecha_ctb_policy, activo")
+      .select(
+        "empresa_id, proveedor_id, ejercicio_erp, tipo_factura, regimen_id, fecha_ctb_policy, cuenta_gasto_default, concepto_template, contabilizar_default, activo",
+      )
       .eq("empresa_id", empresaId)
       .eq("activo", true);
     query = proveedorId && providerTypeForRuleScope === "acreedor"
@@ -2901,6 +3596,30 @@ export const loadAndResolveFacturaERPAccountingRules = async (
   const hasProviderTypeConflict = accountingResolution.issues.some((issue) =>
     issue.severity === "error" && issue.field === "FRR_tipofactura"
   );
+  const finalizeAccountingResolution = (
+    resolution: FacturaERPAccountingRuleResolution,
+  ): FacturaERPAccountingRuleResolution => {
+    const defaults = applyFacturaERPDeterministicDefaults(
+      resolution.factura,
+      ruleRows,
+      {
+        providerType,
+        providerName: confirmedProviderName,
+      },
+    );
+    return {
+      factura: defaults.factura,
+      applied: {
+        ...resolution.applied,
+        ...defaults.applied,
+      },
+      issues: [...resolution.issues, ...defaults.issues],
+      evidence: {
+        ...(resolution.evidence ?? {}),
+        defaults: defaults.evidence ?? {},
+      },
+    };
+  };
   let exerciseEvidence: JsonObject | undefined;
   const withProviderConfirmationEvidence = (
     evidence: JsonObject | undefined,
@@ -2974,14 +3693,14 @@ export const loadAndResolveFacturaERPAccountingRules = async (
     !providerType ||
     hasProviderTypeConflict
   ) {
-    return accountingResolution;
+    return finalizeAccountingResolution(accountingResolution);
   }
 
   const regimenQuery = buildFacturaERPRegimenSuggestionConsulta(
     accountingResolution.factura,
     providerType,
   );
-  if (!regimenQuery) return accountingResolution;
+  if (!regimenQuery) return finalizeAccountingResolution(accountingResolution);
 
   try {
     const payload = await readERP(regimenQuery.consulta);
@@ -2990,7 +3709,7 @@ export const loadAndResolveFacturaERPAccountingRules = async (
       providerType,
       payload,
     );
-    return {
+    return finalizeAccountingResolution({
       factura: historyResolution.factura,
       applied: {
         ...accountingResolution.applied,
@@ -3001,10 +3720,10 @@ export const loadAndResolveFacturaERPAccountingRules = async (
         historyResolution.evidence,
         exerciseEvidence ? { ejercicio: exerciseEvidence } : {},
       ),
-    };
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Error desconocido";
-    return {
+    return finalizeAccountingResolution({
       ...accountingResolution,
       issues: [
         ...accountingResolution.issues,
@@ -3023,7 +3742,7 @@ export const loadAndResolveFacturaERPAccountingRules = async (
           ? { proveedor_tipo: providerConfirmationEvidence }
           : {}),
       },
-    };
+    });
   }
 };
 

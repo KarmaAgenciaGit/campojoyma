@@ -14,6 +14,7 @@ export const ROUTE_PERMISSIONS: Record<string, UserRole[]> = {
   '/': ['admin', 'user'],
   '/dashboard': ['admin', 'user'],
   '/facturas-recibidas': ['admin', 'user'],
+  '/albaranes': ['admin', 'user'],
   '/usuarios': ['admin'],
 };
 
@@ -30,6 +31,12 @@ export const canAccessPath = (path: string, access: UserAccess) => {
   const normalizedAllowed = access.allowedRoutes?.map(normalizePath);
   if (!normalizedAllowed) return true;
   if (access.role === 'admin') return true;
+  if (
+    normalized === '/albaranes' &&
+    normalizedAllowed.includes('/facturas-recibidas')
+  ) {
+    return true;
+  }
   return normalizedAllowed.includes(normalized);
 };
 
@@ -37,7 +44,7 @@ export const getFirstAllowedPath = (access: UserAccess): string | null => {
   if (access.role === 'admin') return '/dashboard';
 
   const normalizedAllowed = access.allowedRoutes?.map(normalizePath);
-  const order = ['/dashboard', '/facturas-recibidas', '/usuarios'];
+  const order = ['/dashboard', '/facturas-recibidas', '/albaranes', '/usuarios'];
 
   if (normalizedAllowed && Array.isArray(normalizedAllowed)) {
     for (const path of order) {

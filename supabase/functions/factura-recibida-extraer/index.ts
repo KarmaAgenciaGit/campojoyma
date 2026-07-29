@@ -5,6 +5,8 @@ import {
   cleanBase64,
   corsHeaders,
   ensureArchivoPdf,
+  fetchERPReadConsulta,
+  getFacturaERPDocumentedReferenceIssues,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   loadAndResolveFacturaERPAccountingRules,
@@ -26,6 +28,7 @@ import {
   signJwtHs256,
   syncFacturaERPAccountingMatchEvidence,
   text,
+  verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
 
@@ -277,18 +280,45 @@ Deno.serve(async (req) => {
       proveedorTipo,
     );
     const accountingEvidence = asObject(accountingRules.evidence);
-    const resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
+    let resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
       normalizedMatchEvidence,
       accountingRules,
     );
+    let punteoVerificationIssues: Awaited<
+      ReturnType<typeof verifyFacturaERPExactMAPunteos>
+    >["issues"] = [];
+    if (extractionPersistence.punteos !== null) {
+      const punteoVerification = await verifyFacturaERPExactMAPunteos(
+        accountingRules.factura,
+        normalized.punteos,
+        fetchERPReadConsulta,
+      );
+      extractionPersistence.punteos = punteoVerification.punteos;
+      punteoVerificationIssues = punteoVerification.issues;
+      resolvedMatchEvidence = {
+        ...resolvedMatchEvidence,
+        punteos_edge_verification: punteoVerification.evidence,
+      };
+    }
     const resolvedFrr = accountingRules.factura;
+    const documentedReferenceIssues = getFacturaERPDocumentedReferenceIssues({
+      factura: resolvedFrr,
+      extraction: normalized.extraction,
+      matchEvidence: resolvedMatchEvidence,
+      punteos: extractionPersistence.punteos ?? [],
+    });
     const persistedFrr = {
       ...extractionPersistence.persistedFrr,
       ...accountingRules.applied,
     };
     const validationBase = await getValidationErrorsForFactura(resolvedFrr);
     const validationErrors = mergeValidationIssues(
-      [...accountingRules.issues, ...validationBase],
+      [
+        ...accountingRules.issues,
+        ...punteoVerificationIssues,
+        ...documentedReferenceIssues,
+        ...validationBase,
+      ],
       normalized.warnings,
     );
     const hasBlockingErrors = validationErrors.some((issue) => issue.severity !== "warning");

@@ -101,6 +101,48 @@ export type FacturaRecibidaUiPage = {
   pageSize: number;
 };
 
+export type AlbaranEntrada = {
+  id: number;
+  localId: string | null;
+  estado: string | null;
+  campa: number | null;
+  serie: string | null;
+  numero: number | null;
+  fecha: string | null;
+  agricultorId: number | null;
+  agricultorNombre: string | null;
+  puntoVentaId: number | null;
+  centroId: number | null;
+  referencia: string | null;
+  empresaAgricultorId: number | null;
+  syncStatus: string | null;
+  sourceKind: string | null;
+  sourcePdfName: string | null;
+  confidence: number | null;
+  erpSentAt: string | null;
+  erpLastReadAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type AlbaranEntradaPageOptions = {
+  page: number;
+  pageSize: number;
+  agricultorId?: number | null;
+  serie?: string;
+  numero?: number | null;
+  fechaDesde?: string;
+  fechaHasta?: string;
+};
+
+export type AlbaranEntradaPage = {
+  items: AlbaranEntrada[];
+  total: number | null;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+};
+
 const cleanText = (value: unknown) => {
   const cleaned = String(value ?? '').trim();
   return cleaned || null;
@@ -1021,10 +1063,9 @@ export const buildFacturaPayload = (
     FRR_Concepto: suppliedTextOrCurrent(factura, 'concepto_asiento', current?.FRR_Concepto)?.slice(0, 50) ?? null,
     FRR_ObservacionesAEAT: suppliedTextOrCurrent(factura, 'obs_aeat', current?.FRR_ObservacionesAEAT),
     FRR_Observaciones: suppliedTextOrCurrent(factura, 'observaciones', current?.FRR_Observaciones),
-    FRR_Contabilizar: normalizeSn(
-      hasOwnValue(factura, 'contabilizar') ? factura.contabilizar : current?.FRR_Contabilizar,
-      'N',
-    ),
+    // La copia TEST no dispone del servicio oficial de contabilización de
+    // Netagro. Toda alta nueva se envía explícitamente sin contabilizar.
+    FRR_Contabilizar: 'N',
     FRR_GeneraCartera: normalizeSn(
       hasOwnValue(factura, 'genera_cartera') ? factura.genera_cartera : current?.FRR_GeneraCartera,
       'N',
@@ -1197,6 +1238,127 @@ export const fetchFacturasRecibidasPage = async (
     page: options.page,
     pageSize: options.pageSize,
   };
+};
+
+const mapAlbaranEntrada = (row: ERPReadGenericRow): AlbaranEntrada => {
+  const id = readNumber(row, ['AEN_idalbaran', 'id'], null);
+  if (id === null || !Number.isInteger(id) || id < 1) {
+    throw new Error('Se recibió un albarán con una identidad no válida.');
+  }
+
+  return {
+    id,
+    localId:
+      readText(row, ['local_id'], null) ??
+      (typeof row.id === 'string' ? cleanText(row.id) : null),
+    estado: readText(row, ['estado'], null),
+    campa: readNumber(row, ['campa', 'AEN_campa'], null),
+    serie: readText(row, ['serie', 'AEN_serie'], null),
+    numero: readNumber(row, ['numero', 'AEN_albaran'], null),
+    fecha: readText(row, ['fecha', 'AEN_fecha'], null),
+    agricultorId: readNumber(row, ['agricultor_id', 'AEN_idagricultor'], null),
+    agricultorNombre: readText(row, ['agricultor_nombre'], null),
+    puntoVentaId: readNumber(row, ['punto_venta_id', 'AEN_idpuntoventa'], null),
+    centroId: readNumber(row, ['centro_id', 'AEN_idcentro'], null),
+    referencia: readText(row, ['referencia', 'AEN_referencia'], null),
+    empresaAgricultorId: readNumber(
+      row,
+      ['empresa_agricultor_id', 'AEN_IdEmpresaAgricultor'],
+      null,
+    ),
+    syncStatus: readText(row, ['sync_status'], null),
+    sourceKind: readText(row, ['source_kind'], null),
+    sourcePdfName: readText(row, ['source_pdf_name'], null),
+    confidence: readNumber(row, ['confidence'], null),
+    erpSentAt: readText(row, ['erp_sent_at'], null),
+    erpLastReadAt: readText(row, ['erp_last_read_at'], null),
+    createdAt: readText(row, ['created_at'], null),
+    updatedAt: readText(row, ['updated_at'], null),
+  };
+};
+
+const fetchLocalAlbaranesEntradaPage = async (
+  options: AlbaranEntradaPageOptions,
+  page: number,
+  pageSize: number,
+  offset: number,
+): Promise<AlbaranEntradaPage> => {
+  let query = supabase
+    .from('albaranesentrada')
+    .select('*', { count: 'exact' })
+    .neq('estado', 'descartado')
+    .order('AEN_fecha', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + pageSize - 1);
+
+  if (options.fechaDesde) query = query.gte('AEN_fecha', options.fechaDesde);
+  if (options.fechaHasta) query = query.lte('AEN_fecha', options.fechaHasta);
+  if (options.agricultorId && options.agricultorId > 0) {
+    query = query.eq('AEN_idagricultor', Math.trunc(options.agricultorId));
+  }
+  if (options.serie?.trim()) {
+    query = query.ilike('AEN_serie', options.serie.trim());
+  }
+  if (options.numero && options.numero > 0) {
+    query = query.eq('AEN_albaran', Math.trunc(options.numero));
+  }
+
+  const { data, error, count } = await query;
+  if (error) {
+    throw new Error(
+      sanitizeUserFacingErrorMessage(error.message) ||
+        'No se pudieron cargar los albaranes guardados.',
+    );
+  }
+
+  const items = (data ?? []).map((row) =>
+    mapAlbaranEntrada(row as unknown as ERPReadGenericRow),
+  );
+  const total = Math.max(0, count ?? items.length);
+
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    hasMore: offset + items.length < total,
+  };
+};
+
+export const fetchAlbaranesEntradaPage = async (
+  options: AlbaranEntradaPageOptions,
+): Promise<AlbaranEntradaPage> => {
+  const page = Math.max(1, Math.trunc(options.page));
+  const pageSize = Math.max(1, Math.min(Math.trunc(options.pageSize), 200));
+  const offset = (page - 1) * pageSize;
+
+  return fetchLocalAlbaranesEntradaPage(options, page, pageSize, offset);
+};
+
+export const fetchAlbaranEntradaById = async (
+  albaranId: number,
+): Promise<AlbaranEntrada | null> => {
+  if (!Number.isInteger(albaranId) || albaranId < 1) {
+    throw new Error('El albarán no tiene una identidad válida.');
+  }
+
+  const { data, error } = await supabase
+    .from('albaranesentrada')
+    .select('*')
+    .eq('AEN_idalbaran', albaranId)
+    .neq('estado', 'descartado')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      sanitizeUserFacingErrorMessage(error.message) ||
+        'No se pudo cargar el albarán guardado.',
+    );
+  }
+
+  return data
+    ? mapAlbaranEntrada(data as unknown as ERPReadGenericRow)
+    : null;
 };
 
 export const fetchFacturaRecibidaById = async (id: string): Promise<UiFacturaRecibida | null> => {

@@ -336,6 +336,16 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(payload.FRR_Contabilizar).toBe('N');
   });
 
+  it('fuerza contabilizar a N aunque el formulario indique S', () => {
+    const payload = buildFacturaPayload(
+      { contabilizar: 'S' },
+      null,
+      [],
+    );
+
+    expect(payload.FRR_Contabilizar).toBe('N');
+  });
+
   it('mantiene los candidatos de punteo sin seleccionar para N o valor ausente', () => {
     const factura = mapRemoteFacturaToUi(
       onduSpanHeader,

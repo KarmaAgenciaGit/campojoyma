@@ -2,15 +2,19 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   ERPWriterRelationsMatchSnapshot,
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+  applyFacturaERPDeterministicDefaults,
   applyGastosToFrr,
   buildFacturaERPExerciseLookupConsulta,
+  buildFacturaERPExactMAPunteoConsulta,
   buildFacturaERPRegimenSuggestionConsulta,
   buildERPDuplicateConsulta,
   buildERPContractV2,
   confirmFacturaProveedorTipoFromERP,
   extractOperationalERPAvailabilityWarnings,
+  forceFacturaERPAccountingDisabled,
   getERPReadAuthorizedRoutes,
   getERPProviderPreflightIssues,
+  getFacturaERPDocumentedReferenceIssues,
   getFacturaProveedorTipoFromMatchEvidence,
   getFacturaActiveIvaSignature,
   getFacturaSyncEntryDecision,
@@ -21,6 +25,7 @@ import {
   isFacturaERPReadOnlyReference,
   isEligibleERPCommitAttempt,
   isAllowedERPConsulta,
+  loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
   normalizeAccountingReadback,
   normalizeConfidence,
@@ -52,6 +57,7 @@ import {
   validateERPReadbackAgainstWrite,
   validateERPWriteRequestV2,
   validateERPWriteResponseV2,
+  verifyFacturaERPExactMAPunteos,
 } from "./facturas-recibidas-erp.ts";
 
 const requestWithToken = (token?: string, header = "x-agent-token") =>
@@ -214,7 +220,7 @@ Deno.test("ingesta normal rechaza inyeccion contable aunque se falsifique source
   assertEquals(result.isERPReference, false);
   assertEquals(result.remoteFrrId, null);
   assertEquals(result.frr.FRR_numerofactura, "INJECTED");
-  assertEquals(result.frr.FRR_Contabilizar, "N");
+  assertEquals(result.frr.FRR_Contabilizar, undefined);
   assertEquals(result.ctb, []);
   assertEquals(result.punteos, [{ S: false, source_table: "albmaterial", source_id: 88 }]);
   for (const field of [
@@ -250,9 +256,151 @@ Deno.test("ingesta normal rechaza inyeccion contable aunque se falsifique source
     "FRR_ctagasto2",
     "FRR_ctagasto3",
     "FRR_ctagasto4",
+    "FRR_Concepto",
+    "FRR_ObservacionesAEAT",
+    "FRR_CuotaNoDeducible",
+    "FRR_Contabilizar",
   ]) {
     assertEquals(field in result.frr, false, field);
   }
+});
+
+Deno.test("el writer fuerza las facturas nuevas a no contabilizar", () => {
+  assertEquals(
+    forceFacturaERPAccountingDisabled({
+      FRR_numerofactura: "TEST-CONTABILIZAR-N",
+      FRR_Contabilizar: "S",
+    }),
+    {
+      FRR_numerofactura: "TEST-CONTABILIZAR-N",
+      FRR_Contabilizar: "N",
+    },
+  );
+});
+
+Deno.test("defaults Edge materializan gasto, concepto y ceros solo desde regla aprobada", () => {
+  const sanitized = sanitizeUntrustedFacturaAccountingFields({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_idcuenta: "41000000017",
+    FRR_base1: 100,
+    FRR_iva1: 21,
+    FRR_cuota1: 21,
+    FRR_base2: 50,
+    FRR_iva2: 10,
+    FRR_cuota2: 5,
+    FRR_base3: 0,
+    FRR_iva3: 0,
+    FRR_cuota3: 0,
+    FRR_baseret: null,
+    FRR_ret: null,
+    FRR_cuotaret: null,
+    FRR_CuotaNoDeducible: 999,
+    FRR_ctagasto1: "69999999999",
+    FRR_igasto1: 999,
+    FRR_Concepto: "INYECCION",
+    FRR_ObservacionesAEAT: "INYECCION",
+    FRR_Contabilizar: "N",
+  });
+  const resolution = applyFacturaERPDeterministicDefaults(
+    sanitized,
+    [{
+      empresa_id: 1,
+      proveedor_id: null,
+      cuenta_gasto_default: "60200000001",
+      concepto_template: "FRA. {proveedor}",
+      contabilizar_default: "S",
+      activo: true,
+    }],
+    {
+      providerType: "acreedor",
+      providerName: "ONDUSPAN, S.A.",
+    },
+  );
+
+  assertEquals(resolution.issues, []);
+  assertEquals(resolution.factura.FRR_ctagasto1, "60200000001");
+  assertEquals(resolution.factura.FRR_igasto1, 150);
+  assertEquals(resolution.factura.FRR_Concepto, "FRA. ONDUSPAN, S.A.");
+  assertEquals(
+    resolution.factura.FRR_ObservacionesAEAT,
+    "FRA. ONDUSPAN, S.A.",
+  );
+  assertEquals(resolution.factura.FRR_Contabilizar, "S");
+  assertEquals(resolution.factura.FRR_baseret, 0);
+  assertEquals(resolution.factura.FRR_ret, 0);
+  assertEquals(resolution.factura.FRR_cuotaret, 0);
+  assertEquals(resolution.factura.FRR_CuotaNoDeducible, 0);
+  assertEquals(resolution.factura.FRR_base3, 0);
+  assertEquals(resolution.factura.FRR_iva3, 0);
+  assertEquals(resolution.factura.FRR_cuota3, 0);
+  assertEquals(resolution.factura.FRR_base4, 0);
+  assertEquals(resolution.factura.FRR_iva4, 0);
+  assertEquals(resolution.factura.FRR_cuota4, 0);
+});
+
+Deno.test("un tramo IVA activo incompleto queda para revision y no inventa ceros", () => {
+  const resolution = applyFacturaERPDeterministicDefaults({
+    FRR_base1: 100,
+    FRR_iva1: null,
+    FRR_cuota1: null,
+  }, []);
+
+  assertEquals(resolution.factura.FRR_base1, 100);
+  assertEquals(resolution.factura.FRR_iva1, null);
+  assertEquals(resolution.factura.FRR_cuota1, null);
+  assertEquals(
+    resolution.issues.map((issue) => issue.field),
+    ["FRR_iva1", "FRR_cuota1"],
+  );
+  assert(resolution.issues.every((issue) => issue.severity === "error"));
+});
+
+Deno.test("un tipo IVA no cero mantiene activo el tramo aunque falten base y cuota", () => {
+  const resolution = applyFacturaERPDeterministicDefaults({
+    FRR_base1: null,
+    FRR_iva1: 21,
+    FRR_cuota1: null,
+  }, []);
+
+  assertEquals(resolution.factura.FRR_base1, null);
+  assertEquals(resolution.factura.FRR_iva1, 21);
+  assertEquals(resolution.factura.FRR_cuota1, null);
+  assertEquals(
+    resolution.issues.map((issue) => issue.field),
+    ["FRR_base1", "FRR_cuota1"],
+  );
+  assert(resolution.issues.every((issue) => issue.severity === "error"));
+});
+
+Deno.test("un tramo IVA plantilla 0/10/0 se normaliza como inactivo", () => {
+  const resolution = applyFacturaERPDeterministicDefaults({
+    FRR_base1: 0,
+    FRR_iva1: 10,
+    FRR_cuota1: 0,
+  }, []);
+
+  assertEquals(resolution.factura.FRR_base1, 0);
+  assertEquals(resolution.factura.FRR_iva1, 0);
+  assertEquals(resolution.factura.FRR_cuota1, 0);
+  assertEquals(resolution.issues, []);
+});
+
+Deno.test("retencion parcial conserva ausencias y bloquea los campos incompletos", () => {
+  const resolution = applyFacturaERPDeterministicDefaults({
+    FRR_baseret: 100,
+    FRR_ret: null,
+    FRR_cuotaret: null,
+  }, []);
+
+  assertEquals(resolution.factura.FRR_baseret, 100);
+  assertEquals(resolution.factura.FRR_ret, null);
+  assertEquals(resolution.factura.FRR_cuotaret, null);
+  assertEquals(
+    resolution.issues.map((issue) => issue.field),
+    ["FRR_ret", "FRR_cuotaret"],
+  );
+  assert(resolution.issues.every((issue) => issue.severity === "error"));
 });
 
 Deno.test("import-samples preserva referencia ERP solo con credencial service role", async () => {
@@ -538,6 +686,225 @@ Deno.test("excluye del writer candidatos sin seleccion explicita", () => {
   ]);
 
   assertEquals(payload, []);
+});
+
+Deno.test("Edge selecciona MA solo tras verificar referencia exacta y unica", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_tipofactura: "OT",
+  };
+  const punteos = [
+    {
+      S: true,
+      source_table: "albmaterial",
+      source_id: 88,
+      Ref: "478974",
+    },
+    {
+      S: false,
+      source_table: "albmaterial",
+      source_id: 99,
+      Ref: "OTRA",
+    },
+  ];
+  const consulta = buildFacturaERPExactMAPunteoConsulta(factura, punteos[0]);
+  assert(consulta);
+  assert(isAllowedERPConsulta(consulta));
+  const result = await verifyFacturaERPExactMAPunteos(
+    factura,
+    punteos,
+    () =>
+      Promise.resolve({
+        items: [{
+          source_table: "albmaterial",
+          source_id: 88,
+          Ref: "478974",
+          empresa: 1,
+          acreedor_id: 17,
+          factura_recibida_id: null,
+        }],
+        total: 1,
+        limit: 2,
+        offset: 0,
+      }),
+  );
+
+  assertEquals(result.issues, []);
+  assertEquals(result.evidence.status, "verified");
+  assertEquals(result.punteos[0].S, true);
+  assertEquals(result.punteos[0].Ver, true);
+  assertEquals(result.punteos[1].S, false);
+});
+
+Deno.test("referencias documentadas solo se resuelven con punteos revalidados por Edge", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_tipofactura: "OT",
+  };
+  const extraction = {
+    albaranes_referenciados: [{ referencia: "478974" }],
+    lineas: [{ referencia_albaran: "478974" }],
+  };
+  const requested = [normalizePunteoPayload({
+    S: true,
+    source_table: "albmaterial",
+    source_id: 88,
+    Ref: "478974",
+    referencia_documentada: "478974",
+  }, 1)];
+  const verification = await verifyFacturaERPExactMAPunteos(
+    factura,
+    requested,
+    () =>
+      Promise.resolve({
+        items: [{
+          source_table: "albmaterial",
+          source_id: 88,
+          Ref: "478974",
+          empresa: 1,
+          acreedor_id: 17,
+        }],
+        total: 1,
+      }),
+  );
+
+  assertEquals(
+    getFacturaERPDocumentedReferenceIssues({
+      factura,
+      extraction,
+      matchEvidence: {
+        punteos: {
+          documented_count: 1,
+          auto_selection_safe: true,
+        },
+        punteos_edge_verification: verification.evidence,
+      },
+      punteos: verification.punteos,
+    }),
+    [],
+  );
+});
+
+Deno.test("una senal positiva del modelo no valida referencias omitidas o ambiguas", () => {
+  const issues = getFacturaERPDocumentedReferenceIssues({
+    factura: {
+      FRR_Idempresa: 1,
+      FRR_idproveedor: 17,
+      FRR_tipofactura: "OT",
+    },
+    extraction: {
+      albaranes_referenciados: [
+        { referencia: "478974" },
+        { referencia: "478975" },
+      ],
+    },
+    matchEvidence: {
+      erp_rules: { resolved: true },
+      punteos: {
+        documented_count: 2,
+        exact_unique_for_every_reference: true,
+        one_to_one_identity: true,
+        auto_selection_safe: true,
+      },
+      punteos_edge_verification: {
+        status: "not_requested",
+        requested: 0,
+        verified: 0,
+      },
+    },
+    punteos: [],
+  });
+
+  assertEquals(issues.length, 1);
+  assertEquals(issues[0]?.field, "punteos");
+  assertEquals(issues[0]?.severity, "error");
+  assert(issues[0]?.message.includes("478974"));
+  assert(issues[0]?.message.includes("478975"));
+});
+
+Deno.test("evidencia de referencias sin literales verificables tambien falla cerrada", () => {
+  const issues = getFacturaERPDocumentedReferenceIssues({
+    factura: {
+      FRR_Idempresa: 1,
+      FRR_idproveedor: 17,
+      FRR_tipofactura: "OT",
+    },
+    extraction: {},
+    matchEvidence: {
+      punteos: {
+        documented_count: 2,
+        auto_selection_safe: true,
+      },
+      punteos_edge_verification: {
+        status: "verified",
+        verified: 2,
+      },
+    },
+    punteos: [],
+  });
+
+  assertEquals(issues.length, 1);
+  assertEquals(issues[0]?.severity, "error");
+  assert(issues[0]?.message.includes("solo 0"));
+});
+
+Deno.test("verificacion MA es atomica ante referencia ambigua o discordante", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_tipofactura: "OT",
+  };
+  const punteos = [
+    { S: true, source_table: "albmaterial", source_id: 88, Ref: "478974" },
+    { S: true, source_table: "albmaterial", source_id: 89, Ref: "478975" },
+  ];
+  const result = await verifyFacturaERPExactMAPunteos(
+    factura,
+    punteos,
+    (consulta) => {
+      const url = new URL(consulta, "https://erp.invalid/");
+      const referencia = url.searchParams.get("referencia");
+      return Promise.resolve(
+        referencia === "478974"
+          ? {
+            items: [{
+              source_table: "albmaterial",
+              source_id: 88,
+              Ref: "478974",
+              empresa: 1,
+              acreedor_id: 17,
+            }],
+            total: 1,
+          }
+          : {
+            items: [
+              {
+                source_table: "albmaterial",
+                source_id: 89,
+                Ref: "478975",
+                empresa: 1,
+                acreedor_id: 17,
+              },
+              {
+                source_table: "albmaterial",
+                source_id: 90,
+                Ref: "478975",
+                empresa: 1,
+                acreedor_id: 17,
+              },
+            ],
+            total: 2,
+          },
+      );
+    },
+  );
+
+  assertEquals(result.evidence.status, "rejected");
+  assertEquals(result.evidence.reason, "non_unique_reference");
+  assertEquals(result.punteos.map((punteo) => punteo.S), [false, false]);
+  assertEquals(result.issues[0]?.severity, "error");
 });
 
 Deno.test("reextraccion preserva decisiones confirmadas y no reemplaza CTB ni punteos", () => {
@@ -942,6 +1309,35 @@ Deno.test("readback coincide con cabecera, CTB posicional y punteos enviados", (
   };
 
   assertEquals(validateERPReadbackAgainstWrite(base).ok, true);
+  assertEquals(
+    validateERPReadbackAgainstWrite({
+      remoteFacturaId: 49305,
+      cabecera: {
+        FRR_Idempresa: 1,
+        FRR_numerofactura: "A-00748886",
+        FRR_ImporteVto1: null,
+        FRR_ImporteVto2: null,
+        FRR_ImporteVto3: null,
+        FRR_BancoPrevPago: null,
+      },
+      ctb: [],
+      punteos: [],
+      readback: {
+        factura: {
+          FRR_id: 49305,
+          FRR_Idempresa: 1,
+          FRR_numerofactura: "A-00748886",
+          FRR_ImporteVto1: 0,
+          FRR_ImporteVto2: 0,
+          FRR_ImporteVto3: 0,
+          FRR_BancoPrevPago: 0,
+        },
+        ctb: [],
+        punteos: [],
+      },
+    }).ok,
+    true,
+  );
 
   const mismatched = validateERPReadbackAgainstWrite({
     ...base,
@@ -990,6 +1386,8 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "regimenes/2110/perfiles-iva?proveedor_id=17&tipo_factura=OT",
     "regimenes/2110/perfiles-iva?tipo_factura=GE&schema=agroiris",
     "albaranes-gastos/punteables?empresa_id=1&proveedor_id=17&solo_pendientes=true&source_table=albmaterial&include_lines=true",
+    "albaranes/entrada?limit=25&offset=0",
+    "albaranes/entrada?fecha_desde=2026-07-01&fecha_hasta=2026-07-31&agricultor_id=1680&serie=A26&numero=8436",
     "albaranes/entrada/82548/lineas",
     "albaranes/entrada/82548/lineas?schema=agroiris",
     "albaranes/material/23210/lineas",
@@ -1016,6 +1414,7 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "regimenes/2110/perfiles-iva?limit=1",
     "regimenes/2110/perfiles-iva/delete",
     "albaranes-gastos/punteables?sql=drop",
+    "albaranes/entrada?proveedor_id=1680",
     "albaranes/entrada/no-numerico/lineas",
     "albaranes/entrada/0/lineas",
     "albaranes/entrada/82548/lineas?limit=1",
@@ -1044,9 +1443,24 @@ Deno.test("perfiles IVA conserva el permiso exclusivo de facturas", () => {
   );
 });
 
-Deno.test("lectura de lineas de entrada conserva el permiso exclusivo de facturas", () => {
+Deno.test("listado de albaranes conserva compatibilidad con el permiso de facturas", () => {
+  assertEquals(getERPReadAuthorizedRoutes("albaranes/entrada?limit=25&offset=0"), [
+    "/albaranes",
+    "/facturas-recibidas",
+  ]);
+  assert(
+    isRouteSetAuthorized(
+      "authenticated",
+      ["/facturas-recibidas"],
+      getERPReadAuthorizedRoutes("albaranes/entrada"),
+    ),
+  );
+});
+
+Deno.test("lineas de entrada se comparten entre facturas y albaranes", () => {
   assertEquals(getERPReadAuthorizedRoutes("albaranes/entrada/82548/lineas"), [
     "/facturas-recibidas",
+    "/albaranes",
   ]);
   assert(
     !isRouteSetAuthorized(
@@ -1437,6 +1851,7 @@ Deno.test("el circuito sugerido solo se confirma con detalle ERP del mismo prove
       consultas.push(consulta);
       return Promise.resolve({
         id: 17,
+        nombre: "ONDUSPAN, S.A.",
         cuenta_id: "41000000017",
         activo: true,
         bloqueado: false,
@@ -1447,6 +1862,7 @@ Deno.test("el circuito sugerido solo se confirma con detalle ERP del mismo prove
 
   assertEquals(consultas, ["acreedores/17"]);
   assertEquals(confirmation.providerType, "acreedor");
+  assertEquals(confirmation.providerName, "ONDUSPAN, S.A.");
   assertEquals(confirmation.issues, []);
   assertEquals(confirmation.evidence, {
     source: "erp_provider_detail",
@@ -1889,6 +2305,106 @@ Deno.test("reglas contables aplican precedencia proveedor sobre empresa y comple
     FRR_fechactb: "2026-06-30",
   });
   assertEquals(resolution.issues, []);
+});
+
+Deno.test("una politica CTB nula de proveedor hereda la regla general", () => {
+  const resolution = resolveFacturaERPAccountingRules({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_fechafactura: "2026-06-30",
+  }, [
+    {
+      empresa_id: 1,
+      proveedor_id: null,
+      fecha_ctb_policy: "invoice_date",
+      activo: true,
+    },
+    {
+      empresa_id: 1,
+      proveedor_id: 17,
+      tipo_factura: "OT",
+      fecha_ctb_policy: null,
+      activo: true,
+    },
+  ], "acreedor");
+
+  assertEquals(resolution.factura.FRR_fechactb, "2026-06-30");
+  assertEquals(resolution.factura.FRR_tipofactura, "OT");
+  assertEquals(resolution.issues, []);
+});
+
+Deno.test("carga de reglas aplica defaults solo tras confirmar el acreedor ERP", async () => {
+  const ruleRows = [{
+    empresa_id: 1,
+    proveedor_id: null,
+    ejercicio_erp: 25,
+    tipo_factura: null,
+    regimen_id: 2110,
+    fecha_ctb_policy: "invoice_date",
+    cuenta_gasto_default: "60200000001",
+    concepto_template: "FRA. {proveedor}",
+    contabilizar_default: "S",
+    activo: true,
+  }];
+  const query = {
+    data: ruleRows,
+    error: null,
+    select() {
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    or() {
+      return this;
+    },
+    is() {
+      return this;
+    },
+  };
+  const consultas: string[] = [];
+  const resolution = await loadAndResolveFacturaERPAccountingRules(
+    { from: () => query } as never,
+    {
+      FRR_Idempresa: 1,
+      FRR_idproveedor: 17,
+      FRR_idcuenta: "41000000017",
+      FRR_fechafactura: "2026-06-30",
+      FRR_base1: 100,
+      FRR_iva1: 21,
+      FRR_cuota1: 21,
+      FRR_totalfac: 121,
+    },
+    "acreedor",
+    {
+      readERP: (consulta) => {
+        consultas.push(consulta);
+        return Promise.resolve({
+          id: 17,
+          nombre: "ONDUSPAN, S.A.",
+          cuenta_id: "41000000017",
+          activo: true,
+          bloqueado: false,
+          inactivo_rgpd: false,
+        });
+      },
+    },
+  );
+
+  assertEquals(consultas, ["acreedores/17"]);
+  assertEquals(resolution.issues, []);
+  assertEquals(resolution.factura.FRR_ejercicio, 25);
+  assertEquals(resolution.factura.FRR_tipofactura, "OT");
+  assertEquals(resolution.factura.FRR_idregimen, 2110);
+  assertEquals(resolution.factura.FRR_fechactb, "2026-06-30");
+  assertEquals(resolution.factura.FRR_ctagasto1, "60200000001");
+  assertEquals(resolution.factura.FRR_igasto1, 100);
+  assertEquals(resolution.factura.FRR_Concepto, "FRA. ONDUSPAN, S.A.");
+  assertEquals(
+    resolution.factura.FRR_ObservacionesAEAT,
+    "FRA. ONDUSPAN, S.A.",
+  );
+  assertEquals(resolution.factura.FRR_Contabilizar, "S");
 });
 
 Deno.test("reglas contables nunca sobrescriben valores explicitos y exponen conflictos bloqueantes", () => {

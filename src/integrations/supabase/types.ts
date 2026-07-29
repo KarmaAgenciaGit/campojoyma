@@ -6,6 +6,43 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
+type AlbaranesEntradaRow = {
+  id: string
+  estado: string
+  agricultor_nombre: string | null
+  source_pdf_name: string | null
+  confidence: number | null
+  extraction: Json
+  validation_errors: Json
+  AEN_idalbaran: number | null
+  AEN_campa: number | null
+  AEN_serie: string | null
+  AEN_albaran: number | null
+  AEN_fecha: string | null
+  AEN_idagricultor: number | null
+  AEN_idpuntoventa: number | null
+  AEN_idcentro: number | null
+  AEN_referencia: string | null
+  AEN_IdEmpresaAgricultor: number | null
+  erp_sent_at: string | null
+  erp_sent_by: string | null
+  erp_response: Json | null
+  erp_error: string | null
+  created_by: string | null
+  updated_by: string | null
+  created_at: string
+  updated_at: string
+  source_kind: string
+  is_readonly_reference: boolean
+  match_status: string
+  match_evidence: Json
+  row_version: number
+  sync_status: string
+  erp_last_read_at: string | null
+  erp_last_read_payload: Json | null
+  last_request_id: string | null
+}
+
 type FacturasRecibidasRow = {
   id: string
   archivo_pdf_id: number | null
@@ -279,10 +316,13 @@ export type Database = {
         Row: {
           activo: boolean
           approval_note: string | null
+          concepto_template: string | null
+          contabilizar_default: string | null
           created_at: string
+          cuenta_gasto_default: string | null
           ejercicio_erp: number | null
           empresa_id: number
-          fecha_ctb_policy: string
+          fecha_ctb_policy: string | null
           id: string
           proveedor_id: number | null
           regimen_id: number | null
@@ -292,10 +332,13 @@ export type Database = {
         Insert: {
           activo?: boolean
           approval_note?: string | null
+          concepto_template?: string | null
+          contabilizar_default?: string | null
           created_at?: string
+          cuenta_gasto_default?: string | null
           ejercicio_erp?: number | null
           empresa_id: number
-          fecha_ctb_policy?: string
+          fecha_ctb_policy?: string | null
           id?: string
           proveedor_id?: number | null
           regimen_id?: number | null
@@ -305,16 +348,25 @@ export type Database = {
         Update: {
           activo?: boolean
           approval_note?: string | null
+          concepto_template?: string | null
+          contabilizar_default?: string | null
           created_at?: string
+          cuenta_gasto_default?: string | null
           ejercicio_erp?: number | null
           empresa_id?: number
-          fecha_ctb_policy?: string
+          fecha_ctb_policy?: string | null
           id?: string
           proveedor_id?: number | null
           regimen_id?: number | null
           tipo_factura?: string | null
           updated_at?: string
         }
+        Relationships: []
+      }
+      albaranesentrada: {
+        Row: AlbaranesEntradaRow
+        Insert: Partial<AlbaranesEntradaRow>
+        Update: Partial<AlbaranesEntradaRow>
         Relationships: []
       }
       facturasrecibidas: {

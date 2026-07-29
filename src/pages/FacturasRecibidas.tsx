@@ -201,7 +201,7 @@ const createEmptyDraft = (): FacturaDraft => ({
   concepto_asiento: '',
   obs_aeat: '',
   observaciones: '',
-  contabilizar: 'S',
+  contabilizar: 'N',
   genera_cartera: 'N',
   cta_cartera: '',
   banco: '',
@@ -3046,26 +3046,30 @@ const Facturas = () => {
                 {detailActionMessage.text}
               </p>
             ) : null}
-            {!isReadOnlyDetail ? (
+            {!isReadOnlyDetail || reconciliationRequestId ? (
               <>
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
-                  disabled={saving || sending}
-                  onClick={() => void handleDiscard()}
-                >
-                  <Trash2 size={15} />
-                  Eliminar
-                </button>
-                <button
-                  type="button"
-                  className={saveButtonClass}
-                  disabled={saving || sending || !hasUnsavedDetailChanges}
-                  onClick={() => void persistFactura(false)}
-                >
-                  {saving ? <Loader2 className="animate-spin" size={15} /> : showSaveFeedback ? <CheckCircle2 size={15} /> : <Save size={15} />}
-                  {saveButtonLabel}
-                </button>
+                {!isReadOnlyDetail ? (
+                  <>
+                    <button
+                      type="button"
+                      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
+                      disabled={saving || sending}
+                      onClick={() => void handleDiscard()}
+                    >
+                      <Trash2 size={15} />
+                      Eliminar
+                    </button>
+                    <button
+                      type="button"
+                      className={saveButtonClass}
+                      disabled={saving || sending || !hasUnsavedDetailChanges}
+                      onClick={() => void persistFactura(false)}
+                    >
+                      {saving ? <Loader2 className="animate-spin" size={15} /> : showSaveFeedback ? <CheckCircle2 size={15} /> : <Save size={15} />}
+                      {saveButtonLabel}
+                    </button>
+                  </>
+                ) : null}
                 <button
                   type="button"
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
@@ -3817,13 +3821,18 @@ const Facturas = () => {
                   {!isReadOnlyDetail || hasMeaningfulERPValue(draft.contabilizar) ? (
                     <Field label="Contabilizar">
                       <FilterSelect
-                        value={draft.contabilizar === 'N' ? 'N' : 'S'}
+                        value={isReadOnlyDetail && draft.contabilizar === 'S' ? 'S' : 'N'}
                         options={yesNoOptions}
-                        onChange={(value) => updateDraft('contabilizar', value)}
+                        onChange={() => undefined}
                         ariaLabel="Contabilizar"
-                        disabled={isReadOnlyDetail}
+                        disabled
                         triggerClassName={detailInputClass}
                       />
+                      {!isReadOnlyDetail ? (
+                        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                          Se enviará sin contabilizar mientras el servicio oficial no esté disponible.
+                        </p>
+                      ) : null}
                     </Field>
                   ) : null}
                   {!isReadOnlyDetail || hasMeaningfulERPValue(draft.genera_cartera) ? (

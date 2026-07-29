@@ -5,9 +5,11 @@ type RuleRow = Database['public']['Tables']['facturas_recibidas_erp_rules']['Row
 type RuleInsert = Database['public']['Tables']['facturas_recibidas_erp_rules']['Insert'];
 
 export type FacturaFechaCtbPolicy = 'manual' | 'invoice_date';
+export type FacturaContabilizarDefault = 'S' | 'N';
 
-export type FacturaRecibidaErpRule = Omit<RuleRow, 'fecha_ctb_policy'> & {
-  fecha_ctb_policy: FacturaFechaCtbPolicy;
+export type FacturaRecibidaErpRule = Omit<RuleRow, 'fecha_ctb_policy' | 'contabilizar_default'> & {
+  fecha_ctb_policy: FacturaFechaCtbPolicy | null;
+  contabilizar_default: FacturaContabilizarDefault | null;
 };
 
 export type FacturaRecibidaErpRuleInput = {
@@ -17,7 +19,10 @@ export type FacturaRecibidaErpRuleInput = {
   ejercicio_erp?: number | null;
   tipo_factura?: string | null;
   regimen_id?: number | null;
-  fecha_ctb_policy?: FacturaFechaCtbPolicy;
+  fecha_ctb_policy?: FacturaFechaCtbPolicy | null;
+  cuenta_gasto_default?: string | null;
+  concepto_template?: string | null;
+  contabilizar_default?: FacturaContabilizarDefault | null;
   activo?: boolean;
   approval_note?: string | null;
 };
@@ -27,6 +32,9 @@ export type FacturaRecibidaErpRuleValues = {
   tipo_factura: string | null;
   regimen_id: number | null;
   fecha_ctb_policy: FacturaFechaCtbPolicy;
+  cuenta_gasto_default: string | null;
+  concepto_template: string | null;
+  contabilizar_default: FacturaContabilizarDefault | null;
 };
 
 export type FacturaRecibidaErpRuleResolution = FacturaRecibidaErpRuleValues & {
@@ -37,9 +45,13 @@ export type FacturaRecibidaErpRuleResolution = FacturaRecibidaErpRuleValues & {
 const isFechaCtbPolicy = (value: unknown): value is FacturaFechaCtbPolicy =>
   value === 'manual' || value === 'invoice_date';
 
+const isContabilizarDefault = (value: unknown): value is FacturaContabilizarDefault =>
+  value === 'S' || value === 'N';
+
 const normalizeRule = (row: RuleRow): FacturaRecibidaErpRule => ({
   ...row,
-  fecha_ctb_policy: isFechaCtbPolicy(row.fecha_ctb_policy) ? row.fecha_ctb_policy : 'manual',
+  fecha_ctb_policy: isFechaCtbPolicy(row.fecha_ctb_policy) ? row.fecha_ctb_policy : null,
+  contabilizar_default: isContabilizarDefault(row.contabilizar_default) ? row.contabilizar_default : null,
 });
 
 const normalizePositiveInteger = (value: number | null | undefined, field: string): number | null => {
@@ -57,18 +69,68 @@ const normalizeTipoFactura = (value: string | null | undefined): string | null =
   return normalized;
 };
 
+const normalizeCuentaGastoDefault = (value: string | null | undefined): string | null => {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) return null;
+  if (!/^\d{11}$/.test(normalized)) {
+    throw new Error('La cuenta de gasto debe tener exactamente 11 d\u00edgitos.');
+  }
+  return normalized;
+};
+
+const normalizeConceptoTemplate = (value: string | null | undefined): string | null => {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) return null;
+  if (normalized.length > 50) {
+    throw new Error('La plantilla de concepto debe tener como m\u00e1ximo 50 caracteres.');
+  }
+  if (!normalized.includes('{proveedor}')) {
+    throw new Error('La plantilla de concepto debe incluir {proveedor}.');
+  }
+  return normalized;
+};
+
+const normalizeContabilizarDefault = (
+  value: FacturaContabilizarDefault | string | null | undefined,
+): FacturaContabilizarDefault | null => {
+  const normalized = value?.trim().toUpperCase() ?? '';
+  if (!normalized) return null;
+  if (!isContabilizarDefault(normalized)) {
+    throw new Error('El valor por defecto de contabilizar debe ser S o N.');
+  }
+  return normalized;
+};
+
+const normalizeFechaCtbPolicy = (
+  value: FacturaFechaCtbPolicy | null | undefined,
+): FacturaFechaCtbPolicy | null => {
+  if (value === null || value === undefined) return null;
+  if (!isFechaCtbPolicy(value)) {
+    throw new Error('La pol\u00edtica de fecha CTB no es v\u00e1lida.');
+  }
+  return value;
+};
+
 const hasConfiguredValue = (input: {
   ejercicio_erp: number | null;
   tipo_factura: string | null;
   regimen_id: number | null;
-  fecha_ctb_policy: FacturaFechaCtbPolicy;
+  fecha_ctb_policy: FacturaFechaCtbPolicy | null;
+  cuenta_gasto_default: string | null;
+  concepto_template: string | null;
+  contabilizar_default: FacturaContabilizarDefault | null;
 }) =>
   input.ejercicio_erp !== null ||
   input.tipo_factura !== null ||
   input.regimen_id !== null ||
-  input.fecha_ctb_policy !== 'manual';
+  input.fecha_ctb_policy === 'invoice_date' ||
+  input.cuenta_gasto_default !== null ||
+  input.concepto_template !== null ||
+  input.contabilizar_default !== null;
 
-const normalizeInput = (input: FacturaRecibidaErpRuleInput): RuleInsert => {
+export const normalizeFacturaRecibidaErpRuleInput = (
+  input: FacturaRecibidaErpRuleInput,
+): RuleInsert => {
   const empresaId = normalizePositiveInteger(input.empresa_id, 'La empresa ERP');
   if (empresaId === null) throw new Error('La empresa ERP es obligatoria.');
 
@@ -78,14 +140,14 @@ const normalizeInput = (input: FacturaRecibidaErpRuleInput): RuleInsert => {
     ejercicio_erp: normalizePositiveInteger(input.ejercicio_erp, 'El ejercicio ERP'),
     tipo_factura: normalizeTipoFactura(input.tipo_factura),
     regimen_id: normalizePositiveInteger(input.regimen_id, 'El r\u00e9gimen IVA'),
-    fecha_ctb_policy: input.fecha_ctb_policy ?? 'manual',
+    fecha_ctb_policy: normalizeFechaCtbPolicy(input.fecha_ctb_policy),
+    cuenta_gasto_default: normalizeCuentaGastoDefault(input.cuenta_gasto_default),
+    concepto_template: normalizeConceptoTemplate(input.concepto_template),
+    contabilizar_default: normalizeContabilizarDefault(input.contabilizar_default),
     activo: input.activo ?? true,
     approval_note: input.approval_note?.trim() || null,
   } satisfies RuleInsert;
 
-  if (!isFechaCtbPolicy(normalized.fecha_ctb_policy)) {
-    throw new Error('La pol\u00edtica de fecha CTB no es v\u00e1lida.');
-  }
   if (hasConfiguredValue(normalized) && !normalized.approval_note) {
     throw new Error('A\u00f1ade una nota o evidencia de aprobaci\u00f3n para activar valores autom\u00e1ticos.');
   }
@@ -126,6 +188,21 @@ export const resolveFacturaRecibidaErpRuleValues = (
     regimen_id: firstNumber(current.regimen_id, proveedorRule?.regimen_id, empresaRule?.regimen_id),
     fecha_ctb_policy:
       currentPolicy ?? proveedorRule?.fecha_ctb_policy ?? empresaRule?.fecha_ctb_policy ?? 'manual',
+    cuenta_gasto_default: firstText(
+      current.cuenta_gasto_default,
+      proveedorRule?.cuenta_gasto_default,
+      empresaRule?.cuenta_gasto_default,
+    ),
+    concepto_template: firstText(
+      current.concepto_template,
+      proveedorRule?.concepto_template,
+      empresaRule?.concepto_template,
+    ),
+    contabilizar_default: normalizeContabilizarDefault(
+      current.contabilizar_default ??
+        proveedorRule?.contabilizar_default ??
+        empresaRule?.contabilizar_default,
+    ),
     empresa_rule_id: empresaRule?.id ?? null,
     proveedor_rule_id: proveedorRule?.id ?? null,
   };
@@ -188,7 +265,7 @@ export const resolveFacturaRecibidaErpRules = async (
 export const saveFacturaRecibidaErpRule = async (
   input: FacturaRecibidaErpRuleInput,
 ): Promise<FacturaRecibidaErpRule> => {
-  const payload = normalizeInput(input);
+  const payload = normalizeFacturaRecibidaErpRuleInput(input);
 
   if (input.id) {
     const { data, error } = await supabase

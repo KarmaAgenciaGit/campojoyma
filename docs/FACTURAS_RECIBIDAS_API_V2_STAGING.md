@@ -172,7 +172,8 @@ Nuevas lecturas:
 - `GET /facturasrecibidas/{id}/punteos?include_lines=true`
   incluye `albmaterial`, `line_count` y sus líneas de solo lectura.
 - `GET /albaranes-gastos/punteables?source_table=albmaterial`
-  permite buscar albaranes MA pendientes.
+  permite buscar albaranes MA pendientes; el filtro opcional
+  `referencia` exige igualdad exacta sobre `Ref`.
 - `GET /facturasrecibidas/{id}/asiento`
   separa ID técnico y número visible y devuelve `entries`.
 
@@ -223,9 +224,11 @@ leer el número visible y los apuntes Debe/Haber resultantes.
 
 Consecuencias:
 
-- `/asiento` devuelve `reference_only` cuando existe `FRR_IdAsientoNet`, siempre con
-  `created=false`, o `unavailable` cuando no existe.
-- Nunca se deriva el número visible desde `FRR_IdAsientoNet`.
+- `/asiento` usa `FRR_IdAsientoNet` solo como clave técnica para consultar el
+  diario. Devuelve `created=true` únicamente si encuentra un asiento con origen
+  `FR`, la misma factura y Debe/Haber cuadrado.
+- El número visible se lee de `contabilidad.asientos`; nunca se deriva
+  aritméticamente desde `FRR_IdAsientoNet`.
 - Un POST v2 con `FRR_Contabilizar="S"` recibe una validación bloqueante durante el
   dry-run y no crea ni la factura ni un supuesto asiento.
 - No se han creado asientos mediante `INSERT`.
@@ -233,9 +236,8 @@ Consecuencias:
 Para cerrar la homologación falta que el proveedor facilite o habilite:
 
 1. El servicio/API/procedimiento oficial que Netagro utiliza para contabilizar.
-2. Un diario de pruebas consultable que permita leer apuntes y mapear
-   `FRR_IdAsientoNet` con el número visible.
-3. Una respuesta oficial que confirme factura, asiento, Debe, Haber y cuadre.
+2. Una respuesta oficial del mecanismo de creación que identifique factura y
+   asiento para realizar después el readback ya disponible.
 
 ## n8n
 
@@ -273,8 +275,8 @@ Sobre la factura ONDUSPAN `FRR_id=49305`:
 - 17 punteos `albmaterial`.
 - 21 líneas.
 - Suma de albaranes: `42.341,52`.
-- `/asiento`: `reference_only`, `created=false`, ID técnico `390305`, número visible
-  `null`, cero apuntes.
+- `/asiento`: `created=true`, ID técnico `390305`, número visible `48732`, tres
+  apuntes y Debe/Haber cuadrado en `51.233,24 €`.
 
 También se validó:
 

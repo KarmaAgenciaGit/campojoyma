@@ -13,10 +13,27 @@ Supabase es la bandeja de revisión y ERP es la autoridad para maestros,
 duplicados y escrituras reales. La pantalla no muestra el histórico completo de
 Netagro.
 
-El escritor continúa en <code>reference_only</code>. Un dry-run correcto, una
-respuesta de referencia o una factura validada en staging no prueban que se
-haya creado un asiento. No se debe usar el estado «enviada a ERP» ni mostrar un
-número de asiento hasta recibir y verificar una creación real.
+La creación por API continúa deshabilitada porque falta el mecanismo oficial de
+Netagro. Un dry-run correcto, una respuesta de referencia o una factura validada
+en staging no prueban que se haya creado un asiento. La lectura del diario sí
+puede confirmar asientos históricos existentes; solo ese readback exacto permite
+mostrar el número visible y los apuntes Debe/Haber.
+
+Estado operativo verificado de la API v0.2.4:
+<code>DB_WRITES_ENABLED=false</code>,
+<code>ACCOUNTING_MECHANISM=unavailable</code> y
+<code>ALBMATERIAL_WRITES_ENABLED=false</code>. Activar solo el primer flag no
+habilita ni la contabilización oficial ni los enlaces MA. El primer flag sí
+bloquea todo DML: permanece cerrado porque, aunque la base sea de pruebas, una
+cabecera aislada no equivale al alta completa requerida.
+
+La regla viva de empresa 1 propone ejercicio 25, CTB igual a fecha de factura,
+cuenta `60200000001`, concepto `FRA. {proveedor}` y
+`contabilizar_default=N`. El extractor conserva `S` en el borrador para reflejar
+la intención funcional, pero el writer fuerza `N` hasta que exista el servicio
+oficial de asiento. Si se habilita antes la escritura de cabecera para una
+prueba parcial, debe identificarse expresamente como factura no contabilizada y
+sin enlaces MA confirmados.
 
 Supabase incorpora la finalización estricta, punteos no seleccionados por
 defecto, unicidad por circuito y revocación de privilegios de mutación directa
@@ -30,12 +47,15 @@ evitar activaciones accidentales al importar. El escritor n8n v2 sigue
 desactivado. El frontend está validado en local y su despliegue externo continúa
 pendiente.
 
-La sustitución remota se realizó mediante <code>n8n import:workflow</code> y se
-verificó con 27 nodos, ninguno <code>httpRequestTool</code>, y el webhook
-<code>campojoyma-factura-extraer</code> registrado. El backup previo es
-<code>/root/campojoyma-pre-full-replace-20260729T143008.json</code>, modo
+La sustitución remota final se realizó mediante
+<code>n8n import:workflow</code> y se verificó con 32 nodos, cinco
+<code>httpRequestTool</code> GET, cinco conexiones <code>ai_tool</code> y el
+webhook <code>campojoyma-factura-extraer</code> registrado. El backup previo es
+<code>/root/campojoyma-pre-agent-v4.2-20260729T154205Z.json</code>, modo
 <code>600</code>, SHA-256
-<code>bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102</code>.
+<code>1441938ba666da9f9ca27e6c5aea60dac10f3e57eed3d2e550fb9261c940b501</code>.
+El candidato activo tiene SHA-256
+<code>7a32d91a9cd99171f27a41c8269795fda3167b3a1298e09fd71cee4970b883ce</code>.
 
 ## Flujo
 

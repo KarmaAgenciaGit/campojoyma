@@ -14,7 +14,9 @@ const EXPECTED = {
   expenseAccount: "60200000001",
   providerAccount: "41000000017",
   technicalEntryId: 390305,
-  accountingStatus: "reference_only",
+  visibleEntryNumber: "48732",
+  accountingStatus: "created",
+  accountingEntries: 3,
   punteos: 17,
   materialLines: 21,
 };
@@ -169,15 +171,18 @@ const main = async () => {
   );
   assertEqual(
     accounting.visible_number ?? accounting.numero ?? accounting.asiento_numero ?? null,
-    null,
-    "Número visible no verificable",
+    EXPECTED.visibleEntryNumber,
+    "Número visible del asiento",
   );
   assertEqual(accounting.requested, true, "Solicitud contable histórica");
-  assertEqual(accounting.created, false, "Asiento no verificable en el diario oficial");
+  assertEqual(accounting.created, true, "Asiento verificado en el diario oficial");
   assertEqual(accounting.status, EXPECTED.accountingStatus, "Estado contable verificable");
+  assertEqual(accounting.balanced, true, "Asiento Debe/Haber cuadrado");
+  assertMoney(accounting.total_debit, EXPECTED.total, "Total Debe");
+  assertMoney(accounting.total_credit, EXPECTED.total, "Total Haber");
 
   const entries = unwrapList(asientoPayload);
-  assertEqual(entries.length, 0, "Apuntes no disponibles en la copia de pruebas");
+  assertEqual(entries.length, EXPECTED.accountingEntries, "Apuntes contables verificados");
 
   if (process.argv.includes("--details")) {
     const headerKeys = [
@@ -219,7 +224,9 @@ const main = async () => {
     }, null, 2));
   }
 
-  console.log("OK: aceptación de lectura ONDUSPAN completada; contabilidad en reference_only.");
+  console.log(
+    "OK: aceptación de lectura ONDUSPAN completada; asiento histórico verificado en el diario.",
+  );
 };
 
 main().catch((error) => {
