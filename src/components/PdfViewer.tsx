@@ -26,6 +26,7 @@ const PURCHASE_INVOICE_MAX_ZOOM = 220;
 const ZOOM_STEP = 10;
 const PAGE_GAP = 16;
 const STAGE_PADDING = 24;
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] as const;
 
 const defaultToolbarButtonClass =
   'inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40';
@@ -43,6 +44,11 @@ function clampZoom(value: number, maxZoom: number): number {
 function pdfDownloadName(fileName?: string, fallbackName = 'documento.pdf'): string {
   const cleaned = fileName?.trim() || fallbackName;
   return /\.pdf$/i.test(cleaned) ? cleaned : `${cleaned}.pdf`;
+}
+
+function isPdfBytes(bytes: Uint8Array): boolean {
+  return bytes.length >= PDF_MAGIC.length &&
+    PDF_MAGIC.every((value, index) => bytes[index] === value);
 }
 
 function fitScale(stage: PdfPageSize, page: PdfPageSize | null, mode: 'width' | 'page'): number {
@@ -224,6 +230,7 @@ export function PdfViewer({
 
     let cancelled = false;
     let loadingTask: PdfLoadingTask | null = null;
+    let sourceBlobUrl: string | null = null;
     setLoading(true);
     setLoadError(false);
 
@@ -261,10 +268,28 @@ export function PdfViewer({
         const response = await fetch(url, { mode: 'cors', credentials: 'omit', headers });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
-        const blobUrl = URL.createObjectURL(blob);
         const bytes = new Uint8Array(await blob.arrayBuffer());
+        if (!isPdfBytes(bytes)) {
+          throw new Error('El archivo recibido no tiene una cabecera PDF valida.');
+        }
+        const pdfBlob = new Blob([bytes], { type: 'application/pdf' });
+        const blobUrl = URL.createObjectURL(pdfBlob);
+        if (cancelled) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+
+        revokeOwned();
+        ownedBlobUrlRef.current = blobUrl;
+        sourceBlobUrl = blobUrl;
+        setObjectUrl(blobUrl);
+
+        if (cancelled) return;
+
         ensurePromiseWithResolvers();
         const pdfjsLib = await import('pdfjs-dist');
+        if (cancelled) return;
+
         pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
         loadingTask = pdfjsLib.getDocument({ data: bytes });
         const nextPdf = await loadingTask.promise;
@@ -272,21 +297,18 @@ export function PdfViewer({
         const firstViewport = firstPage.getViewport({ scale: 1 });
 
         if (cancelled) {
-          URL.revokeObjectURL(blobUrl);
           destroyLoadingTask();
           return;
         }
 
-        revokeOwned();
-        ownedBlobUrlRef.current = blobUrl;
-        setObjectUrl(blobUrl);
         setPdf(nextPdf);
         setPageCount(nextPdf.numPages);
         setFirstPageSize({ width: firstViewport.width, height: firstViewport.height });
       } catch (error) {
+        destroyLoadingTask();
         if (!cancelled) {
           onErrorRef.current?.(error instanceof Error ? error : new Error(String(error)));
-          setObjectUrl(null);
+          if (!sourceBlobUrl) setObjectUrl(null);
           setPdf(null);
           setLoadError(true);
         }
@@ -314,8 +336,7 @@ export function PdfViewer({
   }, [pageScale, widthScale, zoom, zoomMode]);
 
   const controlsDisabled = !pdf || loading || loadError;
-  const sourceControlsDisabled = !objectUrl || loading;
-  const sourceActionDisabled = purchaseInvoiceAppearance ? sourceControlsDisabled : controlsDisabled;
+  const sourceActionDisabled = !objectUrl;
   const safeRenderScale = Math.max(0.1, renderScale || 1);
 
   useEffect(() => {

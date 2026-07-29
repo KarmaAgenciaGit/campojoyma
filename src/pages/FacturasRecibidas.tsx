@@ -59,6 +59,7 @@ import {
   getFacturaERPReconciliationRequestId,
   getFacturaERPSendConfirmation,
   getFacturaPdfSignedUrl,
+  getPunteoImporte,
   extractFacturaFromPdf,
   isERPReferenceFactura,
   isERPReadOnlyFactura,
@@ -435,7 +436,13 @@ const locateProveedorForFactura = async (factura: FacturaDraft) => {
     };
   }
 
-  const response = await localizarProveedorERP({ nif, nombre, tipoFactura: factura.fr_sufa });
+  const response = await localizarProveedorERP({
+    nif,
+    nombre,
+    tipoFactura: factura.fr_sufa,
+    matchEvidence: factura.match_evidence,
+    expectedProviderId: factura.proveedor_codigo,
+  });
   const match = extractProveedorLookupMatch(response);
   const datos = response.erp_response?.datos;
 
@@ -492,7 +499,11 @@ const facturaProviderScopeKey = (factura: FacturaDraft | null | undefined) =>
   [
     factura?.id ?? 'new',
     cleanOptionalString(factura?.fr_alm) ?? 'sin-empresa',
-    facturaProveedorERPKind(factura?.fr_sufa),
+    facturaProveedorERPKind(
+      factura?.fr_sufa,
+      factura?.match_evidence,
+      factura?.proveedor_codigo,
+    ),
     cleanOptionalString(factura?.proveedor_codigo) ?? 'sin-proveedor',
   ].join(':');
 
@@ -1075,12 +1086,19 @@ const Facturas = () => {
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showAccountingBreakdown, setShowAccountingBreakdown] = useState(false);
+  const [revealedEmptyGastoIndexes, setRevealedEmptyGastoIndexes] = useState<number[]>([]);
   const [busyFacturaId, setBusyFacturaId] = useState<string | null>(null);
   const [erpRegistrationByFacturaId, setERPRegistrationByFacturaId] = useState<Record<string, FacturaERPListState>>({});
 
   const isNewFacturaDraft = Boolean(draft && !draft.id);
   const isDetailMode = Boolean(draft?.id && !modalOpen);
+  const providerKind = facturaProveedorERPKind(
+    draft?.fr_sufa,
+    draft?.match_evidence,
+    draft?.proveedor_codigo,
+  );
   const activeDraftId = draft?.id ?? null;
+  const accountingBreakdownScope = draft?.id ?? (draft ? 'new' : 'none');
   const activeRemoteFacturaId = (() => {
     const parsed = Number(draft?.remote_frr_id ?? draft?.erp_factura_id ?? 0);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -1152,17 +1170,21 @@ const Facturas = () => {
     setRegimenIvaFeedback(null);
   }, [draft?.id]);
 
+  const currentProviderScopeKey = facturaProviderScopeKey(draft);
+
   useEffect(() => {
-    const scope = facturaProviderScopeKey(draft);
-    if (activeProviderScopeRef.current && activeProviderScopeRef.current !== scope) {
+    if (
+      activeProviderScopeRef.current &&
+      activeProviderScopeRef.current !== currentProviderScopeKey
+    ) {
       providerDetailRunRef.current += 1;
       punteablesRunRef.current += 1;
       regimenIvaRunRef.current += 1;
       setPunteosLoading(false);
       setRegimenIvaFeedback(null);
     }
-    activeProviderScopeRef.current = scope;
-  }, [draft?.fr_alm, draft?.fr_sufa, draft?.id, draft?.proveedor_codigo]);
+    activeProviderScopeRef.current = currentProviderScopeKey;
+  }, [currentProviderScopeKey]);
 
   useEffect(() => {
     if (!saveFeedback) {
@@ -1197,6 +1219,10 @@ const Facturas = () => {
   useEffect(() => {
     setSaveFeedback(null);
   }, [activeDraftId]);
+
+  useEffect(() => {
+    setRevealedEmptyGastoIndexes([]);
+  }, [accountingBreakdownScope]);
 
   useEffect(() => {
     if (draft && shouldOpenAccountingBreakdownFor(draft, lineas)) {
@@ -1783,7 +1809,11 @@ const Facturas = () => {
     }
 
     const proveedorId = proveedorErpId;
-    const tipoFactura = tipoFacturaRadioValue(draft?.fr_sufa);
+    const tipoFactura = tipoFacturaRadioValue(
+      draft?.fr_sufa,
+      draft?.match_evidence,
+      draft?.proveedor_codigo,
+    );
     setRegimenIvaFeedback({
       estado: 'consultando',
       mensaje: 'Consultando los porcentajes usados anteriormente con este régimen…',
@@ -1838,7 +1868,16 @@ const Facturas = () => {
   };
 
   const changeTipoFactura = async (nextTipo: 'GE' | 'OT') => {
-    if (!draft || tipoFacturaRadioValue(draft.fr_sufa) === nextTipo) return;
+    if (
+      !draft ||
+      tipoFacturaRadioValue(
+        draft.fr_sufa,
+        draft.match_evidence,
+        draft.proveedor_codigo,
+      ) === nextTipo
+    ) {
+      return;
+    }
 
     const hasProviderIdentity = Boolean(
       cleanOptionalString(draft.proveedor_codigo) ||
@@ -1870,6 +1909,7 @@ const Facturas = () => {
     setDuplicateCandidate(null);
     setModalMessage(null);
     if (hasDependentGastos) setLineas(createEmptyGastos());
+    setRevealedEmptyGastoIndexes([]);
     setDraft((current) => {
       if (!current) return current;
       const nextDraft = {
@@ -1883,6 +1923,7 @@ const Facturas = () => {
         forma_pago: null,
         banco: null,
         punteos: [],
+        match_evidence: null,
       };
       activeProviderScopeRef.current = facturaProviderScopeKey(nextDraft);
       return nextDraft;
@@ -1890,7 +1931,6 @@ const Facturas = () => {
   };
 
   const selectProveedorERP = async (proveedor: AgroIrisAcreedor | null) => {
-    const providerKind = facturaProveedorERPKind(draft?.fr_sufa);
     const providerLabel = providerKind === 'agricultor' ? 'proveedor' : 'acreedor';
     const previousProveedorId = proveedorIdFromDraft(draft);
     const nextProveedorId = proveedor?.acreedorid ?? null;
@@ -1935,6 +1975,7 @@ const Facturas = () => {
       cta_cartera: null,
       forma_pago: null,
       banco: null,
+      ...(providerChanged ? { match_evidence: null } : {}),
     } satisfies FacturaDraft;
     const nextDraft = draft
       ? {
@@ -1951,6 +1992,7 @@ const Facturas = () => {
     setPunteosLoading(false);
     setPunteosLoadError(null);
     setModalMessage(null);
+    if (providerChanged) setRevealedEmptyGastoIndexes([]);
     setDraft((current) =>
       current
         ? {
@@ -1977,7 +2019,11 @@ const Facturas = () => {
     if (!proveedor) return;
 
     try {
-      const detail = await fetchFacturaProveedorERPDetail(proveedor.acreedorid, draft?.fr_sufa);
+      const detail = await fetchFacturaProveedorERPDetail(
+        proveedor.acreedorid,
+        draft?.fr_sufa,
+        draft?.match_evidence,
+      );
       if (providerDetailRunRef.current !== runId || activeProviderScopeRef.current !== scope) return;
       if (!detail) {
         setModalMessage({
@@ -2204,6 +2250,7 @@ const Facturas = () => {
         currentIndex === index ? createEmptyLinea(linea.posicion ?? currentIndex + 1) : linea,
       ),
     );
+    setRevealedEmptyGastoIndexes((current) => current.filter((revealedIndex) => revealedIndex !== index));
   };
 
   const persistFactura = async (
@@ -2223,7 +2270,12 @@ const Facturas = () => {
     try {
       const payload = {
         ...baseDraft,
-        fr_sufa: tipoFacturaRadioValue(baseDraft.fr_sufa) || 'OT',
+        fr_sufa:
+          tipoFacturaRadioValue(
+            baseDraft.fr_sufa,
+            baseDraft.match_evidence,
+            baseDraft.proveedor_codigo,
+          ) || null,
       };
 
       if (pdfFile) throw new Error('El PDF no puede cambiarse después de crear la factura.');
@@ -2460,7 +2512,12 @@ const Facturas = () => {
       const saved = await extractFacturaFromPdf(selectedPdf, createEmptyDraft());
       const savedForEditor = {
         ...saved,
-        fr_sufa: tipoFacturaRadioValue(saved.fr_sufa) || 'OT',
+        fr_sufa:
+          tipoFacturaRadioValue(
+            saved.fr_sufa,
+            saved.match_evidence,
+            saved.proveedor_codigo,
+          ) || null,
       };
       const savedLineas = getLineas(saved);
 
@@ -2589,7 +2646,6 @@ const Facturas = () => {
   const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
   const detailERPStatus = erpStatusMeta(detailERPState);
   const isReadOnlyDetail = isERPReadOnlyFactura(draft);
-  const providerKind = facturaProveedorERPKind(draft?.fr_sufa);
   const providerLabel = providerKind === 'agricultor' ? 'Proveedor' : 'Acreedor';
   const detailStatusText = draft?.estado ? estadoLabels[draft.estado] : detailERPStatus.text;
   const detailReadOnlyStatusText = isERPReferenceFactura(draft)
@@ -2599,9 +2655,30 @@ const Facturas = () => {
       : detailERPStatus.text;
   const lineasBaseTotal = lineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
   const accountingLinesWithData = lineas.filter(hasAccountingLineData);
+  const revealedEmptyGastoIndexSet = new Set(revealedEmptyGastoIndexes);
   const visibleAccountingLines = lineas
     .map((linea, sourceIndex) => ({ linea, sourceIndex }))
-    .filter(({ linea }) => !isReadOnlyDetail || hasAccountingLineData(linea));
+    .filter(
+      ({ linea, sourceIndex }) =>
+        hasAccountingLineData(linea) ||
+        (!isReadOnlyDetail && revealedEmptyGastoIndexSet.has(sourceIndex)),
+    );
+  if (!isReadOnlyDetail && visibleAccountingLines.length === 0) {
+    const firstEmptyIndex = lineas.findIndex((linea) => !hasAccountingLineData(linea));
+    if (firstEmptyIndex >= 0) {
+      visibleAccountingLines.push({ linea: lineas[firstEmptyIndex], sourceIndex: firstEmptyIndex });
+    }
+  }
+  const visibleAccountingLineIndexSet = new Set(
+    visibleAccountingLines.map(({ sourceIndex }) => sourceIndex),
+  );
+  const nextHiddenAccountingLineIndex = isReadOnlyDetail
+    ? -1
+    : lineas.findIndex(
+        (linea, sourceIndex) =>
+          !hasAccountingLineData(linea) &&
+          !visibleAccountingLineIndexSet.has(sourceIndex),
+      );
   const accountingLineCount = accountingLinesWithData.length;
   const accountingBase = Number(draft?.base_imponible ?? 0);
   const accountingDifference = lineasBaseTotal - accountingBase;
@@ -2609,8 +2686,6 @@ const Facturas = () => {
   const ctbLineas = draft?.ctb_lineas ?? [];
   const ctbTotal = ctbLineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
   const punteos = draft?.punteos ?? [];
-  const getPunteoImporte = (punteo: FacturaRecibidaPunteo) =>
-    Number(punteo.importe ?? punteo.importe_factura ?? punteo.importe_punteado ?? 0) || 0;
   const getPunteoSelected = (punteo: FacturaRecibidaPunteo) => punteo.seleccionado === true;
   const punteosTotal = punteos
     .filter(getPunteoSelected)
@@ -2701,6 +2776,13 @@ const Facturas = () => {
       : accountingLineCount === 1
         ? `${cleanOptionalString(accountingLinesWithData[0]?.descripcion) ?? 'Cuenta sin indicar'} - ${formatMoney(lineasBaseTotal)}`
         : `${accountingLineCount} gastos - ${formatMoney(lineasBaseTotal)}`;
+
+  const addAccountingLine = () => {
+    if (nextHiddenAccountingLineIndex < 0) return;
+    setRevealedEmptyGastoIndexes((current) =>
+      Array.from(new Set([...current, nextHiddenAccountingLineIndex])).sort((left, right) => left - right),
+    );
+  };
 
   const listView = (
     <div className="purchase-invoices-page flex min-h-[calc(100vh-9rem)] flex-col gap-5">
@@ -3130,7 +3212,11 @@ const Facturas = () => {
             <div className="space-y-5">
               <FieldGroup title="Tipo factura">
                 <RadioGroup
-                  value={tipoFacturaRadioValue(draft.fr_sufa)}
+                  value={tipoFacturaRadioValue(
+                    draft.fr_sufa,
+                    draft.match_evidence,
+                    draft.proveedor_codigo,
+                  )}
                   onValueChange={(value) => {
                     if (value === 'GE' || value === 'OT') void changeTipoFactura(value);
                   }}
@@ -3367,10 +3453,20 @@ const Facturas = () => {
 
                 {showAccountingBreakdown ? (
                   <div className="mt-4">
-                    <div className="mb-3 flex flex-wrap items-center gap-3">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                       <p className="text-sm font-bold text-slate-500 dark:text-slate-400">
                         Suma gastos: {formatMoney(lineasBaseTotal)} / Base: {formatMoney(draft.base_imponible)}
                       </p>
+                      {!isReadOnlyDetail && nextHiddenAccountingLineIndex >= 0 ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                          onClick={addAccountingLine}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Añadir gasto
+                        </button>
+                      ) : null}
                     </div>
                     <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
                       <table className="purchase-invoice-lines-table w-full min-w-[760px] text-left text-sm">

@@ -2,9 +2,13 @@
 
 Fecha de medición: 23 de julio de 2026.
 
-Adenda funcional y de lectura API: 28 de julio de 2026. Los denominadores
-históricos permanecen referidos a la medición del día 23; las nuevas
-afirmaciones se identifican como evidencia funcional o contraste adicional.
+Adendas funcionales y de lectura API: 28 y 29 de julio de 2026. Los
+denominadores históricos permanecen referidos a la medición del día 23; las
+nuevas afirmaciones se identifican como evidencia funcional o contraste
+adicional. La adenda del 29 incorpora la política CTB
+<code>invoice_date</code>, el resolver conservador de régimen, el extractor v4
+sin tools y la búsqueda exacta v0.2.4 que admite fecha cuando aún no se conoce
+el ejercicio.
 
 Este documento se diferencia del resto de `docs/` en un punto esencial: **no contiene
 hipótesis reconstruidas a partir de una factura y un correo, sino frecuencias medidas
@@ -180,6 +184,14 @@ Acierto del valor mayoritario del histórico, grupos con n>=3:
 
 El par es la regla utilizable. Añadir el tipo no aporta nada (+0,1 pp).
 
+Desde el 29/07/2026 la automatización aplica una versión más conservadora de
+esta evidencia: exige misma empresa, proveedor y circuito, y compara la firma
+completa de tramos IVA activos (base o cuota absoluta de al menos `0,005`).
+Solo propone un régimen cuando existen al menos tres facturas históricas, hay
+un ganador único y su confianza es igual o superior al 98 %. Una regla
+explícita o un valor ya informado siempre tienen prioridad; si no se alcanza el
+umbral, el régimen queda pendiente de revisión.
+
 ### 3.4 Sección y actividad
 
 `FRR_IdSeccion` == `FRR_IdActividad` en **276/285 (96,8%)**. Ambos dependen del tipo:
@@ -323,7 +335,18 @@ confirme cuál de las dos formas quiere en las altas nuevas.
 
 ## 5. Lo que sigue exigiendo decisión humana
 
-### 5.1 Tipo de factura: circuito confirmado y código revisable
+El ejercicio no se toma del modelo ni se calcula a partir de la fecha. Edge
+solo lo completa mediante una regla explícita o cuando la API devuelve una
+única factura que coincide exactamente en empresa, proveedor, número
+normalizado de forma alfanumérica en Edge, fecha y circuito. Una respuesta
+vacía, ambigua, incompleta o de otro circuito deja `FRR_ejercicio` pendiente.
+El lote final tratado el 29/07/2026 confirmó el resultado operativo: las diez
+facturas quedaron en ejercicio 25, con fecha CTB igual a la fecha de factura,
+régimen 2110, tipo OT y sin errores bloqueantes. Esto valida las reglas para
+este lote y esta configuración; no convierte esos valores en defaults
+universales para otros proveedores o clientes.
+
+### 5.1 Tipo de factura: circuito confirmado y decisión de Campojoyma
 
 | Predictor | Acierto |
 |---|---:|
@@ -340,19 +363,28 @@ El origen del punteo no resuelve esa decisión. Onduspan tiene
 `FRR_tipofactura=OT` y sus punteos son `MA`; ambos valores son correctos porque
 describen ejes distintos.
 
-Debe seguir siendo elección manual con sugerencia salvo que exista una regla
-aprobada. Nunca se deduce copiando `Origen`.
+Campojoyma confirmó para este flujo la regla operativa: proveedor confirmado
+como agricultor → `GE`; proveedor confirmado como acreedor → `OT`. Un tipo
+explícito nunca se sobrescribe y una discrepancia entre la cabecera y el
+maestro bloquea el envío. Si el proveedor no se ha resuelto de forma única, el
+tipo sigue siendo manual. Nunca se deduce copiando `Origen`.
 
-### 5.2 Fecha CTB: sin regla
+### 5.2 Fecha CTB: evidencia histórica y decisión de Campojoyma
 
 ```text
 delta 0 días respecto a la fecha de factura   12729/30301   42,0%
 último día del mes                             6030/30301   19,9%
 ```
 
-Copiar la fecha de factura sería incorrecto en el 58% de los casos. Los valores más
-repetidos de `FRR_fechactb` son fines de mes (`2023-10-31`, `2023-08-31`, `2024-04-30`).
-Mantener `fecha_ctb_policy = manual` hasta que el cliente confirme la política.
+Copiar la fecha de factura sería incorrecto como regla universal del histórico:
+los valores más repetidos de `FRR_fechactb` son fines de mes (`2023-10-31`,
+`2023-08-31`, `2024-04-30`).
+
+Campojoyma confirmó el 29/07/2026 que, para este flujo, la fecha CTB debe ser
+siempre la fecha de factura. La regla activa para la empresa 1 es por tanto
+`fecha_ctb_policy = invoice_date`; también se corrigieron las reglas de
+proveedor activas que todavía conservaban `manual`, para que no anulen la
+política de empresa por precedencia.
 
 ### 5.3 Cuenta de gasto: depende del tipo
 

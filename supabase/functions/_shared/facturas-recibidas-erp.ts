@@ -1554,6 +1554,17 @@ export const parseERPArrayEnvelope = (
 
 export type FacturaProveedorTipo = "acreedor" | "agricultor";
 
+const positiveIdentityInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : null;
+  return parsed !== null && Number.isSafeInteger(parsed) && parsed > 0
+    ? parsed
+    : null;
+};
+
 export const resolveFacturaProveedorTipo = (
   factura: JsonObject,
   hintedType: unknown = null,
@@ -1564,6 +1575,59 @@ export const resolveFacturaProveedorTipo = (
   const normalizedHint = text(hintedType, null)?.toLowerCase() ?? null;
   return normalizedHint === "acreedor" || normalizedHint === "agricultor"
     ? normalizedHint
+    : null;
+};
+
+export const getFacturaProveedorTipoFromMatchEvidence = (
+  matchEvidence: unknown,
+  expectedProviderId: unknown,
+): FacturaProveedorTipo | null => {
+  if (!matchEvidence || typeof matchEvidence !== "object" || Array.isArray(matchEvidence)) {
+    return null;
+  }
+  const proveedor = (matchEvidence as JsonObject).proveedor;
+  if (!proveedor || typeof proveedor !== "object" || Array.isArray(proveedor)) {
+    return null;
+  }
+  const proveedorEvidence = proveedor as JsonObject;
+  // `entity_type` solo es una identidad utilizable cuando el match quedó
+  // confirmado. No se acepta el tipo meramente sugerido ni shapes legacy
+  // ambiguos: una cabecera FRR_tipofactura explícita seguirá teniendo prioridad.
+  if (proveedorEvidence.matched !== true) return null;
+  const expectedId = positiveIdentityInteger(expectedProviderId);
+  const evidenceProviderId = positiveIdentityInteger(
+    proveedorEvidence.provider_id,
+  );
+  if (
+    !expectedId ||
+    !evidenceProviderId ||
+    evidenceProviderId !== expectedId
+  ) {
+    return null;
+  }
+  // Rechaza evidencia internamente contradictoria. `provider_id` es la clave
+  // canónica del enriquecedor; si además llega otra identidad explícita, no
+  // puede señalar a un maestro distinto.
+  for (const alias of ["entity_id", "id"]) {
+    if (!hasOwn(proveedorEvidence, alias)) continue;
+    const aliasId = positiveIdentityInteger(proveedorEvidence[alias]);
+    if (!aliasId || aliasId !== expectedId) return null;
+  }
+
+  const ownedTypeAliases = ["entity_type", "proveedor_tipo"]
+    .filter((alias) => hasOwn(proveedorEvidence, alias))
+    .map((alias) => text(proveedorEvidence[alias], null)?.toLowerCase() ?? null);
+  if (
+    ownedTypeAliases.length === 0 ||
+    ownedTypeAliases.some((value) =>
+      value !== "acreedor" && value !== "agricultor"
+    )
+  ) {
+    return null;
+  }
+  const uniqueTypes = [...new Set(ownedTypeAliases)];
+  return uniqueTypes.length === 1
+    ? uniqueTypes[0] as FacturaProveedorTipo
     : null;
 };
 
@@ -1590,16 +1654,15 @@ export const parseERPProviderDetailResponse = (
     provider = candidate as JsonObject;
     break;
   }
-  const providerId = integerValue(
+  const providerId = positiveIdentityInteger(
     pick(
       provider,
       providerType === "agricultor"
         ? ["id", "codigo", "agricultor_id", "AGR_Idagricultor", "AGR_Codigo"]
         : ["id", "codigo", "acreedor_id", "ACR_Codigo"],
     ),
-    null,
   );
-  if (!providerId || providerId <= 0) {
+  if (!providerId) {
     return {
       ok: false,
       provider: {},
@@ -1637,15 +1700,14 @@ export const getERPProviderPreflightIssues = (
 ): FacturaValidationIssue[] => {
   const providerLabel = providerType === "agricultor" ? "agricultor" : "acreedor";
   const provider = unwrapERPObject(providerPayload);
-  const expectedProviderId = integerValue(factura.FRR_idproveedor, null);
-  const actualProviderId = integerValue(
+  const expectedProviderId = positiveIdentityInteger(factura.FRR_idproveedor);
+  const actualProviderId = positiveIdentityInteger(
     pick(
       provider,
       providerType === "agricultor"
         ? ["id", "codigo", "agricultor_id", "AGR_Idagricultor", "AGR_Codigo"]
         : ["id", "codigo", "acreedor_id", "ACR_Codigo"],
     ),
-    null,
   );
   const expectedAccount = text(factura.FRR_idcuenta, null);
   const actualAccount = text(
@@ -1743,6 +1805,10 @@ export const normalizeERPDuplicateCandidates = (payload: unknown): JsonObject[] 
     FRR_ejercicio: integerValue(candidate.FRR_ejercicio ?? candidate.ejercicio, null),
     FRR_idproveedor: integerValue(candidate.FRR_idproveedor ?? candidate.proveedor_id, null),
     FRR_numerofactura: text(candidate.FRR_numerofactura ?? candidate.numero_factura, null),
+    FRR_tipofactura: text(
+      candidate.FRR_tipofactura ?? candidate.tipo_factura,
+      null,
+    )?.toUpperCase() ?? null,
   }));
 
 export const validateERPDuplicateSearchResponse = (
@@ -1942,7 +2008,31 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
   },
   {
     path: /^facturasrecibidas\/buscar$/,
-    keys: new Set(["empresa_id", "ejercicio", "proveedor_id", "numero_factura", "tipo_factura", "schema", "limit", "offset"]),
+    keys: new Set(["empresa_id", "ejercicio", "proveedor_id", "numero_factura", "fecha_factura", "tipo_factura", "schema", "limit", "offset"]),
+  },
+  {
+    path: /^facturasrecibidas\/regimen-sugerido$/,
+    keys: new Set([
+      "schema",
+      "empresa_id",
+      "proveedor_id",
+      "proveedor_tipo",
+      "iva1",
+      "iva2",
+      "iva3",
+      "iva4",
+      "iva5",
+      "base1",
+      "base2",
+      "base3",
+      "base4",
+      "base5",
+      "cuota1",
+      "cuota2",
+      "cuota3",
+      "cuota4",
+      "cuota5",
+    ]),
   },
   { path: /^facturasrecibidas\/\d+$/, keys: new Set(["schema"]) },
   { path: /^facturasrecibidas\/\d+\/ctb$/, keys: new Set(["schema"]) },
@@ -2038,6 +2128,213 @@ export type FacturaERPAccountingRuleResolution = {
   factura: JsonObject;
   applied: JsonObject;
   issues: FacturaValidationIssue[];
+  evidence?: JsonObject;
+};
+
+export type FacturaERPAccountingRuleDependencies = {
+  readERP?: (consulta: string) => Promise<unknown>;
+};
+
+export type FacturaERPProviderTypeConfirmation = {
+  providerType: FacturaProveedorTipo | null;
+  issues: FacturaValidationIssue[];
+  evidence: JsonObject;
+};
+
+const REGIMEN_HISTORY_MIN_INVOICES = 3;
+const REGIMEN_HISTORY_MIN_CONFIDENCE = 0.98;
+const IVA_ACTIVE_AMOUNT_EPSILON = 0.005;
+
+const normalizedIvaRate = (value: unknown): number | null => {
+  const parsed = numberValue(value, null);
+  if (parsed === null || parsed < 0 || parsed > 100) return null;
+  return Math.round(parsed * 1000) / 1000;
+};
+
+/**
+ * Firma de tipos IVA realmente usados. Los porcentajes de slots ERP con base y
+ * cuota a cero son plantillas y no describen esta factura. Los tipos repetidos
+ * se colapsan porque el regimen no depende de cuantos grupos compartan el tipo.
+ */
+export const getFacturaActiveIvaSignature = (
+  factura: JsonObject,
+): number[] | null => {
+  const rates = new Set<number>();
+  for (let position = 1; position <= 5; position += 1) {
+    const base = numberValue(factura[`FRR_base${position}`], 0) ?? 0;
+    const quota = numberValue(factura[`FRR_cuota${position}`], 0) ?? 0;
+    if (
+      Math.abs(base) < IVA_ACTIVE_AMOUNT_EPSILON &&
+      Math.abs(quota) < IVA_ACTIVE_AMOUNT_EPSILON
+    ) {
+      continue;
+    }
+    const rate = normalizedIvaRate(factura[`FRR_iva${position}`]);
+    if (rate === null) return null;
+    rates.add(rate);
+  }
+  return [...rates].sort((left, right) => left - right);
+};
+
+const sameIvaSignature = (left: number[], right: number[]) =>
+  left.length === right.length &&
+  left.every((value, index) => Math.abs(value - right[index]) < 0.0005);
+
+const normalizeIvaSignature = (value: unknown): number[] | null => {
+  if (!Array.isArray(value)) return null;
+  const rates = value.map(normalizedIvaRate);
+  if (rates.some((rate) => rate === null)) return null;
+  return [...new Set(rates as number[])].sort((left, right) => left - right);
+};
+
+export const buildFacturaERPRegimenSuggestionConsulta = (
+  factura: JsonObject,
+  providerType: FacturaProveedorTipo | null,
+): { consulta: string; signature: number[] } | null => {
+  if (positiveRuleInteger(factura.FRR_idregimen)) return null;
+  const empresaId = positiveRuleInteger(factura.FRR_Idempresa);
+  const proveedorId = positiveRuleInteger(factura.FRR_idproveedor);
+  const signature = getFacturaActiveIvaSignature(factura);
+  if (!empresaId || !proveedorId || !providerType || !signature?.length) return null;
+
+  const params = new URLSearchParams({
+    empresa_id: String(empresaId),
+    proveedor_id: String(proveedorId),
+    proveedor_tipo: providerType,
+  });
+  for (let position = 1; position <= 5; position += 1) {
+    for (const field of ["iva", "base", "cuota"] as const) {
+      const value = numberValue(factura[`FRR_${field}${position}`], null);
+      if (value !== null) params.set(`${field}${position}`, String(value));
+    }
+  }
+  return {
+    consulta: `facturasrecibidas/regimen-sugerido?${params.toString()}`,
+    signature,
+  };
+};
+
+export const resolveFacturaERPRegimenFromHistory = (
+  factura: JsonObject,
+  providerType: FacturaProveedorTipo | null,
+  payload: unknown,
+): FacturaERPAccountingRuleResolution => {
+  const resolved = { ...factura };
+  const applied: JsonObject = {};
+  const issues: FacturaValidationIssue[] = [];
+  const query = buildFacturaERPRegimenSuggestionConsulta(resolved, providerType);
+  if (!query) {
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: {
+        source: "erp_history",
+        status: positiveRuleInteger(resolved.FRR_idregimen)
+          ? "skipped_existing_value"
+          : "skipped_missing_context",
+      },
+    };
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    issues.push({
+      field: "FRR_idregimen",
+      message: "El historico ERP no devolvio una respuesta valida para resolver el regimen IVA.",
+      severity: "warning",
+    });
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: { source: "erp_history", status: "invalid_response" },
+    };
+  }
+
+  const response = payload as JsonObject;
+  const filters = response.filtros && typeof response.filtros === "object" &&
+      !Array.isArray(response.filtros)
+    ? response.filtros as JsonObject
+    : {};
+  const responseSignature = normalizeIvaSignature(response.firma_iva);
+  const empresaId = positiveRuleInteger(resolved.FRR_Idempresa);
+  const proveedorId = positiveRuleInteger(resolved.FRR_idproveedor);
+  const responseProviderType = text(filters.proveedor_tipo, null)?.toLowerCase() ?? null;
+  const contextMatches =
+    positiveRuleInteger(filters.empresa_id) === empresaId &&
+    positiveRuleInteger(filters.proveedor_id) === proveedorId &&
+    responseProviderType === providerType &&
+    responseSignature !== null &&
+    sameIvaSignature(responseSignature, query.signature);
+
+  const counts = Array.isArray(response.recuentos)
+    ? response.recuentos
+      .map((entry) => {
+        const row = entry && typeof entry === "object" && !Array.isArray(entry)
+          ? entry as JsonObject
+          : {};
+        const regimenId = positiveRuleInteger(row.regimen_id);
+        const uses = positiveRuleInteger(row.usos);
+        return regimenId && uses ? { regimenId, uses } : null;
+      })
+      .filter((entry): entry is { regimenId: number; uses: number } => entry !== null)
+      .sort((left, right) => right.uses - left.uses || left.regimenId - right.regimenId)
+    : [];
+  const total = counts.reduce((sum, entry) => sum + entry.uses, 0);
+  const winner = counts[0] ?? null;
+  const uniqueWinner = winner !== null &&
+    (counts.length === 1 || winner.uses > counts[1].uses);
+  const confidence = winner && total > 0 ? winner.uses / total : 0;
+  const suggestion = response.sugerencia && typeof response.sugerencia === "object" &&
+      !Array.isArray(response.sugerencia)
+    ? response.sugerencia as JsonObject
+    : {};
+  const suggestedRegimen = positiveRuleInteger(suggestion.regimen_id);
+  const responseTotal = integerValue(response.total_historicos_coincidentes, null);
+  const responseConfidence = numberValue(suggestion.confianza, null);
+  const responseConsistent =
+    response.estado === "sugerido" &&
+    contextMatches &&
+    total >= REGIMEN_HISTORY_MIN_INVOICES &&
+    responseTotal === total &&
+    uniqueWinner &&
+    confidence >= REGIMEN_HISTORY_MIN_CONFIDENCE &&
+    suggestedRegimen === winner?.regimenId &&
+    responseConfidence !== null &&
+    Math.abs(responseConfidence - confidence) < 0.000001;
+
+  const evidence: JsonObject = {
+    source: "erp_history",
+    status: text(response.estado, "invalid_response"),
+    criterio: "mismo_proveedor_empresa_circuito_y_firma_iva_activa",
+    firma_iva: query.signature,
+    total_historicos: total,
+    coincidencias: winner?.uses ?? 0,
+    confianza: total > 0 ? Number(confidence.toFixed(6)) : null,
+    alternativas: counts.slice(1).map((entry) => ({
+      regimen_id: entry.regimenId,
+      usos: entry.uses,
+    })),
+  };
+
+  if (response.estado !== "sugerido") {
+    return { factura: resolved, applied, issues, evidence };
+  }
+  if (!responseConsistent || !suggestedRegimen) {
+    issues.push({
+      field: "FRR_idregimen",
+      message: "La sugerencia historica de regimen IVA no supera las comprobaciones de seguridad.",
+      severity: "warning",
+    });
+    evidence.status = "rejected_inconsistent_response";
+    return { factura: resolved, applied, issues, evidence };
+  }
+
+  resolved.FRR_idregimen = suggestedRegimen;
+  applied.FRR_idregimen = suggestedRegimen;
+  evidence.status = "applied";
+  evidence.regimen_id = suggestedRegimen;
+  return { factura: resolved, applied, issues, evidence };
 };
 
 type AccountingRuleField = {
@@ -2051,9 +2348,333 @@ const positiveRuleInteger = (value: unknown) => {
   return parsed !== null && parsed > 0 ? parsed : null;
 };
 
+/**
+ * Reconfirma contra el maestro ERP el circuito sugerido por la evidencia del
+ * agente. El ID y la cuenta contable deben coincidir con la cabecera; una
+ * caída, una respuesta incompleta o cualquier discrepancia dejan el circuito
+ * sin resolver.
+ */
+export const confirmFacturaProveedorTipoFromERP = async (
+  factura: JsonObject,
+  hintedProviderType: unknown,
+  readERP: (consulta: string) => Promise<unknown>,
+): Promise<FacturaERPProviderTypeConfirmation> => {
+  const providerType = resolveFacturaProveedorTipo({}, hintedProviderType);
+  const providerId = positiveIdentityInteger(factura.FRR_idproveedor);
+  if (!providerType || !providerId) {
+    return {
+      providerType: null,
+      issues: [],
+      evidence: {
+        source: "erp_provider_detail",
+        status: "skipped_missing_context",
+      },
+    };
+  }
+
+  const providerLabel = providerType === "agricultor" ? "agricultor" : "acreedor";
+  const providerRoute = providerType === "agricultor" ? "agricultores" : "acreedores";
+  const consulta = `${providerRoute}/${providerId}`;
+
+  try {
+    const payload = await readERP(consulta);
+    const parsed = parseERPProviderDetailResponse(payload, providerType);
+    if (!parsed.ok) {
+      return {
+        providerType: null,
+        issues: [{
+          field: "FRR_tipofactura",
+          message:
+            `El detalle ERP de ${providerLabel} no permite confirmar el circuito del proveedor.`,
+          severity: "warning",
+        }],
+        evidence: {
+          source: "erp_provider_detail",
+          status: "invalid_response",
+          provider_id: providerId,
+          provider_type: providerType,
+        },
+      };
+    }
+
+    const preflightIssues = getERPProviderPreflightIssues(
+      factura,
+      parsed.provider,
+      providerType,
+    );
+    if (preflightIssues.length > 0) {
+      return {
+        providerType: null,
+        issues: preflightIssues,
+        evidence: {
+          source: "erp_provider_detail",
+          status: "rejected_mismatch",
+          provider_id: providerId,
+          provider_type: providerType,
+        },
+      };
+    }
+
+    return {
+      providerType,
+      issues: [],
+      evidence: {
+        source: "erp_provider_detail",
+        status: "confirmed",
+        provider_id: providerId,
+        provider_type: providerType,
+      },
+    };
+  } catch {
+    return {
+      providerType: null,
+      issues: [{
+        field: "FRR_tipofactura",
+        message:
+          `No se pudo reconfirmar el circuito de ${providerLabel} contra el ERP.`,
+        severity: "warning",
+      }],
+      evidence: {
+        source: "erp_provider_detail",
+        status: "unavailable",
+        provider_id: providerId,
+        provider_type: providerType,
+      },
+    };
+  }
+};
+
+const normalizeFacturaNumberForExactMatch = (value: unknown): string | null => {
+  const normalized = text(value, null)
+    ?.normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "") ?? "";
+  return normalized || null;
+};
+
+/**
+ * El ejercicio no se acepta desde la extraccion. Solo se intenta recuperar
+ * cuando la cabecera ya tiene identidad suficiente para buscar la misma
+ * factura historica en el ERP.
+ *
+ * `/facturasrecibidas/buscar` permite omitir el ejercicio para recuperarlo
+ * desde la misma factura. La API acota de forma exacta por empresa, proveedor,
+ * numero, fecha y circuito; la respuesta se vuelve a verificar localmente y
+ * falla cerrada ante cero, ambiguedad o un envelope incompleto.
+ */
+export const buildFacturaERPExerciseLookupConsulta = (
+  factura: JsonObject,
+  providerType: FacturaProveedorTipo | null,
+): string | null => {
+  if (positiveRuleInteger(factura.FRR_ejercicio)) return null;
+  const empresaId = positiveRuleInteger(factura.FRR_Idempresa);
+  const proveedorId = positiveRuleInteger(factura.FRR_idproveedor);
+  const numeroFactura = text(factura.FRR_numerofactura, null);
+  const normalizedNumero = normalizeFacturaNumberForExactMatch(numeroFactura);
+  const fechaFactura = dateValue(factura.FRR_fechafactura, null);
+  const headerProviderType = resolveFacturaProveedorTipo(factura);
+  if (
+    !empresaId ||
+    !proveedorId ||
+    !numeroFactura ||
+    !normalizedNumero ||
+    !fechaFactura ||
+    !providerType ||
+    headerProviderType !== providerType
+  ) {
+    return null;
+  }
+
+  const params = new URLSearchParams({
+    empresa_id: String(empresaId),
+    proveedor_id: String(proveedorId),
+    numero_factura: numeroFactura,
+    fecha_factura: fechaFactura,
+    tipo_factura: providerType === "agricultor" ? "GE" : "OT",
+    limit: "200",
+    offset: "0",
+  });
+  return `facturasrecibidas/buscar?${params.toString()}`;
+};
+
+const parseFacturaERPExerciseLookupEnvelope = (
+  payload: unknown,
+): { items: JsonObject[]; total: number } | null => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const root = payload as JsonObject;
+  const envelope = hasOwn(root, "items")
+    ? root
+    : root.data && typeof root.data === "object" && !Array.isArray(root.data)
+      ? root.data as JsonObject
+      : root.result && typeof root.result === "object" && !Array.isArray(root.result)
+        ? root.result as JsonObject
+        : null;
+  if (!envelope || !Array.isArray(envelope.items)) return null;
+  const total = integerValue(envelope.total, null);
+  if (
+    total === null ||
+    total < 0 ||
+    total !== numberValue(envelope.total, null) ||
+    total !== envelope.items.length ||
+    envelope.items.some((item) =>
+      !item || typeof item !== "object" || Array.isArray(item)
+    )
+  ) {
+    return null;
+  }
+  return { items: envelope.items as JsonObject[], total };
+};
+
+export const resolveFacturaERPExerciseFromExactInvoice = (
+  factura: JsonObject,
+  providerType: FacturaProveedorTipo | null,
+  payload: unknown,
+): FacturaERPAccountingRuleResolution => {
+  const resolved = { ...factura };
+  const applied: JsonObject = {};
+  const issues: FacturaValidationIssue[] = [];
+  const consulta = buildFacturaERPExerciseLookupConsulta(resolved, providerType);
+  if (!consulta) {
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: {
+        source: "erp_exact_invoice",
+        status: positiveRuleInteger(resolved.FRR_ejercicio)
+          ? "skipped_existing_value"
+          : "skipped_missing_context",
+      },
+    };
+  }
+
+  const envelope = parseFacturaERPExerciseLookupEnvelope(payload);
+  if (!envelope) {
+    issues.push({
+      field: "FRR_ejercicio",
+      message:
+        "El ERP no devolvio un listado completo y verificable para resolver el ejercicio.",
+      severity: "warning",
+    });
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: { source: "erp_exact_invoice", status: "invalid_response" },
+    };
+  }
+
+  const expected = {
+    empresaId: positiveRuleInteger(resolved.FRR_Idempresa),
+    proveedorId: positiveRuleInteger(resolved.FRR_idproveedor),
+    numeroFactura: normalizeFacturaNumberForExactMatch(
+      resolved.FRR_numerofactura,
+    ),
+    fechaFactura: dateValue(resolved.FRR_fechafactura, null),
+    providerType,
+  };
+  const candidates: Array<{
+    id: number;
+    ejercicio: number;
+    tipoFactura: string;
+  }> = [];
+
+  for (const rawCandidate of envelope.items) {
+    const id = positiveRuleInteger(rawCandidate.FRR_id ?? rawCandidate.frr_id ?? rawCandidate.id);
+    const empresaId = positiveRuleInteger(
+      rawCandidate.FRR_Idempresa ?? rawCandidate.empresa_id,
+    );
+    const ejercicio = positiveRuleInteger(
+      rawCandidate.FRR_ejercicio ?? rawCandidate.ejercicio,
+    );
+    const proveedorId = positiveRuleInteger(
+      rawCandidate.FRR_idproveedor ?? rawCandidate.proveedor_id,
+    );
+    const numeroFactura = normalizeFacturaNumberForExactMatch(
+      rawCandidate.FRR_numerofactura ?? rawCandidate.numero_factura,
+    );
+    const fechaFactura = dateValue(
+      rawCandidate.FRR_fechafactura ?? rawCandidate.fecha_factura,
+      null,
+    );
+    const tipoFactura = text(
+      rawCandidate.FRR_tipofactura ?? rawCandidate.tipo_factura,
+      null,
+    )?.toUpperCase() ?? null;
+    if (
+      !id ||
+      !empresaId ||
+      !ejercicio ||
+      !proveedorId ||
+      !numeroFactura ||
+      !fechaFactura ||
+      !tipoFactura
+    ) {
+      issues.push({
+        field: "FRR_ejercicio",
+        message:
+          "El listado ERP contiene una factura incompleta; no se puede resolver el ejercicio de forma segura.",
+        severity: "warning",
+      });
+      return {
+        factura: resolved,
+        applied,
+        issues,
+        evidence: {
+          source: "erp_exact_invoice",
+          status: "invalid_candidate",
+          response_total: envelope.total,
+        },
+      };
+    }
+
+    const candidateProviderType: FacturaProveedorTipo =
+      tipoFactura === "GE" ? "agricultor" : "acreedor";
+    if (
+      empresaId === expected.empresaId &&
+      proveedorId === expected.proveedorId &&
+      numeroFactura === expected.numeroFactura &&
+      fechaFactura === expected.fechaFactura &&
+      candidateProviderType === expected.providerType
+    ) {
+      candidates.push({ id, ejercicio, tipoFactura });
+    }
+  }
+
+  const evidence: JsonObject = {
+    source: "erp_exact_invoice",
+    criterio:
+      "empresa_proveedor_numero_normalizado_fecha_y_circuito_exacto_unico",
+    response_total: envelope.total,
+    exact_matches: candidates.length,
+  };
+  if (candidates.length === 0) {
+    evidence.status = "not_found";
+    return { factura: resolved, applied, issues, evidence };
+  }
+  if (candidates.length !== 1) {
+    evidence.status = "ambiguous";
+    return { factura: resolved, applied, issues, evidence };
+  }
+
+  const candidate = candidates[0];
+  resolved.FRR_ejercicio = candidate.ejercicio;
+  applied.FRR_ejercicio = candidate.ejercicio;
+  evidence.status = "applied";
+  evidence.remote_frr_id = candidate.id;
+  evidence.ejercicio = candidate.ejercicio;
+  evidence.tipo_factura = candidate.tipoFactura;
+  return { factura: resolved, applied, issues, evidence };
+};
+
 const accountingRuleFields: AccountingRuleField[] = [
   { ruleKey: "ejercicio_erp", facturaKey: "FRR_ejercicio", normalize: positiveRuleInteger },
-  { ruleKey: "tipo_factura", facturaKey: "FRR_tipofactura", normalize: (value) => text(value, null) },
+  {
+    ruleKey: "tipo_factura",
+    facturaKey: "FRR_tipofactura",
+    normalize: (value) => text(value, null)?.toUpperCase() ?? null,
+  },
   { ruleKey: "regimen_id", facturaKey: "FRR_idregimen", normalize: positiveRuleInteger },
   {
     ruleKey: "fecha_ctb_policy",
@@ -2118,7 +2739,6 @@ export const resolveFacturaERPAccountingRules = (
   const explicitProviderType = resolveFacturaProveedorTipo(factura);
   const hintedOnlyProviderType = resolveFacturaProveedorTipo({}, hintedProviderType);
 
-  if (!empresaId) return { factura: resolved, applied, issues };
   if (
     explicitProviderType &&
     hintedOnlyProviderType &&
@@ -2131,6 +2751,15 @@ export const resolveFacturaERPAccountingRules = (
       severity: "error",
     });
   }
+  if (
+    !hasUsableValue(resolved.FRR_tipofactura) &&
+    hintedOnlyProviderType
+  ) {
+    const tipoFactura = hintedOnlyProviderType === "agricultor" ? "GE" : "OT";
+    resolved.FRR_tipofactura = tipoFactura;
+    applied.FRR_tipofactura = tipoFactura;
+  }
+  if (!empresaId) return { factura: resolved, applied, issues };
 
   const activeRows = rows.filter((row) =>
     row.activo === true &&
@@ -2155,6 +2784,19 @@ export const resolveFacturaERPAccountingRules = (
       continue;
     }
     if (!effective.defined || effective.value === null) continue;
+
+    if (field.ruleKey === "tipo_factura" && providerType) {
+      const ruleProviderType = effective.value === "GE" ? "agricultor" : "acreedor";
+      if (ruleProviderType !== providerType) {
+        issues.push({
+          field: "FRR_tipofactura",
+          message:
+            `La regla ERP activa propone ${String(effective.value)}, incompatible con el circuito de ${providerType}; no se aplica.`,
+          severity: "error",
+        });
+        continue;
+      }
+    }
 
     if (field.ruleKey === "fecha_ctb_policy") {
       if (effective.value === "manual") continue;
@@ -2194,30 +2836,312 @@ export const loadAndResolveFacturaERPAccountingRules = async (
   supabase: ReturnType<typeof createServiceClient>,
   factura: JsonObject,
   hintedProviderType: unknown = null,
+  dependencies: FacturaERPAccountingRuleDependencies = {},
 ): Promise<FacturaERPAccountingRuleResolution> => {
   const empresaId = positiveRuleInteger(factura.FRR_Idempresa);
   const proveedorId = positiveRuleInteger(factura.FRR_idproveedor);
-  const providerType = resolveFacturaProveedorTipo(factura, hintedProviderType);
-  if (!empresaId) return resolveFacturaERPAccountingRules(factura, [], providerType);
+  const readERP = dependencies.readERP ?? fetchERPReadConsulta;
+  const explicitProviderType = resolveFacturaProveedorTipo(factura);
+  const hintedOnlyProviderType = resolveFacturaProveedorTipo({}, hintedProviderType);
+  let confirmedHintedProviderType: FacturaProveedorTipo | null = null;
+  let providerConfirmationEvidence: JsonObject | undefined;
+  let providerConfirmationIssues: FacturaValidationIssue[] = [];
 
-  let query = supabase
-    .from("facturas_recibidas_erp_rules")
-    .select("empresa_id, proveedor_id, ejercicio_erp, tipo_factura, regimen_id, fecha_ctb_policy, activo")
-    .eq("empresa_id", empresaId)
-    .eq("activo", true);
-  query = proveedorId && providerType === "acreedor"
-    ? query.or(`proveedor_id.is.null,proveedor_id.eq.${proveedorId}`)
-    : query.is("proveedor_id", null);
-
-  const { data, error } = await query;
-  if (error) {
-    throw new Error(`ERP_RULES_UNAVAILABLE: no se pudieron cargar las reglas contables (${error.message}).`);
+  // Una cabecera explícita ya es autoridad Edge/usuario. La evidencia solo se
+  // consulta cuando haría falta para derivar el circuito o cuando contradice a
+  // esa cabecera; una sugerencia no reconfirmada nunca llega al resolver.
+  if (
+    hintedOnlyProviderType &&
+    (!explicitProviderType || explicitProviderType !== hintedOnlyProviderType)
+  ) {
+    const confirmation = await confirmFacturaProveedorTipoFromERP(
+      factura,
+      hintedOnlyProviderType,
+      readERP,
+    );
+    confirmedHintedProviderType = confirmation.providerType;
+    providerConfirmationIssues = confirmation.issues;
+    providerConfirmationEvidence = confirmation.evidence;
   }
-  return resolveFacturaERPAccountingRules(
+
+  const providerTypeForRuleScope =
+    explicitProviderType ?? confirmedHintedProviderType;
+  let ruleRows: FacturaERPAccountingRuleRow[] = [];
+
+  if (empresaId) {
+    let query = supabase
+      .from("facturas_recibidas_erp_rules")
+      .select("empresa_id, proveedor_id, ejercicio_erp, tipo_factura, regimen_id, fecha_ctb_policy, activo")
+      .eq("empresa_id", empresaId)
+      .eq("activo", true);
+    query = proveedorId && providerTypeForRuleScope === "acreedor"
+      ? query.or(`proveedor_id.is.null,proveedor_id.eq.${proveedorId}`)
+      : query.is("proveedor_id", null);
+
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`ERP_RULES_UNAVAILABLE: no se pudieron cargar las reglas contables (${error.message}).`);
+    }
+    ruleRows = Array.isArray(data) ? data as FacturaERPAccountingRuleRow[] : [];
+  }
+
+  const resolvedRules = resolveFacturaERPAccountingRules(
     factura,
-    Array.isArray(data) ? data as FacturaERPAccountingRuleRow[] : [],
+    ruleRows,
+    confirmedHintedProviderType,
+  );
+  let accountingResolution: FacturaERPAccountingRuleResolution = {
+    ...resolvedRules,
+    issues: [...providerConfirmationIssues, ...resolvedRules.issues],
+    ...(providerConfirmationEvidence
+      ? { evidence: { proveedor_tipo: providerConfirmationEvidence } }
+      : {}),
+  };
+  const providerType = resolveFacturaProveedorTipo(accountingResolution.factura);
+  const hasProviderTypeConflict = accountingResolution.issues.some((issue) =>
+    issue.severity === "error" && issue.field === "FRR_tipofactura"
+  );
+  let exerciseEvidence: JsonObject | undefined;
+  const withProviderConfirmationEvidence = (
+    evidence: JsonObject | undefined,
+    extra: JsonObject = {},
+  ): JsonObject | undefined => {
+    const combined: JsonObject = {
+      ...(evidence ?? {}),
+      ...extra,
+    };
+    if (providerConfirmationEvidence) {
+      combined.proveedor_tipo = providerConfirmationEvidence;
+    }
+    return Object.keys(combined).length > 0 ? combined : undefined;
+  };
+
+  if (
+    !positiveRuleInteger(accountingResolution.factura.FRR_ejercicio) &&
+    providerType &&
+    !hasProviderTypeConflict
+  ) {
+    const exerciseQuery = buildFacturaERPExerciseLookupConsulta(
+      accountingResolution.factura,
+      providerType,
+    );
+    if (exerciseQuery) {
+      try {
+        const previousResolution = accountingResolution;
+        const exercisePayload = await readERP(exerciseQuery);
+        const exerciseResolution = resolveFacturaERPExerciseFromExactInvoice(
+          previousResolution.factura,
+          providerType,
+          exercisePayload,
+        );
+        exerciseEvidence = exerciseResolution.evidence;
+        accountingResolution = {
+          factura: exerciseResolution.factura,
+          applied: {
+            ...previousResolution.applied,
+            ...exerciseResolution.applied,
+          },
+          issues: [...previousResolution.issues, ...exerciseResolution.issues],
+          evidence: withProviderConfirmationEvidence(
+            exerciseResolution.evidence,
+          ),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Error desconocido";
+        exerciseEvidence = {
+          source: "erp_exact_invoice",
+          status: "unavailable",
+        };
+        accountingResolution = {
+          ...accountingResolution,
+          issues: [
+            ...accountingResolution.issues,
+            {
+              field: "FRR_ejercicio",
+              message:
+                `No se pudo consultar la factura exacta ERP para resolver el ejercicio (${message}).`,
+              severity: "warning",
+            },
+          ],
+          evidence: withProviderConfirmationEvidence(exerciseEvidence),
+        };
+      }
+    }
+  }
+
+  if (
+    positiveRuleInteger(accountingResolution.factura.FRR_idregimen) ||
+    !providerType ||
+    hasProviderTypeConflict
+  ) {
+    return accountingResolution;
+  }
+
+  const regimenQuery = buildFacturaERPRegimenSuggestionConsulta(
+    accountingResolution.factura,
     providerType,
   );
+  if (!regimenQuery) return accountingResolution;
+
+  try {
+    const payload = await readERP(regimenQuery.consulta);
+    const historyResolution = resolveFacturaERPRegimenFromHistory(
+      accountingResolution.factura,
+      providerType,
+      payload,
+    );
+    return {
+      factura: historyResolution.factura,
+      applied: {
+        ...accountingResolution.applied,
+        ...historyResolution.applied,
+      },
+      issues: [...accountingResolution.issues, ...historyResolution.issues],
+      evidence: withProviderConfirmationEvidence(
+        historyResolution.evidence,
+        exerciseEvidence ? { ejercicio: exerciseEvidence } : {},
+      ),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error desconocido";
+    return {
+      ...accountingResolution,
+      issues: [
+        ...accountingResolution.issues,
+        {
+          field: "FRR_idregimen",
+          message:
+            `No se pudo consultar el historico ERP para resolver el regimen IVA (${message}).`,
+          severity: "warning",
+        },
+      ],
+      evidence: {
+        source: "erp_history",
+        status: "unavailable",
+        ...(exerciseEvidence ? { ejercicio: exerciseEvidence } : {}),
+        ...(providerConfirmationEvidence
+          ? { proveedor_tipo: providerConfirmationEvidence }
+          : {}),
+      },
+    };
+  }
+};
+
+/**
+ * Mantiene la evidencia contable alineada con la cabecera ya resuelta por Edge.
+ *
+ * n8n entrega estas ramas como estado inicial pendiente. Las reglas contables
+ * se aplican despues, por lo que persistir la evidencia original sin
+ * reconciliarla deja valores `null`/`resolved: false` que contradicen a la
+ * factura final. Se conservan todas las claves de auditoria originales y solo
+ * se actualiza la proyeccion de los cuatro campos contables gobernados por Edge.
+ */
+export const syncFacturaERPAccountingMatchEvidence = (
+  matchEvidence: unknown,
+  resolution: FacturaERPAccountingRuleResolution,
+): JsonObject => {
+  const objectValue = (value: unknown): JsonObject =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? value as JsonObject
+      : {};
+  const current = objectValue(matchEvidence);
+  const applied = objectValue(resolution.applied);
+  const accountingEvidence = objectValue(resolution.evidence);
+  const factura = resolution.factura;
+
+  const ejercicio = positiveRuleInteger(factura.FRR_ejercicio);
+  const tipoFactura = text(factura.FRR_tipofactura, null)?.toUpperCase() ?? null;
+  const regimen = positiveRuleInteger(factura.FRR_idregimen);
+  const fechaCtb = dateValue(factura.FRR_fechactb, null);
+  const invoiceDate = dateValue(factura.FRR_fechafactura, null);
+
+  const syncField = (
+    evidenceKey: string,
+    facturaKey: string,
+    value: string | number | null,
+    appliedSource: string,
+  ): JsonObject => {
+    const previous = objectValue(current[evidenceKey]);
+    const wasApplied = hasUsableValue(applied[facturaKey]);
+    return {
+      ...previous,
+      source: wasApplied
+        ? appliedSource
+        : text(previous.source, value === null ? "supabase_edge" : "existing_value"),
+      resolved: value !== null,
+      value,
+    };
+  };
+
+  const regimenAppliedFromHistory =
+    accountingEvidence.source === "erp_history" &&
+    accountingEvidence.status === "applied";
+  const directExerciseEvidence =
+    accountingEvidence.source === "erp_exact_invoice"
+      ? accountingEvidence
+      : objectValue(accountingEvidence.ejercicio);
+  const exerciseAppliedFromExactInvoice =
+    directExerciseEvidence.source === "erp_exact_invoice" &&
+    directExerciseEvidence.status === "applied";
+  const fechaEvidence = syncField(
+    "fecha_ctb",
+    "FRR_fechactb",
+    fechaCtb,
+    "supabase_edge_rule",
+  );
+  if (
+    hasUsableValue(applied.FRR_fechactb) &&
+    fechaCtb !== null &&
+    invoiceDate === fechaCtb
+  ) {
+    fechaEvidence.policy = "invoice_date";
+  }
+
+  const pendingFields = [
+    ["FRR_ejercicio", ejercicio],
+    ["FRR_tipofactura", tipoFactura],
+    ["FRR_idregimen", regimen],
+    ["FRR_fechactb", fechaCtb],
+  ]
+    .filter(([, value]) => value === null)
+    .map(([field]) => field);
+  const previousErpRules = objectValue(current.erp_rules);
+
+  const synchronized: JsonObject = {
+    ...current,
+    ejercicio: syncField(
+      "ejercicio",
+      "FRR_ejercicio",
+      ejercicio,
+      exerciseAppliedFromExactInvoice
+        ? "erp_exact_invoice"
+        : "supabase_edge_rule",
+    ),
+    tipo_factura: syncField(
+      "tipo_factura",
+      "FRR_tipofactura",
+      tipoFactura,
+      "supabase_edge",
+    ),
+    regimen: syncField(
+      "regimen",
+      "FRR_idregimen",
+      regimen,
+      regimenAppliedFromHistory ? "erp_history" : "supabase_edge_rule",
+    ),
+    fecha_ctb: fechaEvidence,
+    erp_rules: {
+      ...previousErpRules,
+      source: text(previousErpRules.source, "supabase_edge"),
+      resolved: pendingFields.length === 0,
+      pending_fields: pendingFields,
+    },
+  };
+
+  if (Object.keys(accountingEvidence).length > 0) {
+    synchronized.erp_accounting = accountingEvidence;
+  }
+  return synchronized;
 };
 
 export const getValidationErrors = (factura: JsonObject) => {
@@ -2394,4 +3318,49 @@ export const signJwtHs256 = async (secret: string, expSeconds: number) => {
   );
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(unsigned));
   return `${unsigned}.${encodeBytesBase64Url(new Uint8Array(signature))}`;
+};
+
+const DEFAULT_ERP_READ_WEBHOOK_URL =
+  "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma";
+
+/**
+ * Lectura ERP interna autenticada. Se comparte con los resolutores Edge para no
+ * encadenar una Edge Function protegida por usuario desde procesos de agente.
+ */
+export const fetchERPReadConsulta = async (consulta: string): Promise<unknown> => {
+  if (!isAllowedERPConsulta(consulta)) {
+    throw new Error("ERP_READ_QUERY_NOT_ALLOWED: consulta no permitida.");
+  }
+  const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET")?.trim();
+  if (!jwtSecret) {
+    throw new Error("ERP_READ_UNAVAILABLE: falta configuracion interna.");
+  }
+  const configuredExpiration = integerValue(
+    Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS"),
+    300,
+  ) ?? 300;
+  const expiration = configuredExpiration > 0 ? configuredExpiration : 300;
+  const webhookUrl =
+    Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim() ||
+    Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_URL")?.trim() ||
+    DEFAULT_ERP_READ_WEBHOOK_URL;
+  const url = new URL(webhookUrl);
+  if (url.protocol !== "https:") {
+    throw new Error("ERP_READ_UNAVAILABLE: la URL interna debe usar HTTPS.");
+  }
+  url.searchParams.set("consulta", consulta);
+  const jwt = await signJwtHs256(jwtSecret, expiration);
+  const upstream = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${jwt}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const { payload } = await parseJsonResponse(upstream);
+  const result = upstreamResult(upstream, payload);
+  if (!result.ok) {
+    throw new Error(
+      `ERP_READ_FAILED: ${result.message ?? `HTTP ${upstream.status}`}`,
+    );
+  }
+  return payload;
 };

@@ -1,6 +1,6 @@
 # Facturas recibidas - Campojoyma
 
-Última actualización: 2026-07-22
+Última actualización: 2026-07-29
 
 La referencia del contrato de escritura es
 [FACTURAS_RECIBIDAS_API_CONTRACT.md](FACTURAS_RECIBIDAS_API_CONTRACT.md). El
@@ -18,16 +18,24 @@ respuesta de referencia o una factura validada en staging no prueban que se
 haya creado un asiento. No se debe usar el estado «enviada a ERP» ni mostrar un
 número de asiento hasta recibir y verificar una creación real.
 
-El 22/07/2026 quedaron aplicadas en Supabase las migraciones de finalización
-estricta, punteos no seleccionados por defecto y revocación de los privilegios
-de mutación directa para <code>authenticated</code>/<code>anon</code> sobre
-cabecera, CTB y punteos, incluidos <code>TRUNCATE</code>,
-<code>REFERENCES</code> y <code>TRIGGER</code>. Los clientes conservan lectura;
-las mutaciones operativas pasan por Edge/RPC con <code>service_role</code>.
-También se desplegaron las cinco Edge Functions
-saneadas: lectura v8, actualización v9, ingestión v11, extracción v7 y envío
-ERP v11. El frontend y el workflow n8n permanecen pendientes de despliegue, y
-la prueba autenticada requiere una sesión o credenciales operativas.
+Supabase incorpora la finalización estricta, punteos no seleccionados por
+defecto, unicidad por circuito y revocación de privilegios de mutación directa
+para <code>authenticated</code>/<code>anon</code> sobre cabecera, CTB y
+punteos. Los clientes conservan lectura; las mutaciones operativas pasan por
+Edge/RPC con <code>service_role</code>.
+
+Las Edge Functions saneadas están desplegadas. El extractor n8n v4 está activo
+en remoto; su exportación canónica local conserva <code>active=false</code> para
+evitar activaciones accidentales al importar. El escritor n8n v2 sigue
+desactivado. El frontend está validado en local y su despliegue externo continúa
+pendiente.
+
+La sustitución remota se realizó mediante <code>n8n import:workflow</code> y se
+verificó con 27 nodos, ninguno <code>httpRequestTool</code>, y el webhook
+<code>campojoyma-factura-extraer</code> registrado. El backup previo es
+<code>/root/campojoyma-pre-full-replace-20260729T143008.json</code>, modo
+<code>600</code>, SHA-256
+<code>bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102</code>.
 
 ## Flujo
 
@@ -110,17 +118,31 @@ En las facturas nuevas, <code>FRR_id</code> queda nulo hasta que ERP devuelva un
 id creado. Un id real usado como evidencia se guarda en metadatos de extracción
 o respuesta, nunca como si staging ya estuviese sincronizado.
 
+El índice de unicidad de Supabase compara el número de factura después de
+<code>btrim</code>, es decir, sin espacios exteriores. Edge aplica además una
+normalización alfanumérica para verificar la identidad visible. Son dos capas
+complementarias; no debe describirse el índice físico como si aplicara la
+normalización alfanumérica.
+
 ## Reglas configurables
 
 Las variaciones se modelan en <code>public.facturas_recibidas_erp_rules</code> con alcance
 de empresa/proveedor cuando sea necesario.
 
-- Onduspan (acreedor ERP 17) dispone de un seed explícito para el ejercicio 25;
-  no se usa como regla general de Campojoyma.
-- El ejercicio no se deduce de la fecha de factura.
-- Tipo de factura, régimen IVA y fecha CTB se rellenan únicamente desde una
-  regla aprobada o por selección manual.
-- La fecha de factura no se copia automáticamente a la fecha CTB.
+- El ejercicio no se acepta desde la extracción ni se deduce de la fecha. Se
+  completa desde una regla explícita o desde una factura ERP exacta y única
+  por empresa, proveedor, número comparado de forma alfanumérica en Edge, fecha
+  y circuito.
+- Onduspan (acreedor ERP 17) dispone además de un seed explícito para el
+  ejercicio 25; no se usa como regla general de Campojoyma.
+- El tipo de factura procede de una regla aprobada, del circuito canónico del
+  proveedor confirmado o de una selección manual; nunca del origen del
+  albarán.
+- El régimen IVA procede de una regla aprobada o del histórico ERP estricto
+  del mismo proveedor, empresa, circuito y firma IVA (mínimo 3 casos, ganador
+  único y confianza ≥98 %); si no alcanza el umbral, queda manual.
+- La fecha CTB copia la fecha de factura mediante la política de Campojoyma
+  confirmada el 29/07/2026.
 - Los valores de un caso contrastado no se convierten en defaults globales.
 
 Para el caso de aceptación ONDUSPAN se contrastaron ejercicio 25, tipo OT y
@@ -136,7 +158,7 @@ les dé alcance.
 3. Que no exista una factura con la clave exacta:
 
 ~~~text
-FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura
+FRR_Idempresa + FRR_ejercicio + circuito + FRR_idproveedor + FRR_numerofactura
 ~~~
 
 El duplicado muestra su candidato para facilitar la revisión. Proveedor
@@ -191,6 +213,10 @@ La UI:
 - consulta el detalle tras seleccionar un proveedor;
 - diferencia avisos de errores bloqueantes;
 - evita incidencias duplicadas para el mismo campo;
+- mantiene abrir/descargar el PDF original aunque falle la previsualización;
+- valida que la descarga HTTP sea realmente un PDF antes de entregarla al
+  renderizador y reconstruye el <code>Blob</code> con
+  <code>application/pdf</code>;
 - presenta gastos, CTB y punteos en bloques independientes;
 - conserva la selección de punteos como acción manual;
 - no muestra <code>reference_only</code> como asiento creado.
@@ -198,7 +224,8 @@ La UI:
 ## Errores que bloquean el envío
 
 - Falta empresa, ejercicio, proveedor, cuenta, número o fecha de factura.
-- Falta tipo, régimen o fecha CTB sin regla aprobada/selección manual.
+- Falta tipo o régimen sin regla/evidencia suficiente, o no se ha podido
+  aplicar la política de fecha CTB.
 - El proveedor no existe en ERP.
 - La cuenta no coincide con el maestro.
 - Existe el duplicado exacto.
@@ -224,20 +251,53 @@ Los ejemplos históricos pueden seguir siendo evidencia de pruebas, siempre con
 
 - Homologar el endpoint que crea la factura/asiento y devuelve evidencias
   verificables.
-- Confirmar nuevas reglas de tipo, régimen, fecha CTB o vencimiento antes de
+- Confirmar nuevas reglas de tipo, régimen o vencimiento antes de
   automatizarlas.
-- Desplegar el frontend y reemplazar de forma controlada el workflow n8n,
-  conservando antes una exportación recuperable de la versión remota.
-- Ejecutar la prueba de aceptación autenticada de lectura, edición, extracción
-  y preflight de envío.
+- Desplegar externamente el frontend. El extractor n8n v4 ya está sustituido y
+  activo con configuración de producción; se conservó una exportación
+  recuperable de la versión anterior.
+- Ejecutar la prueba de aceptación autenticada del envío real al ERP.
+
+## Validación final del lote tratado del 29/07/2026
+
+Las diez facturas se reprocesaron contra el extractor v4, Edge y la API ya
+endurecidos. Resultado: **10/10 sin errores bloqueantes**. En todos los casos:
+
+- fecha CTB igual a la fecha de factura;
+- ejercicio 25;
+- régimen 2110;
+- tipo OT.
+
+Los punteos se conservaron como referencias ERP sin selección automática:
+
+| Factura/proveedor | Albaranes | Líneas |
+|---|---:|---:|
+| Ejido Cartón | 7 | 22 |
+| Europack | 3 | 9 |
+| Global Pack | 1 | 1 |
+| González Cañabate | 0 | 0 |
+| Megasa | 0 | 0 |
+| MMAX | 3 | 16 |
+| Onduspan | 21 | 37 |
+| Petit | 15 | 19 |
+| Repsol | 0 | 0 |
+| Smurfit | 1 | 3 |
+
+El visor PDF y sus acciones se verificaron en la UI. También se comprobó la
+apertura dinámica de las tres líneas de Smurfit. El visor valida los bytes,
+renderiza el documento y mantiene disponibles abrir y descargar incluso si
+pdf.js no termina la previsualización.
 
 ## Errores a evitar
 
 - Usar <code>acreedores_cache</code> como fuente o fallback.
 - Tratar Supabase como la base real de ERP.
 - Exponer el JWT en variables <code>VITE_*</code>.
+- Versionar secretos del extractor: JWT, ingest, renderizador PDF y OpenAI se
+  referencian únicamente mediante credenciales administradas por n8n.
 - Cargar el histórico completo en la pantalla.
-- Inferir ejercicio, tipo, régimen, fecha CTB o vencimiento.
+- Inferir ejercicio, tipo, régimen o vencimiento fuera de las reglas aprobadas,
+  o reutilizar la política de fecha CTB de Campojoyma en otro cliente.
 - Mezclar gastos, CTB, punteos y asiento.
 - Seleccionar punteos automáticamente.
 - Rellenar ids ERP antes de una escritura confirmada.

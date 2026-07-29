@@ -6,6 +6,7 @@ import {
   buildERPContractV2,
   corsHeaders,
   getFacturaSyncEntryDecision,
+  getFacturaProveedorTipoFromMatchEvidence,
   getSelectedPunteoPreflightIssues,
   getERPProviderPreflightIssues,
   getValidationErrorsForFactura,
@@ -266,10 +267,15 @@ Deno.serve(async (req) => {
     }
 
     let authoritativeFactura = factura as JsonObject;
+    const matchedProveedorTipo = getFacturaProveedorTipoFromMatchEvidence(
+      (factura as JsonObject).match_evidence,
+      (factura as JsonObject).FRR_idproveedor,
+    );
     if (!reconciliationMode) {
       const accountingRules = await loadAndResolveFacturaERPAccountingRules(
         auth.serviceClient,
         factura as JsonObject,
+        matchedProveedorTipo,
       );
       authoritativeFactura = accountingRules.factura;
       const structuralIssues = await getValidationErrorsForFactura(authoritativeFactura);
@@ -667,7 +673,10 @@ Deno.serve(async (req) => {
     }
 
     const proveedorId = integerValue(authoritativeFactura.FRR_idproveedor, null);
-    const proveedorTipo = resolveFacturaProveedorTipo(authoritativeFactura);
+    const proveedorTipo = resolveFacturaProveedorTipo(
+      authoritativeFactura,
+      matchedProveedorTipo,
+    );
     if (!proveedorTipo) {
       return jsonResponse(
         {

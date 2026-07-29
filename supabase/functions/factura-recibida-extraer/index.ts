@@ -5,6 +5,7 @@ import {
   cleanBase64,
   corsHeaders,
   ensureArchivoPdf,
+  getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
@@ -23,6 +24,7 @@ import {
   sanitizeUntrustedFacturaAccountingFields,
   sanitizeUntrustedPunteoSelections,
   signJwtHs256,
+  syncFacturaERPAccountingMatchEvidence,
   text,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
@@ -265,14 +267,19 @@ Deno.serve(async (req) => {
         normalized.extraction.match_evidence ??
         normalized.extraction.matching,
     );
-    const proveedorTipo = text(
-      pick(asObject(normalizedMatchEvidence.proveedor), ["entity_type", "proveedor_tipo"]),
-      null,
+    const proveedorTipo = getFacturaProveedorTipoFromMatchEvidence(
+      normalizedMatchEvidence,
+      extractionPersistence.factura.FRR_idproveedor,
     );
     const accountingRules = await loadAndResolveFacturaERPAccountingRules(
       serviceClient,
       extractionPersistence.factura,
       proveedorTipo,
+    );
+    const accountingEvidence = asObject(accountingRules.evidence);
+    const resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
+      normalizedMatchEvidence,
+      accountingRules,
     );
     const resolvedFrr = accountingRules.factura;
     const persistedFrr = {
@@ -368,10 +375,13 @@ Deno.serve(async (req) => {
       remote_frr_id: null,
       is_readonly_reference: false,
       match_status: normalized.warnings.length > 0 || hasBlockingErrors ? "ambiguous" : "matched",
-      match_evidence: normalizedMatchEvidence,
+      match_evidence: resolvedMatchEvidence,
       extraction: {
         ...normalized.extraction,
-        metadata: normalized.metadata,
+        metadata: {
+          ...normalized.metadata,
+          erp_accounting: accountingEvidence,
+        },
       },
       validation_errors: validationErrors,
     };

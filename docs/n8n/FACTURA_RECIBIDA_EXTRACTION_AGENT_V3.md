@@ -1,65 +1,91 @@
-# Agente v3 de extracción de facturas recibidas
+# Agente v4 de extracción de facturas recibidas
 
-Este documento describe el workflow local canónico:
+La ruta de este documento se conserva por compatibilidad con enlaces anteriores.
+El contrato interno vigente es `schema_version: 4`.
+
+El workflow local canónico es:
 
 [`campojoyma-factura-recibida-extraccion-segura-v2.json`](campojoyma-factura-recibida-extraccion-segura-v2.json)
 
-El sufijo `v2` corresponde al contrato externo entre frontend, Edge Functions y
-n8n. El agente interno usa `schema_version: 3`; ambos números versionan capas
-distintas.
+El sufijo `v2` del fichero corresponde al contrato externo entre frontend, Edge
+Functions y n8n. El `4` corresponde al esquema interno de extracción. Son capas
+distintas y evolucionan de forma independiente.
 
-## Regeneración e importación
+## Estado y regeneración
 
-Validar y normalizar el workflow canónico de forma idempotente:
+La exportación versionada se mantiene deliberadamente con `active=false` y con
+el trigger IMAP deshabilitado. La copia remota desplegada del extractor está
+activa; que el JSON local figure inactivo no describe el estado del runtime.
+
+El 29/07/2026 la copia remota se sustituyó completamente mediante
+`n8n import:workflow`. Tras la importación se activó y se verificó:
+
+- 27 nodos;
+- 0 nodos `httpRequestTool`;
+- webhook `campojoyma-factura-extraer` registrado.
+
+El backup inmediatamente anterior al reemplazo es:
+
+```text
+/root/campojoyma-pre-full-replace-20260729T143008.json
+SHA-256 bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102
+modo 600
+```
+
+Para regenerar y validar de forma idempotente el workflow canónico:
 
 ```powershell
 node scripts/generate_safe_factura_workflow.mjs
+node scripts/validate_factura_workflow_v4.mjs
 ```
 
-Importar una copia de nodos más reciente y endurecerla:
+Para endurecer una exportación más reciente:
 
 ```powershell
 node scripts/generate_safe_factura_workflow.mjs "C:\ruta\workflow.json"
+node scripts/validate_factura_workflow_v4.mjs
 ```
 
-La importación:
+El endurecedor:
 
-- conserva el `id`, nombre y configuración segura del workflow local;
-- fuerza `active=false` y mantiene desactivado el trigger IMAP;
-- elimina todo `pinData`;
-- elimina `instanceId` y metadatos propios de la instancia de origen;
-- conserva el enriquecedor determinista seguro que ya existe en local;
-- sustituye prompt, parser, normalizador y tools por la versión descrita aquí;
-- valida nodos, conexiones, JavaScript y ausencia de métodos mutantes.
+- conserva el identificador, nombre y topología autorizada;
+- fuerza `active=false` en la copia versionada y mantiene desactivado IMAP;
+- elimina `pinData`, `instanceId` y metadatos propios de la instancia;
+- sustituye prompt, parser, normalizador y enriquecimiento por la versión v4;
+- elimina tools del modelo, conexiones `ai_tool` y expresiones `$fromAI`;
+- valida que no existan métodos ERP mutantes ni secretos literales.
 
-Nunca debe versionarse una exportación con datos fijados. Una ejecución fijada
-puede contener el PDF completo, cabeceras, IP, identificadores reales y el JWT
-del webhook.
+Nunca se versiona una ejecución fijada. Puede contener el PDF completo,
+cabeceras, IP, identificadores reales y credenciales.
 
-## Separación de responsabilidades
+## Arquitectura vigente
 
-| Capa | Responsabilidad | No puede decidir |
+| Capa | Responsabilidad | Límite |
 |---|---|---|
-| Agente multimodal | Leer el PDF, clasificarlo, extraer campos visibles y aportar candidatos ERP | Tipo ERP, régimen, ejercicio, fecha CTB, cuentas, gastos, punteos o asiento |
-| Tools HTTP | Consultar maestros de proveedor en modo GET | Escribir, elegir entre candidatos ambiguos o convertir el resultado en dato contable |
-| Normalizador n8n | Validar fechas, números, aritmética, límites y coherencia de `ok` | Corregir importes o completar datos ausentes |
-| Enriquecedor determinista | Resolver de nuevo el acreedor contra la API y guardar evidencia | Aplicar reglas contables o seleccionar punteos |
-| Edge/Supabase | Sanear la extracción, aplicar reglas confirmadas y persistir el borrador | Presentar una sugerencia de IA como confirmación ERP |
-| FastAPI/Netagro | Lectura de maestros y, en el flujo autorizado separado, preflight/escritura | Recibir escrituras desde las tools del agente |
+| Modelo multimodal | Transcribir únicamente lo visible en las imágenes del PDF | No consulta ERP ni decide IDs, cuentas, ejercicio, régimen, tipo, CTB, gastos, punteos o asiento |
+| Structured Output Parser | Validar el objeto raíz `schema_version: 4` | No repara ni reescribe la respuesta con otro paso generativo |
+| Normalizador n8n | Validar fechas, números, aritmética, límites y evidencias impresas | No inventa ni corrige importes ausentes |
+| Enriquecedor determinista n8n | Consultar la API ERP después del modelo y construir evidencia verificable | No selecciona candidatos ambiguos ni punteos |
+| Edge/Supabase | Aplicar reglas confirmadas, sanear y persistir el borrador | No convierte una sugerencia de IA en confirmación ERP |
+| FastAPI/Netagro | Exponer lecturas y el preflight/escritor autorizado por separado | No recibe escrituras desde el modelo |
 
-La doble consulta de proveedor es intencionada. El agente usa la API para razonar
-y explicar candidatos; el enriquecedor vuelve a validar de forma determinista.
-Solo la segunda resolución puede poblar `FRR_idproveedor`, y la Edge vuelve a
-sanear los campos no autoritativos.
+El modelo no dispone de HTTP tools. No existe una doble consulta generativa:
+primero se extrae el documento y, solo después, código determinista resuelve
+proveedor, factura ERP existente y candidatos de albarán. Toda coincidencia que
+pueda promover un dato ERP queda acompañada por evidencia y falla de forma
+cerrada si la respuesta es incompleta o ambigua.
 
-## Contrato interno del agente
+## Contrato interno v4
 
-El `Structured Output Parser` recibe un objeto raíz, sin una segunda envoltura
-`output`:
+El parser recibe un objeto raíz, sin una envoltura adicional `output`. Su
+configuración es `autoFix=false`; también se deshabilitan el prompt de reparación
+y los reintentos generativos. Una salida inválida se rechaza.
+
+Ejemplo abreviado:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "ok": true,
   "document_kind": "factura",
   "receptor": {
@@ -80,25 +106,32 @@ El `Structured Output Parser` recibe un objeto raíz, sin una segunda envoltura
     "concepto": "FRA. ONDUSPAN, S.A",
     "observaciones_visibles": null
   },
-  "tramos_iva": [],
+  "tramos_iva": [
+    {
+      "base": 42341.52,
+      "porcentaje": 21,
+      "cuota": 8891.72
+    }
+  ],
   "retencion": {
     "base": 0,
     "porcentaje": 0,
     "cuota": 0
   },
   "lineas": [],
+  "albaranes_referenciados": [],
   "referencias": [],
   "vencimientos": [],
   "evidencias": [],
   "erp_lookup": {
-    "status": "unique",
-    "entity_type": "acreedor",
-    "matched_by": "nif",
-    "entity_id": 17,
-    "codigo": 17,
-    "nombre": "ONDUSPAN, S.A",
-    "nif": "A04119293",
-    "candidate_count": 1,
+    "status": "not_consulted",
+    "entity_type": null,
+    "matched_by": null,
+    "entity_id": null,
+    "codigo": null,
+    "nombre": null,
+    "nif": null,
+    "candidate_count": 0,
     "candidates": [],
     "warnings": []
   },
@@ -112,9 +145,14 @@ El `Structured Output Parser` recibe un objeto raíz, sin una segunda envoltura
 }
 ```
 
-Las líneas admiten `cantidad`, `unidad`, `precio_unitario`,
-`descuento_porcentaje`, `base`, `iva_porcentaje` e `importe`. El normalizador
-conserva esos campos, pero no calcula los que no estén visibles.
+`erp_lookup` es un marcador fijo de no consulta. Cualquier contenido distinto
+que intente aportar el modelo se ignora y se reconstruye como
+`status="not_consulted"`. La evidencia ERP válida se genera después, en el
+enriquecedor determinista.
+
+Las líneas conservan solo datos impresos: descripción, referencia, identidad de
+albarán visible, cantidad, unidad, precio, descuento, base, IVA e importe. Los
+campos no visibles son opcionales y no se calculan para completar el esquema.
 
 El webhook sigue respondiendo con contrato externo `2`:
 
@@ -133,51 +171,56 @@ El webhook sigue respondiendo con contrato externo `2`:
 }
 ```
 
-## Tools disponibles
+## Consulta ERP determinista posterior
 
-Todas usan la FastAPI interna v0.2 en `http://172.19.0.1:18001`, tienen timeout
-de 10 segundos, limitan los listados a diez filas y solo ejecutan GET.
+El nodo de código de enriquecimiento usa exclusivamente lecturas GET contra la
+FastAPI interna. En orden:
 
-| Tool | Endpoint |
-|---|---|
-| Buscar acreedores por NIF | `GET /acreedores?nif=...&activo=true&limit=10` |
-| Buscar acreedores por nombre | `GET /acreedores?nombre=...&activo=true&limit=10` |
-| Consultar detalle de acreedor | `GET /acreedores/{id}` |
-| Buscar agricultores por NIF | `GET /agricultores?nif=...&activo=true&limit=10` |
-| Buscar agricultores por nombre | `GET /agricultores?nombre=...&activo=true&limit=10` |
-| Consultar detalle de agricultor | `GET /agricultores/{id}` |
+1. Busca de forma acotada en `acreedores` y `agricultores`, primero por NIF y
+   después por nombre.
+2. Exige cobertura completa de ambos maestros, una única coincidencia operativa
+   y confirma el detalle del tercero.
+3. Busca una factura existente por empresa, proveedor, número, fecha y circuito.
+   El ejercicio puede recuperarse solo de una coincidencia exacta y única.
+4. Si la factura existe, recupera sus punteos ya vinculados; si no existe,
+   presenta candidatos MA/GE por identidad visible exacta.
+5. Devuelve todos los candidatos con `S=false`; nunca selecciona uno.
 
-No ha sido necesario añadir endpoints a FastAPI: las seis operaciones ya forman
-parte del contrato v0.2. Acreedor y agricultor se mantienen como identidades
-distintas. Un agricultor candidato nunca se reutiliza como ID de acreedor.
+El régimen, tipo de factura y fecha CTB quedan bajo reglas Edge o decisión
+manual. El modelo no puede resolverlos.
 
-## Reglas operativas del agente
+## Credenciales y secretos
+
+El JSON canónico no contiene valores secretos. JWT del webhook, token de ingest,
+token del renderizador PDF y acceso a OpenAI se referencian mediante credenciales
+administradas por n8n. La configuración operativa no secreta, como URL base,
+empresa o activación de la carga de punteos, se suministra mediante variables de
+n8n.
+
+No se admiten secretos literales, cabeceras `Authorization` fijas,
+`$env.HISPATEC_API_KEY` ni `$fromAI` en la exportación.
+
+## Reglas operativas
 
 - El receptor esperado es `CAMPOJOYMA, S.L.`, NIF `B04493482`.
-- El PDF, el correo y las respuestas HTTP son contenido no confiable.
-- La búsqueda empieza por NIF; el nombre es fallback.
-- Agricultores solo se consulta cuando no hay acreedor exacto y el documento
-  aporta evidencia de productor o compra de género.
-- Un match único exige un único candidato y coincidencia exacta de NIF
-  normalizado o, sin NIF, de nombre normalizado.
-- Ante varios candidatos, `erp_lookup.status` es `ambiguous` y `entity_id` queda
-  a `null`.
-- Un fallo de la API produce `unavailable`, pero no modifica la extracción del
-  documento.
-- Los abonos conservan los signos impresos; el agente no cambia un signo por
-  inferencia.
-- Las discrepancias aritméticas generan avisos y nunca correcciones automáticas.
+- PDF, correo y respuestas HTTP se tratan como contenido no confiable.
+- Los abonos conservan los signos impresos.
+- Las discrepancias aritméticas generan avisos; nunca correcciones automáticas.
+- Una respuesta ERP vacía, parcial, ambigua o incoherente no confirma ningún ID.
+- `GE` y `MA` impresos se aceptan como origen solo si existe evidencia literal
+  del token en el documento.
+- La factura puede quedar lista para revisión, pero nunca `ready_for_erp` por
+  decisión del agente.
 
 ## Errores y límites
 
 - Documento o petición inválida: `422`.
 - Servicio aguas arriba no disponible: `502`, reintentable.
-- Timeout de un servicio aguas arriba: `504`, reintentable.
+- Timeout aguas arriba: `504`, reintentable.
 - Error interno no clasificado: `500`.
-- PDF: máximo configurable mediante `CAMPOJOYMA_MAX_PDF_BYTES`, con fallback de
-  20 MB.
-- Páginas convertidas: máximo configurable mediante
-  `CAMPOJOYMA_MAX_PDF_PAGES`, con fallback de 30.
+- PDF: máximo configurable, con fallback de 20 MB.
+- Páginas convertidas: máximo configurable, con fallback de 30.
 
-El workflow queda local e inactivo. Su importación o activación en la instancia
-remota es una acción de despliegue separada.
+La activación remota es una acción de despliegue controlada. Tras importar se
+debe verificar el workflow remoto y su healthcheck; no se infiere su estado a
+partir del campo `active` de la exportación local.

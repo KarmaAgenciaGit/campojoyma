@@ -9,15 +9,15 @@ verificarse en el diario oficial.
 
 Referencias:
 
-- [OpenAPI FastAPI v0.2.0](openapi/netagro-test-api-v0.2.0.json)
+- [OpenAPI FastAPI v0.2.4](openapi/netagro-test-api-v0.2.0.json)
 - [Runbook de homologación y despliegue](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
-- [Agente de extracción v3 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
+- [Agente de extracción v4 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
 
 El nombre del fichero OpenAPI se conserva por compatibilidad, pero su contenido
-se ha regenerado desde la API v0.2.2. La resolución canónica del proveedor y la
-lectura de albaranes GE quedaron desplegadas y verificadas mediante readback el
-28/07/2026.
+corresponde a la API v0.2.4. La resolución canónica del proveedor, la lectura de
+albaranes GE y la búsqueda exacta de facturas sin conocer previamente el
+ejercicio forman parte del contrato vigente.
 
 ## Principios del modelo
 
@@ -104,9 +104,21 @@ FRR_Idempresa
 FRR_ejercicio
 FRR_idproveedor
 FRR_numerofactura
+FRR_tipofactura (circuito canónico)
 ```
 
-También se requiere `FRR_tipofactura` para generar el número interno.
+La unicidad física de staging usa empresa, ejercicio, proveedor, número de
+factura sin espacios exteriores (`btrim`) y circuito canónico. `GE` pertenece
+al circuito `agricultor`; cualquier otro código no vacío pertenece a
+`acreedor`; un tipo nulo o vacío queda en `desconocido`, separado de los dos
+anteriores. Edge aplica además una normalización alfanumérica para comparar
+identidades visibles antes de persistir. No debe confundirse esa comparación
+más estricta con la expresión del índice de Supabase. De este modo, un mismo
+identificador numérico puede existir legítimamente en los maestros de
+agricultores y acreedores sin desactivar la protección contra duplicados dentro
+de cada circuito.
+
+`FRR_tipofactura` también se requiere para generar el número interno.
 
 El cliente v2 no puede inyectar:
 
@@ -587,7 +599,7 @@ Operaciones principales:
 | Operación | Uso |
 |---|---|
 | `GET /facturasrecibidas` | Listado paginado y filtrado de facturas recibidas. |
-| `GET /facturasrecibidas/buscar` | Duplicados por empresa, ejercicio, proveedor y número. |
+| `GET /facturasrecibidas/buscar` | Búsqueda exacta por empresa, proveedor, número y circuito; acepta ejercicio o fecha de factura. |
 | `GET /facturasrecibidas/tipos` | Valores históricos de tipo de factura. |
 | `GET /acreedores` | Búsqueda por NIF, texto o código. |
 | `GET /acreedores/{id}` | Detalle del acreedor. |
@@ -604,9 +616,21 @@ Operaciones principales:
 | `GET /series-factura` | Series auxiliares; no mapear automáticamente a tipo de factura. |
 | `GET /conceptos-factura` | Conceptos auxiliares; no sustituir automáticamente `FRR_Concepto`. |
 
-El OpenAPI enlazado sigue siendo la fuente de la superficie v0.2.0. Para los
-campos canónicos de proveedor y la lectura GE añadidos en v0.2.2 prevalece este
-contrato hasta regenerar y sincronizar la instantánea OpenAPI.
+La búsqueda exacta requiere siempre `empresa_id`, `proveedor_id` y
+`numero_factura`. `ejercicio` es opcional desde v0.2.4:
+
+- con `ejercicio`, la consulta filtra ese ejercicio exacto;
+- sin `ejercicio`, `fecha_factura` pasa a ser obligatoria;
+- `tipo_factura` acota el circuito canónico y evita confundir `GE` con
+  acreedores;
+- una petición sin ejercicio ni fecha devuelve `422`.
+
+Aunque la API conserva `tipo_factura` como filtro opcional para compatibilidad,
+el flujo Campojoyma debe enviarlo siempre que conozca el circuito.
+
+El consumidor debe validar también empresa, proveedor, número, fecha y circuito
+de cada candidato. Una respuesta vacía, múltiple o incoherente no permite
+recuperar el ejercicio ni declarar un duplicado único.
 
 ## Errores y códigos HTTP
 
@@ -631,8 +655,13 @@ Los errores de validación funcional se devuelven como:
 
 ## Flujo n8n y finalización
 
-El webhook v2 dedicado debe permanecer desactivado hasta cerrar los bloqueos del
-runbook. Cuando se autorice:
+Hay dos workflows con estados distintos:
+
+- el extractor v4 remoto está activo y entrega borradores a Supabase;
+- el escritor v2 permanece desactivado hasta cerrar los bloqueos de
+  contabilización del runbook.
+
+Cuando se autorice el escritor:
 
 1. Validar formato, UUID y arrays.
 2. Enviar siempre el preflight con `dry_run=true`.
@@ -648,24 +677,42 @@ runbook. Cuando se autorice:
 8. Si falta una lectura o el asiento solicitado no está en `created`, devolver
    `reconciliation_required`/`accounting_unverified`, con `retry_safe=false`.
 
-El workflow exportado:
+Las exportaciones versionadas:
 
-- usa autenticación JWT administrada por n8n;
-- no contiene el secreto;
-- no tiene `pinData`;
-- no guarda ejecuciones correctas, erróneas ni manuales con payloads.
+- usan autenticación JWT administrada por n8n;
+- no contienen secretos: JWT, ingest, renderizador PDF y OpenAI se resuelven
+  mediante credenciales n8n;
+- no tienen `pinData`;
+- no guardan ejecuciones correctas, erróneas ni manuales con payloads.
+
+La exportación local del extractor conserva `active=false` para que importarla
+no active nada por accidente. Esto no contradice que la copia remota desplegada
+esté activa.
 
 ## Estado operativo actual
 
-- API activa: v0.1.0 en `karma-box:8000`, expuesta al VPS por `18000`.
-- API v2 activa: v0.2.2 en `karma-box:8001`, expuesta al VPS por `18001`, con
-  proveedor canónico y lectura GE histórica de solo lectura.
-- El despliegue se verificó por versión, `/health`, readback de los casos
-  `FRR_id=49489`, `49310` y `49305`, suite de 43 pruebas y gate de grants.
-- Workflow v2 importado pero `active=false`.
+- API v2 vigente: v0.2.4 en `karma-box:8001`, expuesta al VPS por `18001`, con
+  proveedor canónico, lectura GE histórica y búsqueda exacta por fecha cuando
+  aún no se conoce el ejercicio.
+- El release supera 94 pruebas automatizadas y el gate de grants de solo
+  lectura. No se ha ejecutado DDL ni mutación contra MariaDB Netagro.
+- Extractor n8n v4: reemplazado completamente, activo en remoto con 27 nodos,
+  0 `httpRequestTool` y el webhook `campojoyma-factura-extraer` registrado. La
+  exportación local canónica permanece inactiva.
+- Escritor n8n v2: desactivado.
 - Escritura MA deshabilitada por falta de grants.
 - Contabilización v2 bloqueada por ausencia del mecanismo oficial y del diario.
 - Producción no se ha modificado.
+
+El lote final de diez facturas superó la extracción e ingesta sin errores
+bloqueantes. Todas quedaron con fecha CTB igual a la fecha de factura,
+ejercicio 25, régimen 2110 y tipo OT. Esta aceptación valida el flujo de
+borrador y revisión; no altera las restricciones del escritor ni acredita la
+creación de un asiento.
+
+El backup previo al reemplazo remoto está en
+`/root/campojoyma-pre-full-replace-20260729T143008.json`, modo `600`, SHA-256
+`bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102`.
 
 La recuperación, futuras promociones y rollback están detallados en el
 [runbook](FACTURAS_RECIBIDAS_API_V2_STAGING.md).

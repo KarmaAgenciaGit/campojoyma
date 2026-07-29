@@ -3,6 +3,7 @@ import {
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   corsHeaders,
   extractOperationalERPAvailabilityWarnings,
+  getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   integerValue,
   jsonResponse,
@@ -14,6 +15,7 @@ import {
   requestIdValue,
   requireRouteUser,
   rpcErrorStatus,
+  syncFacturaERPAccountingMatchEvidence,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
 
@@ -66,6 +68,14 @@ Deno.serve(async (req) => {
     const accountingRules = await loadAndResolveFacturaERPAccountingRules(
       auth.serviceClient,
       validationBase,
+      getFacturaProveedorTipoFromMatchEvidence(
+        validationBase.match_evidence,
+        validationBase.FRR_idproveedor,
+      ),
+    );
+    const resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
+      validationBase.match_evidence,
+      accountingRules,
     );
     const structuralIssues = await getValidationErrorsForFactura(accountingRules.factura);
     const preservedOperationalWarnings = extractOperationalERPAvailabilityWarnings(
@@ -98,6 +108,7 @@ Deno.serve(async (req) => {
         proveedor_nombre: body.proveedor_nombre ?? facturaInput.proveedor_nombre ?? current.proveedor_nombre ?? null,
         proveedor_nif: body.proveedor_nif ?? facturaInput.proveedor_nif ?? current.proveedor_nif ?? null,
         estado: nextEstado,
+        match_evidence: resolvedMatchEvidence,
         validation_errors: validationErrors,
       },
       p_ctb: ctb,

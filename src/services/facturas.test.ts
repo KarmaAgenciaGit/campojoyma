@@ -23,8 +23,10 @@ import {
   fetchAlbaranMaterialLineas,
   fetchFacturaPunteables,
   fetchFacturaPunteosLive,
+  facturaProveedorERPKind,
   getFacturaERPSendConfirmation,
   getFacturaERPReconciliationRequestId,
+  getPunteoImporte,
   mapProveedorERPDetail,
   getFunctionInvokeErrorMessage,
   isERPReferenceFactura,
@@ -163,6 +165,7 @@ describe('reintentos ERP', () => {
       id: 'factura-finalizada-antigua',
       estado: 'enviada_erp',
       sync_status: 'sent',
+      last_request_id: 'c2caa09c-3574-46f7-9b47-11c6651b8e55',
       FRR_id: 49305,
       remote_frr_id: null,
       validation_errors: [],
@@ -172,6 +175,7 @@ describe('reintentos ERP', () => {
     } as never);
 
     expect(factura.remote_frr_id).toBe(49305);
+    expect(factura.last_request_id).toBe('c2caa09c-3574-46f7-9b47-11c6651b8e55');
     expect(getFacturaERPSendConfirmation(factura)).toBe('confirmed');
   });
 });
@@ -729,6 +733,7 @@ describe('validacion ERP autoritativa', () => {
     fr_alm: '1',
     ejercicio: 25,
     numero_factura: 'A-00748886',
+    fr_sufa: 'OT',
   };
 
   it('solo acepta una coincidencia exacta y unica por NIF normalizado', async () => {
@@ -793,6 +798,84 @@ describe('validacion ERP autoritativa', () => {
     expect(invocation?.body?.consulta).toBe(
       'agricultores?nif=B13702956&activo=true&limit=25',
     );
+  });
+
+  it('usa el circuito confirmado de match_evidence solo cuando falta tipo explicito', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          total: 1,
+          items: [{
+            codigo: 1957,
+            nombre: 'ALMERITERRA-BIO S.L.',
+            nif: 'B13702956',
+            cuenta_id: '40090001957',
+          }],
+        },
+      },
+      error: null,
+    } as never);
+
+    const matchEvidence = {
+      proveedor: {
+        matched: true,
+        provider_id: 1957,
+        entity_type: 'agricultor',
+      },
+      erp_accounting: {
+        proveedor_tipo: {
+          source: 'erp_provider_detail',
+          status: 'confirmed',
+          provider_id: 1957,
+          provider_type: 'agricultor',
+        },
+      },
+    };
+    await localizarProveedorERP({
+      nif: 'B13702956',
+      tipoFactura: null,
+      matchEvidence,
+    });
+    const invocation = invokeMock.mock.calls[0]?.[1] as
+      | { body?: { consulta?: string } }
+      | undefined;
+
+    expect(invocation?.body?.consulta).toBe(
+      'agricultores?nif=B13702956&activo=true&limit=25',
+    );
+
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: { total: 0, items: [] },
+      },
+      error: null,
+    } as never);
+    await localizarProveedorERP({
+      nif: 'B13702956',
+      tipoFactura: null,
+      matchEvidence,
+      expectedProviderId: 17,
+    });
+    const mismatchedInvocation = invokeMock.mock.calls[1]?.[1] as
+      | { body?: { consulta?: string } }
+      | undefined;
+    expect(mismatchedInvocation?.body?.consulta).toBe(
+      'acreedores?nif=B13702956&activo=true&limit=25',
+    );
+
+    expect(facturaProveedorERPKind(null, matchEvidence)).toBe('agricultor');
+    expect(facturaProveedorERPKind('OT', matchEvidence)).toBe('acreedor');
+    expect(facturaProveedorERPKind(null, {
+      proveedor: { matched: false, entity_type: 'agricultor' },
+    })).toBe('acreedor');
+    expect(facturaProveedorERPKind(null, {
+      proveedor: { matched: true, provider_id: 1957, entity_type: 'agricultor' },
+    }, 1957)).toBe('acreedor');
+    expect(facturaProveedorERPKind(null, matchEvidence, 17)).toBe('acreedor');
   });
 
   it('no resuelve automaticamente un acreedor bloqueado aunque coincida el NIF', async () => {
@@ -1128,19 +1211,38 @@ describe('validacion ERP autoritativa', () => {
       ejercicio: 25,
       proveedorId: 17,
       numeroFactura: 'A-00748886',
+      tipoFactura: 'ot',
     });
     const query26 = buildFacturaDuplicateConsulta({
       empresaId: 1,
       ejercicio: 26,
       proveedorId: 17,
       numeroFactura: 'A-00748886',
+      tipoFactura: 'OT',
     });
 
     expect(query25).toBe(
-      'facturasrecibidas/buscar?empresa_id=1&ejercicio=25&proveedor_id=17&numero_factura=A-00748886',
+      'facturasrecibidas/buscar?empresa_id=1&ejercicio=25&proveedor_id=17&numero_factura=A-00748886&tipo_factura=OT',
     );
     expect(query26).toContain('ejercicio=26');
     expect(query25).not.toBe(query26);
+  });
+
+  it('prioriza el importe asignado a factura al total bruto del punteo', () => {
+    expect(getPunteoImporte({
+      importe_factura: 87.4,
+      importe: 999,
+      importe_punteado: 888,
+    })).toBe(87.4);
+    expect(getPunteoImporte({
+      importe_factura: 0,
+      importe: 999,
+    })).toBe(0);
+    expect(getPunteoImporte({
+      importe_factura: null,
+      importe: 12.5,
+      importe_punteado: 11,
+    })).toBe(12.5);
   });
 
   it('distingue proveedor inexistente de API no disponible', async () => {
@@ -1203,6 +1305,60 @@ describe('validacion ERP autoritativa', () => {
       nombre: 'ALMERITERRA-BIO S.L.',
       cuenta: '40090001957',
     });
+    expect(result.issues).toEqual([]);
+  });
+
+  it('prevalida el circuito GE confirmado aunque la cabecera aun no tenga tipo', async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        data: {
+          contract_version: 2,
+          ok: true,
+          data: {
+            codigo: 1957,
+            nombre: 'ALMERITERRA-BIO S.L.',
+            nif: 'B13702956',
+            cuenta_id: '40090001957',
+          },
+        },
+        error: null,
+      } as never)
+      .mockResolvedValueOnce({
+        data: { contract_version: 2, ok: true, data: { items: [] } },
+        error: null,
+      } as never);
+
+    const result = await preflightFacturaRecibidaERP({
+      ...facturaPreflight,
+      fr_sufa: null,
+      proveedor_codigo: '1957',
+      proveedor_cuenta: '40090001957',
+      numero_factura: 'FTV26/217',
+      match_evidence: {
+        proveedor: {
+          matched: true,
+          provider_id: 1957,
+          entity_type: 'agricultor',
+        },
+        erp_accounting: {
+          proveedor_tipo: {
+            source: 'erp_provider_detail',
+            status: 'confirmed',
+            provider_id: 1957,
+            provider_type: 'agricultor',
+          },
+        },
+      },
+    });
+    const providerConsulta = (
+      invokeMock.mock.calls[0]?.[1] as { body?: { consulta?: string } }
+    )?.body?.consulta;
+    const duplicateConsulta = (
+      invokeMock.mock.calls[1]?.[1] as { body?: { consulta?: string } }
+    )?.body?.consulta;
+
+    expect(providerConsulta).toBe('agricultores/1957');
+    expect(duplicateConsulta).toContain('tipo_factura=GE');
     expect(result.issues).toEqual([]);
   });
 
@@ -1278,5 +1434,41 @@ describe('tipoFacturaRadioValue', () => {
     expect(tipoFacturaRadioValue('MA')).toBe('OT');
     expect(tipoFacturaRadioValue('GV')).toBe('OT');
     expect(tipoFacturaRadioValue(null)).toBe('');
+  });
+
+  it('usa una evidencia confirmada solo como fallback si falta cabecera', () => {
+    const agricultorMatch = {
+      proveedor: { matched: true, provider_id: 1957, entity_type: 'agricultor' },
+      erp_accounting: {
+        proveedor_tipo: {
+          source: 'erp_provider_detail',
+          status: 'confirmed',
+          provider_id: 1957,
+          provider_type: 'agricultor',
+        },
+      },
+    };
+    const acreedorMatch = {
+      proveedor: { matched: true, provider_id: 17, entity_type: 'acreedor' },
+      erp_accounting: {
+        proveedor_tipo: {
+          source: 'erp_provider_detail',
+          status: 'confirmed',
+          provider_id: 17,
+          provider_type: 'acreedor',
+        },
+      },
+    };
+
+    expect(tipoFacturaRadioValue(null, agricultorMatch, 1957)).toBe('GE');
+    expect(tipoFacturaRadioValue(null, acreedorMatch, 17)).toBe('OT');
+    expect(tipoFacturaRadioValue('OT', agricultorMatch, 1957)).toBe('OT');
+    expect(tipoFacturaRadioValue(null, agricultorMatch, 17)).toBe('');
+    expect(tipoFacturaRadioValue(null, {
+      proveedor: { matched: false, entity_type: 'agricultor' },
+    })).toBe('');
+    expect(tipoFacturaRadioValue(null, {
+      proveedor: { matched: true, provider_id: 1957, entity_type: 'agricultor' },
+    }, 1957)).toBe('');
   });
 });

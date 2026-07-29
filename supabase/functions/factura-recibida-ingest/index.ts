@@ -5,6 +5,7 @@ import {
   corsHeaders,
   createServiceClient,
   ensureArchivoPdf,
+  getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
@@ -24,6 +25,7 @@ import {
   resolveFacturaProveedorTipo,
   rpcErrorStatus,
   sanitizeAuditValue,
+  syncFacturaERPAccountingMatchEvidence,
   text,
   timestampValue,
   type JsonObject,
@@ -158,9 +160,9 @@ Deno.serve(async (req) => {
       try {
         const requestId = requestIdValue(input.request_id ?? (inputs.length === 1 ? envelope.request_id : null));
         const normalized = normalizeOnePayload(input, trustedImportSignal);
-        const proveedorTipo = text(
-          pick(asObject(normalized.matchEvidence.proveedor), ["entity_type", "proveedor_tipo"]),
-          null,
+        const proveedorTipo = getFacturaProveedorTipoFromMatchEvidence(
+          normalized.matchEvidence,
+          normalized.frr.FRR_idproveedor,
         );
         const accountingRules = await loadAndResolveFacturaERPAccountingRules(
           supabase,
@@ -168,6 +170,10 @@ Deno.serve(async (req) => {
           proveedorTipo,
         );
         normalized.frr = accountingRules.factura;
+        normalized.matchEvidence = syncFacturaERPAccountingMatchEvidence(
+          normalized.matchEvidence,
+          accountingRules,
+        );
         const pdfResult = await ensureArchivoPdf(supabase, normalized.pdfBase64, normalized.fileName);
 
         const duplicateCandidates = [];

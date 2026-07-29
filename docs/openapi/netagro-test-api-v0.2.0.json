@@ -426,6 +426,445 @@
         "title": "PunteoSeleccionado",
         "type": "object"
       },
+      "RegimenIvaDominanceCriteria": {
+        "properties": {
+          "min_confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Min Confianza",
+            "type": "number"
+          },
+          "requiere_lider_unico": {
+            "title": "Requiere Lider Unico",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "min_confianza",
+          "requiere_lider_unico"
+        ],
+        "title": "RegimenIvaDominanceCriteria",
+        "type": "object"
+      },
+      "RegimenIvaProfile": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "porcentajes": {
+            "items": {
+              "anyOf": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Porcentajes",
+            "type": "array"
+          },
+          "tramos": {
+            "items": {
+              "$ref": "#/components/schemas/RegimenIvaProfileTramo"
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Tramos",
+            "type": "array"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "porcentajes",
+          "usos",
+          "confianza",
+          "tramos"
+        ],
+        "title": "RegimenIvaProfile",
+        "type": "object"
+      },
+      "RegimenIvaProfileFilters": {
+        "properties": {
+          "proveedor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proveedor Id"
+          },
+          "tipo_factura": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tipo Factura"
+          }
+        },
+        "title": "RegimenIvaProfileFilters",
+        "type": "object"
+      },
+      "RegimenIvaProfileTramo": {
+        "properties": {
+          "confianza_activa": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confianza Activa",
+            "type": "number"
+          },
+          "porcentaje": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Porcentaje"
+          },
+          "posicion": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Posicion",
+            "type": "integer"
+          },
+          "usos_activos": {
+            "minimum": 0.0,
+            "title": "Usos Activos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "posicion",
+          "porcentaje",
+          "usos_activos",
+          "confianza_activa"
+        ],
+        "title": "RegimenIvaProfileTramo",
+        "type": "object"
+      },
+      "RegimenIvaProfilesResponse": {
+        "properties": {
+          "ambiguo": {
+            "title": "Ambiguo",
+            "type": "boolean"
+          },
+          "criterio_dominancia": {
+            "$ref": "#/components/schemas/RegimenIvaDominanceCriteria"
+          },
+          "estado": {
+            "enum": [
+              "sin_historial",
+              "dominante",
+              "ambiguo"
+            ],
+            "title": "Estado",
+            "type": "string"
+          },
+          "filtros": {
+            "$ref": "#/components/schemas/RegimenIvaProfileFilters"
+          },
+          "perfiles": {
+            "items": {
+              "$ref": "#/components/schemas/RegimenIvaProfile"
+            },
+            "title": "Perfiles",
+            "type": "array"
+          },
+          "plantilla_sugerida": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegimenIvaSuggestedTemplate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "regimen_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Regimen Id",
+            "type": "integer"
+          },
+          "total_facturas": {
+            "minimum": 0.0,
+            "title": "Total Facturas",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "regimen_id",
+          "filtros",
+          "total_facturas",
+          "estado",
+          "ambiguo",
+          "criterio_dominancia"
+        ],
+        "title": "RegimenIvaProfilesResponse",
+        "type": "object"
+      },
+      "RegimenIvaSuggestedTemplate": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "criterio": {
+            "const": "perfil_historico_dominante",
+            "title": "Criterio",
+            "type": "string"
+          },
+          "porcentajes": {
+            "items": {
+              "anyOf": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Porcentajes",
+            "type": "array"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "porcentajes",
+          "usos",
+          "confianza",
+          "criterio"
+        ],
+        "title": "RegimenIvaSuggestedTemplate",
+        "type": "object"
+      },
+      "RegimenSuggestionCount": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "regimen_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Regimen Id",
+            "type": "integer"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "regimen_id",
+          "usos",
+          "confianza"
+        ],
+        "title": "RegimenSuggestionCount",
+        "type": "object"
+      },
+      "RegimenSuggestionCriteria": {
+        "properties": {
+          "circuito_erp": {
+            "enum": [
+              "GE",
+              "no_GE"
+            ],
+            "title": "Circuito Erp",
+            "type": "string"
+          },
+          "firma": {
+            "const": "tipos_iva_activos_ordenados_sin_duplicados",
+            "title": "Firma",
+            "type": "string"
+          },
+          "min_confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Min Confianza",
+            "type": "number"
+          },
+          "min_historicos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Min Historicos",
+            "type": "integer"
+          },
+          "requiere_ganador_unico": {
+            "title": "Requiere Ganador Unico",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "min_historicos",
+          "min_confianza",
+          "requiere_ganador_unico",
+          "circuito_erp",
+          "firma"
+        ],
+        "title": "RegimenSuggestionCriteria",
+        "type": "object"
+      },
+      "RegimenSuggestionFilters": {
+        "properties": {
+          "empresa_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Empresa Id",
+            "type": "integer"
+          },
+          "proveedor_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Proveedor Id",
+            "type": "integer"
+          },
+          "proveedor_tipo": {
+            "enum": [
+              "acreedor",
+              "agricultor"
+            ],
+            "title": "Proveedor Tipo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "empresa_id",
+          "proveedor_id",
+          "proveedor_tipo"
+        ],
+        "title": "RegimenSuggestionFilters",
+        "type": "object"
+      },
+      "RegimenSuggestionResponse": {
+        "properties": {
+          "criterio": {
+            "$ref": "#/components/schemas/RegimenSuggestionCriteria"
+          },
+          "estado": {
+            "enum": [
+              "sugerido",
+              "sin_firma_iva_activa",
+              "firma_iva_invalida",
+              "sin_historial_suficiente",
+              "ganador_no_unico",
+              "confianza_insuficiente"
+            ],
+            "title": "Estado",
+            "type": "string"
+          },
+          "filtros": {
+            "$ref": "#/components/schemas/RegimenSuggestionFilters"
+          },
+          "firma_iva": {
+            "items": {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            "title": "Firma Iva",
+            "type": "array"
+          },
+          "recuentos": {
+            "items": {
+              "$ref": "#/components/schemas/RegimenSuggestionCount"
+            },
+            "title": "Recuentos",
+            "type": "array"
+          },
+          "sugerencia": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegimenSuggestionValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_historicos_coincidentes": {
+            "minimum": 0.0,
+            "title": "Total Historicos Coincidentes",
+            "type": "integer"
+          },
+          "total_historicos_evaluados": {
+            "minimum": 0.0,
+            "title": "Total Historicos Evaluados",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filtros",
+          "total_historicos_evaluados",
+          "total_historicos_coincidentes",
+          "estado",
+          "criterio"
+        ],
+        "title": "RegimenSuggestionResponse",
+        "type": "object"
+      },
+      "RegimenSuggestionValue": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "criterio": {
+            "const": "historico_mismo_proveedor_empresa_circuito_y_firma_iva",
+            "title": "Criterio",
+            "type": "string"
+          },
+          "regimen_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Regimen Id",
+            "type": "integer"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "regimen_id",
+          "usos",
+          "confianza",
+          "criterio"
+        ],
+        "title": "RegimenSuggestionValue",
+        "type": "object"
+      },
       "ValidationEnvelope": {
         "properties": {
           "errors": {
@@ -3245,15 +3684,6 @@
           },
           {
             "in": "query",
-            "name": "ejercicio",
-            "required": true,
-            "schema": {
-              "title": "Ejercicio",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
             "name": "proveedor_id",
             "required": true,
             "schema": {
@@ -3268,6 +3698,57 @@
             "schema": {
               "title": "Numero Factura",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ejercicio",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ejercicio"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Factura"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tipo_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo Factura"
             }
           },
           {
@@ -3337,6 +3818,399 @@
           }
         },
         "summary": "Buscar Factura Recibida Existente"
+      }
+    },
+    "/facturasrecibidas/regimen-sugerido": {
+      "get": {
+        "description": "Suggest a regime only from strongly consistent, circuit-safe history.\n\nThe endpoint is read-only. It never maps an IVA percentage directly to a\nregime and never mixes equal numeric provider ids from the two ERP masters.",
+        "operationId": "get_factura_recibida_regimen_sugerido_facturasrecibidas_regimen_sugerido_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": true,
+            "schema": {
+              "exclusiveMinimum": 0,
+              "title": "Proveedor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_tipo",
+            "required": true,
+            "schema": {
+              "enum": [
+                "acreedor",
+                "agricultor"
+              ],
+              "title": "Proveedor Tipo",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "empresa_id",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "exclusiveMinimum": 0,
+              "title": "Empresa Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva3",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva3"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva4",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva4"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva5",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva5"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base3",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base3"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base4",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base4"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base5",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base5"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota3",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota3"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota4",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota4"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota5",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota5"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegimenSuggestionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Recibida Regimen Sugerido"
       }
     },
     "/facturasrecibidas/tipos": {
@@ -3919,6 +4793,99 @@
           }
         },
         "summary": "List Regimenes Facturas Recibidas"
+      }
+    },
+    "/regimenes/{regimen_id}/perfiles-iva": {
+      "get": {
+        "operationId": "get_regimen_iva_profiles_regimenes__regimen_id__perfiles_iva_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "regimen_id",
+            "required": true,
+            "schema": {
+              "exclusiveMinimum": 0,
+              "title": "Regimen Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Proveedor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tipo_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo Factura"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegimenIvaProfilesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Regimen Iva Profiles"
       }
     },
     "/series-factura": {

@@ -1,6 +1,6 @@
 # Documentación consolidada: facturas Campojoyma
 
-Última actualización: 2026-07-28
+Última actualización: 2026-07-29
 
 La topología real, los dos saltos SSH, los túneles, las rutas de claves y los
 comandos de diagnóstico se mantienen en
@@ -25,13 +25,24 @@ su número y sus apuntes Debe/Haber. Una respuesta de referencia, un dry-run
 correcto o un registro guardado en Supabase no significan que exista un asiento
 en ERP.
 
-Estado de aplicación a 22/07/2026: Supabase ya incorpora la finalización contra
-el dry-run original, el default <code>S=false</code> de punteos y el cierre de
-todos los privilegios mutantes de tabla para clientes sobre cabecera, CTB y
-punteos. Tras la confirmación expresa, <code>acreedores_cache</code> se retiró
-físicamente y sus cinco filas quedaron exportadas como evidencia recuperable.
-Las cinco Edge Functions saneadas están desplegadas; el frontend y n8n todavía
-requieren despliegue e importación remota antes de considerarse activos.
+Estado de aplicación a 29/07/2026: Supabase incorpora la finalización contra el
+dry-run original, el default <code>S=false</code> de punteos, la unicidad por
+circuito y el cierre de privilegios mutantes de tabla para clientes sobre
+cabecera, CTB y punteos. Tras la confirmación expresa,
+<code>acreedores_cache</code> se retiró físicamente y sus cinco filas quedaron
+exportadas como evidencia recuperable. Las Edge Functions saneadas están
+desplegadas. El extractor n8n v4 está activo en remoto; la exportación local
+permanece inactiva por seguridad. El frontend está validado en local y su
+despliegue externo sigue pendiente. El escritor n8n v2 continúa desactivado.
+
+La sustitución remota del extractor se realizó mediante
+<code>n8n import:workflow</code>. El resultado verificado tiene 27 nodos, cero
+<code>httpRequestTool</code> y el webhook
+<code>campojoyma-factura-extraer</code> registrado. El backup inmediatamente
+anterior es
+<code>/root/campojoyma-pre-full-replace-20260729T143008.json</code>, modo
+<code>600</code>, SHA-256
+<code>bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102</code>.
 
 ## Estado vigente
 
@@ -44,11 +55,19 @@ La arquitectura activa se rige por estas decisiones:
   `acreedores`. No existe una fuente ni un fallback local.
 - Antes de enviar se repite un preflight contra ERP: existencia del proveedor
   en su maestro canónico, coincidencia de su cuenta y duplicado exacto.
-- El ejercicio 25 procede de una regla explícita limitada a Onduspan (acreedor
-  ERP 17). No
-  se calcula a partir de la fecha de factura.
-- Tipo de factura, régimen IVA y fecha CTB solo pueden venir de una regla
-  aprobada para la empresa/proveedor o de una selección manual. No se deducen.
+- El ejercicio nunca se acepta desde la extracción ni se calcula desde la
+  fecha. Se obtiene de una regla explícita o de una factura ERP ya existente
+  que coincida de forma única por empresa, proveedor, número normalizado de
+  forma alfanumérica en Edge, fecha y circuito. Onduspan (acreedor ERP 17)
+  conserva además su seed 25.
+- La fecha CTB hereda la fecha de factura mediante la política de Campojoyma
+  confirmada el 29/07/2026.
+- El régimen IVA se resuelve desde una regla explícita o, si falta, desde el
+  histórico ERP del mismo proveedor, empresa, circuito y firma IVA. La
+  resolución histórica exige al menos tres casos, ganador único y confianza
+  mínima del 98 %; si no cumple, permanece manual.
+- El tipo de factura procede de una regla aprobada o del circuito canónico del
+  proveedor ya confirmado; nunca del origen `MA`/`GE` de un albarán.
 - Gastos, CTB, punteos y asiento son conceptos distintos y se almacenan,
   validan y presentan por separado.
 - Los punteos son propuestas para selección manual. Solo los seleccionados
@@ -151,8 +170,9 @@ Secuencia operativa:
 1. El usuario incorpora un PDF.
 2. El PDF se guarda en <code>archivos_pdf</code>.
 3. <code>factura-recibida-extraer</code> envía su contenido al extractor n8n.
-4. La IA extrae únicamente datos visibles; n8n busca candidatos de acreedor y
-   agricultor sin mezclar sus identificadores.
+4. La IA extrae únicamente datos visibles y no recibe herramientas HTTP. Un
+   nodo determinista de n8n busca después candidatos de acreedor y agricultor
+   sin mezclar sus identificadores.
 5. La Edge Function normaliza y guarda cabecera, CTB explícito y propuestas de
    punteo sin seleccionar.
 6. Los errores bloqueantes y avisos quedan visibles para revisión.
@@ -161,12 +181,18 @@ Secuencia operativa:
 8. Mientras el escritor continúe en <code>reference_only</code>, el resultado
    solo acredita validación/referencia, nunca la creación de un asiento.
 
-El prompt, el parser interno <code>schema_version: 3</code>, las seis
-herramientas HTTP de consulta y el procedimiento de importación saneada están
-documentados en
-[Agente v3 de extracción de facturas recibidas](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md).
-El contrato externo del workflow continúa siendo v2; son versiones de capas
-distintas.
+El parser interno usa <code>schema_version: 4</code> y rechaza una salida
+inválida sin pedir a otro paso generativo que la repare. Las consultas ERP se
+ejecutan únicamente en el enriquecedor determinista, con parámetros derivados
+de los literales normalizados. El contrato externo del workflow continúa
+siendo v2; son versiones de capas distintas.
+
+El modelo no tiene HTTP tools ni conexiones <code>ai_tool</code>.
+<code>erp_lookup</code> debe salir como <code>not_consulted</code> y cualquier
+intento del modelo de poblarlo se ignora. El parser usa
+<code>autoFix=false</code>. JWT, ingest, renderizador PDF y OpenAI se resuelven
+mediante credenciales administradas por n8n; sus valores no aparecen en el JSON
+versionado.
 
 ## API ERP de lectura
 
@@ -176,7 +202,7 @@ credenciales de solo lectura. No se ejecutan operaciones DDL contra Netagro.
 Base interna desde n8n:
 
 ~~~text
-http://172.19.0.1:18000
+http://172.19.0.1:18001
 ~~~
 
 Webhook externo:
@@ -189,7 +215,7 @@ En n8n el parámetro correcto es <code>query.consulta</code>. La petición
 interna se forma con:
 
 ~~~text
-={{ 'http://172.19.0.1:18000/' + $json.query.consulta }}
+={{ 'http://172.19.0.1:18001/' + $json.query.consulta }}
 ~~~
 
 Endpoints relevantes:
@@ -207,6 +233,7 @@ Endpoints relevantes:
 | <code>GET /agricultores/{agricultor_id}/gastos</code> | Reglas/cuentas observadas para el agricultor. |
 | <code>GET /facturasrecibidas/tipos</code> | Códigos observados; no constituye una regla de selección. |
 | <code>GET /facturasrecibidas</code> | Consulta y comprobación de duplicados exactos. |
+| <code>GET /facturasrecibidas/buscar</code> | Búsqueda exacta v0.2.4 por empresa, proveedor, número y circuito; admite ejercicio o, si aún no se conoce, exige fecha de factura. |
 | <code>GET /facturasrecibidas/{factura_id}</code> | Cabecera real por <code>FRR_id</code> con proveedor canónico. |
 | <code>GET /facturasrecibidas/{factura_id}/ctb</code> | CTB real asociado a una factura. |
 | <code>GET /facturasrecibidas_ctb?factura_id={id}</code> | Alias de consulta CTB. |
@@ -263,7 +290,15 @@ seleccionar uno se consulta su detalle en el maestro correspondiente; no se
 rellena desde una copia persistida en Supabase ni se acepta una coincidencia
 basada solo en un ID que también pueda existir en el otro maestro.
 
-En la API v0.2.2, listado y detalle de facturas recibidas devuelven
+La búsqueda exacta de factura exige siempre empresa, proveedor y número.
+<code>ejercicio</code> es opcional: si se omite,
+<code>fecha_factura</code> pasa a ser obligatoria. El circuito se acota mediante
+<code>tipo_factura</code>. Una petición sin ejercicio ni fecha devuelve
+<code>422</code>, y una respuesta vacía, múltiple o incoherente no resuelve el
+ejercicio. Aunque el filtro de tipo es opcional por compatibilidad de API, el
+flujo Campojoyma lo envía siempre que ya conoce el circuito.
+
+Desde la API v0.2.2, listado y detalle de facturas recibidas devuelven
 <code>proveedor_tipo</code>, <code>proveedor_id</code>,
 <code>proveedor_nombre</code> y <code>proveedor_nif</code>, además de las
 identidades específicas de acreedor y agricultor. Para
@@ -311,10 +346,10 @@ albentrada_his.AEH_id
 La clave de duplicado funcional es:
 
 ~~~text
-FRR_Idempresa + FRR_ejercicio + FRR_idproveedor + FRR_numerofactura
+FRR_Idempresa + FRR_ejercicio + circuito + FRR_idproveedor + FRR_numerofactura
 ~~~
 
-La comprobación debe usar los cuatro valores exactos, ignorar registros
+La comprobación debe usar los cinco valores exactos, ignorar registros
 descartados/duplicados de staging cuando corresponda y mostrar el candidato que
 causa el conflicto. Una caída de API no equivale a «proveedor no encontrado»:
 se trata como indisponibilidad técnica y el envío falla de forma cerrada.
@@ -346,6 +381,12 @@ reproducible. La exportación previa está en
 y su SHA-256 es
 <code>79F49160CA74A3B2CAE88C026627B258FB10D69F27B38B7EB28E389152E4B5BC</code>.
 
+La unicidad física de staging usa empresa, ejercicio, proveedor, circuito y el
+número de factura tras <code>btrim</code>, es decir, sin espacios exteriores.
+Edge usa además una normalización alfanumérica para verificar la identidad
+visible. Esa normalización adicional no forma parte de la expresión del índice
+de Supabase.
+
 Estados principales:
 
 | Estado | Significado |
@@ -369,7 +410,9 @@ nulos hasta que el ERP confirme una escritura real.
 - Guarda la cabecera normalizada.
 - Guarda CTB únicamente si el origen devuelve apuntes explícitos y trazables.
 - Guarda propuestas de punteo sin seleccionarlas.
-- No fabrica fecha CTB, tipo, régimen, cuenta ni vencimiento.
+- No fabrica cuenta ni vencimiento. Fecha CTB, tipo y régimen se completan
+  únicamente mediante las reglas contables verificables descritas en este
+  documento.
 - Devuelve estado y validaciones estructuradas.
 
 ### factura-recibida-ingest
@@ -402,7 +445,8 @@ Antes de invocar al escritor:
 1. Comprueba que el proveedor existe en el maestro canónico indicado por el
    circuito: agricultor para GE y acreedor para los demás tipos observados.
 2. Contrasta la cuenta de la factura con la cuenta de ese maestro.
-3. Busca el duplicado exacto por empresa, ejercicio, proveedor y número.
+3. Busca el duplicado exacto por empresa, ejercicio, proveedor, número y
+   circuito.
 4. Bloquea si la API no está disponible, si el proveedor no existe, si la
    cuenta difiere o si aparece un candidato duplicado.
 5. Conserva el resultado <code>reference_only</code> como referencia, sin
@@ -419,11 +463,16 @@ visibles/editables desde administración cuando corresponda.
 Reglas vigentes:
 
 - Empresa: se selecciona del catálogo ERP.
-- Ejercicio: Onduspan (acreedor ERP 17) tiene un seed explícito con valor 25;
-  no existe un default general para la empresa.
-- Tipo de factura: regla aprobada o selección manual.
-- Régimen IVA: regla aprobada o selección manual.
-- Fecha CTB: regla aprobada o selección manual; no hereda la fecha de factura.
+- Ejercicio: regla explícita o coincidencia única con la misma factura ya
+  existente en ERP por empresa, proveedor, número normalizado de forma
+  alfanumérica en Edge, fecha y circuito. Onduspan (acreedor ERP 17) tiene
+  además un seed explícito 25; no existe un default general para la empresa.
+- Tipo de factura: regla aprobada, circuito canónico del proveedor confirmado
+  o selección manual.
+- Régimen IVA: regla aprobada; en su ausencia, histórico ERP estricto del mismo
+  proveedor, empresa, circuito y firma IVA (mínimo 3, ganador único y ≥98 %);
+  si no hay evidencia suficiente, selección manual.
+- Fecha CTB: política de Campojoyma `invoice_date`, confirmada el 29/07/2026.
 - Cuenta del proveedor: detalle del agricultor para GE o del acreedor para los
   demás tipos observados.
 - Gastos: endpoint de gastos/regla ERP o edición explícita; nunca IA inventada.
@@ -483,9 +532,9 @@ dry-run y <code>reference_only</code> no son un asiento.
 | Dato | Campo | Fuente permitida |
 |---|---|---|
 | Empresa | <code>FRR_Idempresa</code> | Catálogo ERP/manual. |
-| Ejercicio | <code>FRR_ejercicio</code> | Regla explícita (seed 25 solo para Onduspan, acreedor 17). |
-| Tipo | <code>FRR_tipofactura</code> | Regla aprobada o manual. |
-| Régimen | <code>FRR_idregimen</code> | Regla aprobada o manual. |
+| Ejercicio | <code>FRR_ejercicio</code> | Regla explícita o factura ERP exacta y única; seed 25 adicional para Onduspan, acreedor 17. |
+| Tipo | <code>FRR_tipofactura</code> | Regla aprobada, circuito canónico del proveedor confirmado o manual. |
+| Régimen | <code>FRR_idregimen</code> | Regla aprobada o histórico ERP estricto; manual si la evidencia no alcanza el umbral. |
 | Proveedor | <code>FRR_idproveedor</code> | Búsqueda y detalle en el maestro indicado por <code>FRR_tipofactura</code>; conservar <code>proveedor_tipo</code>. |
 | Cuenta proveedor | <code>FRR_idcuenta</code> | Detalle canónico de agricultor/acreedor y preflight. |
 | Número factura | <code>FRR_numerofactura</code> | PDF/IA, confirmado por usuario. |
@@ -525,7 +574,9 @@ mediante IA.
 - Cuenta coincidente con ese maestro.
 - Duplicado exacto inexistente en ERP.
 - Importes coherentes dentro de la tolerancia definida.
-- Fecha CTB confirmada por regla o usuario.
+- Fecha CTB igual a la fecha de factura conforme a la política activa de
+  Campojoyma.
+- Circuito incluido en la comprobación exacta del duplicado.
 - Gastos, CTB y punteos validados en sus bloques independientes.
 - API disponible durante el preflight.
 
@@ -549,11 +600,41 @@ Pendientes externos:
 2. Confirmar las descripciones funcionales pendientes de algunos tipos.
 3. Confirmar el contrato oficial de selección y mutación de albaranes GE antes
    de sacarlos del modo de solo lectura.
-4. Confirmar cualquier nueva regla de tipo, régimen, fecha CTB o vencimiento
+4. Confirmar cualquier nueva regla de tipo, régimen o vencimiento
    antes de automatizarla.
-5. Desplegar el frontend y reemplazar el workflow n8n tras exportar la versión
-   remota vigente.
-6. Completar la aceptación autenticada del flujo desplegado.
+5. Desplegar externamente el frontend; el extractor n8n v4 ya se sustituyó de
+   forma controlada y conserva una exportación recuperable de la versión
+   previa.
+6. Completar la aceptación autenticada del envío real al ERP.
+
+## Validación final del lote tratado (29/07/2026)
+
+Se reprocesaron las diez facturas de
+`Downloads/facturas campojoyma/tratadas` contra n8n v4, Edge y la API ya
+endurecidos. Resultado: **10/10 sin errores bloqueantes**. Todas quedaron con
+fecha CTB igual a la fecha de factura, ejercicio 25, régimen 2110 y tipo OT.
+
+Los vínculos se mantuvieron como referencias ERP sin selección automática:
+
+| Factura/proveedor | Albaranes | Líneas |
+|---|---:|---:|
+| Ejido Cartón | 7 | 22 |
+| Europack | 3 | 9 |
+| Global Pack | 1 | 1 |
+| González Cañabate | 0 | 0 |
+| Megasa | 0 | 0 |
+| MMAX | 3 | 16 |
+| Onduspan | 21 | 37 |
+| Petit | 15 | 19 |
+| Repsol | 0 | 0 |
+| Smurfit | 1 | 3 |
+
+El visor PDF corregido se verificó en la UI. Descarga y valida los bytes
+<code>%PDF-</code>, reconstruye el <code>Blob</code> con
+<code>application/pdf</code> y evita la carrera de carga/desmontaje de pdf.js.
+Abrir y descargar quedan disponibles en cuanto se valida el original, incluso
+si la previsualización falla. También se verificó la apertura dinámica de las
+tres líneas vinculadas a Smurfit.
 
 ## Errores a evitar
 
@@ -565,8 +646,10 @@ Pendientes externos:
 - Exponer el JWT en variables de frontend.
 - Cargar todo el histórico ERP en la pantalla principal.
 - Inferir ejercicio desde una fecha.
-- Copiar fecha de factura a fecha CTB.
-- Asignar tipo, régimen o vencimiento sin regla aprobada.
+- Aplicar la política de fecha CTB de Campojoyma a otros clientes sin su
+  confirmación.
+- Asignar tipo, régimen o vencimiento fuera de las reglas y evidencias
+  aprobadas.
 - Confundir gastos, CTB, punteos o asiento.
 - Seleccionar punteos automáticamente.
 - Rellenar identificadores ERP antes de una escritura real.

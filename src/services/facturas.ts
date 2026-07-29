@@ -736,6 +736,7 @@ export const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida =
   vencimientos,
   version: readNumber(source, ['row_version', 'version'], null),
   sync_status: readText(source, ['sync_status'], null),
+  last_request_id: cleanText(factura.last_request_id),
   accounting_status: readText(source, ['accounting_status'], accounting.status),
   erp_last_read_at: readText(source, ['erp_last_read_at'], null),
   created_at: factura.created_at,
@@ -1330,11 +1331,80 @@ const normalizeProveedorNombre = (value: unknown) =>
 
 export type FacturaProveedorERPKind = 'acreedor' | 'agricultor';
 
-export const facturaProveedorERPKind = (tipoFactura: unknown): FacturaProveedorERPKind =>
-  cleanText(tipoFactura)?.toUpperCase() === 'GE' ? 'agricultor' : 'acreedor';
+const positiveProviderEvidenceId = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value.trim())) return null;
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) ? parsed : null;
+};
 
-const facturaProveedorERPResource = (tipoFactura: unknown) =>
-  facturaProveedorERPKind(tipoFactura) === 'agricultor' ? 'agricultores' : 'acreedores';
+const facturaProveedorERPKindFromMatchEvidence = (
+  matchEvidence: unknown,
+  expectedProviderId: unknown = null,
+): FacturaProveedorERPKind | null => {
+  const evidence = asRecord(matchEvidence);
+  const proveedor = asRecord(evidence.proveedor);
+  if (proveedor.matched !== true) return null;
+  const providerId = positiveProviderEvidenceId(proveedor.provider_id);
+  const expectedId = positiveProviderEvidenceId(expectedProviderId);
+  if (!providerId || (expectedId && providerId !== expectedId)) return null;
+
+  for (const alias of ['id', 'entity_id']) {
+    if (!Object.prototype.hasOwnProperty.call(proveedor, alias)) continue;
+    if (positiveProviderEvidenceId(proveedor[alias]) !== providerId) return null;
+  }
+
+  const typeAliases = ['entity_type', 'proveedor_tipo']
+    .filter((alias) => Object.prototype.hasOwnProperty.call(proveedor, alias))
+    .map((alias) => cleanText(proveedor[alias])?.toLowerCase() ?? null);
+  if (
+    typeAliases.length === 0 ||
+    typeAliases.some((value) => value !== 'agricultor' && value !== 'acreedor')
+  ) {
+    return null;
+  }
+  const uniqueTypes = Array.from(new Set(typeAliases));
+  if (uniqueTypes.length !== 1) return null;
+  const entityType = uniqueTypes[0] as FacturaProveedorERPKind;
+
+  // El match del extractor solo es una pista. El frontend únicamente lo usa
+  // cuando Edge dejó constancia de que el detalle del mismo maestro ERP,
+  // proveedor y cuenta fue reconfirmado de forma satisfactoria.
+  const accountingEvidence = asRecord(evidence.erp_accounting);
+  const confirmation = asRecord(accountingEvidence.proveedor_tipo);
+  const confirmedProviderId = positiveProviderEvidenceId(confirmation.provider_id);
+  const confirmedType = cleanText(confirmation.provider_type)?.toLowerCase();
+  if (
+    confirmation.source !== 'erp_provider_detail' ||
+    confirmation.status !== 'confirmed' ||
+    confirmedProviderId !== providerId ||
+    confirmedType !== entityType
+  ) {
+    return null;
+  }
+  return entityType;
+};
+
+export const facturaProveedorERPKind = (
+  tipoFactura: unknown,
+  matchEvidence: unknown = null,
+  expectedProviderId: unknown = null,
+): FacturaProveedorERPKind => {
+  const explicitType = cleanText(tipoFactura)?.toUpperCase();
+  if (explicitType) return explicitType === 'GE' ? 'agricultor' : 'acreedor';
+  return facturaProveedorERPKindFromMatchEvidence(matchEvidence, expectedProviderId) ?? 'acreedor';
+};
+
+const facturaProveedorERPResource = (
+  tipoFactura: unknown,
+  matchEvidence: unknown = null,
+  expectedProviderId: unknown = null,
+) =>
+  facturaProveedorERPKind(tipoFactura, matchEvidence, expectedProviderId) === 'agricultor'
+    ? 'agricultores'
+    : 'acreedores';
 
 const isProveedorERPOperativo = (row: Record<string, unknown>) => {
   const activo = readBoolean(row, ['activo', 'operativo', 'ACR_Activo'], true);
@@ -1347,10 +1417,16 @@ export const localizarProveedorERP = async (payload: {
   nif?: string | null;
   nombre?: string | null;
   tipoFactura?: string | null;
+  matchEvidence?: unknown;
+  expectedProviderId?: unknown;
 }): Promise<LocalizarProveedorResponse> => {
   const nif = cleanText(payload.nif);
   const nombre = cleanText(payload.nombre);
-  const resource = facturaProveedorERPResource(payload.tipoFactura);
+  const resource = facturaProveedorERPResource(
+    payload.tipoFactura,
+    payload.matchEvidence,
+    payload.expectedProviderId,
+  );
   const consulta = nif
     ? `${resource}?nif=${encodeURIComponent(nif)}&activo=true&limit=25`
     : nombre
@@ -1504,8 +1580,9 @@ export const mapProveedorERPDetail = (value: unknown): FacturaProveedorERPDetail
 export const fetchFacturaProveedorERPDetail = async (
   proveedorId: number,
   tipoFactura?: string | null,
+  matchEvidence: unknown = null,
 ): Promise<FacturaProveedorERPDetail | null> => {
-  const resource = facturaProveedorERPResource(tipoFactura);
+  const resource = facturaProveedorERPResource(tipoFactura, matchEvidence, proveedorId);
   const response = await erpRead<unknown>(`${resource}/${encodeURIComponent(String(proveedorId))}`);
   return mapProveedorERPDetail(response);
 };
@@ -1515,11 +1592,25 @@ export const buildFacturaDuplicateConsulta = (params: {
   ejercicio: number;
   proveedorId: number;
   numeroFactura: string;
+  tipoFactura: string;
 }) =>
   `facturasrecibidas/buscar?empresa_id=${encodeURIComponent(String(params.empresaId))}` +
   `&ejercicio=${encodeURIComponent(String(params.ejercicio))}` +
   `&proveedor_id=${encodeURIComponent(String(params.proveedorId))}` +
-  `&numero_factura=${encodeURIComponent(params.numeroFactura.trim())}`;
+  `&numero_factura=${encodeURIComponent(params.numeroFactura.trim())}` +
+  `&tipo_factura=${encodeURIComponent(params.tipoFactura.trim().toUpperCase())}`;
+
+export const getPunteoImporte = (
+  punteo: Partial<
+    Pick<FacturaRecibidaPunteo, 'importe_factura' | 'importe' | 'importe_punteado'>
+  >,
+) =>
+  Number(
+    punteo.importe_factura ??
+      punteo.importe ??
+      punteo.importe_punteado ??
+      0,
+  ) || 0;
 
 const mapDuplicateCandidate = (value: unknown): FacturaERPDuplicateCandidate | null => {
   const row = findNestedERPRecord(value, ['FRR_id', 'frr_id']);
@@ -1567,6 +1658,12 @@ export const preflightFacturaRecibidaERP = async (
   const empresaId = numberValue(factura.fr_alm, null);
   const ejercicio = numberValue(factura.ejercicio, null);
   const numeroFactura = cleanText(factura.numero_factura);
+  const tipoFactura =
+    tipoFacturaRadioValue(
+      factura.fr_sufa,
+      factura.match_evidence,
+      factura.proveedor_codigo,
+    ) || null;
   const cuentaFactura = cleanText(factura.proveedor_cuenta);
   const issues: FacturaValidationIssue[] = [];
 
@@ -1589,7 +1686,11 @@ export const preflightFacturaRecibidaERP = async (
   let provider: FacturaProveedorERPDetail | null = null;
   if (proveedorId) {
     try {
-      provider = await fetchFacturaProveedorERPDetail(proveedorId, factura.fr_sufa);
+      provider = await fetchFacturaProveedorERPDetail(
+        proveedorId,
+        factura.fr_sufa,
+        factura.match_evidence,
+      );
       if (!provider) {
         issues.push(validationIssue(
           'proveedor_no_encontrado',
@@ -1619,7 +1720,13 @@ export const preflightFacturaRecibidaERP = async (
   }
 
   let duplicate: FacturaERPDuplicateCandidate | null = null;
-  const canCheckDuplicate = Boolean(empresaId && ejercicio !== null && proveedorId && numeroFactura);
+  const canCheckDuplicate = Boolean(
+    empresaId &&
+      ejercicio !== null &&
+      proveedorId &&
+      numeroFactura &&
+      tipoFactura,
+  );
   if (canCheckDuplicate && !issues.some((issue) => issue.code === 'proveedor_api_no_disponible')) {
     try {
       const response = await erpRead<unknown>(buildFacturaDuplicateConsulta({
@@ -1627,6 +1734,7 @@ export const preflightFacturaRecibidaERP = async (
         ejercicio: ejercicio as number,
         proveedorId: proveedorId as number,
         numeroFactura: numeroFactura as string,
+        tipoFactura: tipoFactura as string,
       }));
       duplicate = mapDuplicateCandidate(response);
       if (duplicate) {
@@ -1694,9 +1802,23 @@ export const TIPO_FACTURA_DESCRIPCIONES: Record<string, string> = {
   CX: 'COSTES EXTERNOS',
 };
 
-export const tipoFacturaRadioValue = (value?: string | null): 'GE' | 'OT' | '' => {
+export const tipoFacturaRadioValue = (
+  value?: string | null,
+  matchEvidence: unknown = null,
+  expectedProviderId: unknown = null,
+): 'GE' | 'OT' | '' => {
   const tipo = value?.trim().toUpperCase();
-  if (!tipo) return '';
+  if (!tipo) {
+    const evidenceType = facturaProveedorERPKindFromMatchEvidence(
+      matchEvidence,
+      expectedProviderId,
+    );
+    return evidenceType === 'agricultor'
+      ? 'GE'
+      : evidenceType === 'acreedor'
+        ? 'OT'
+        : '';
+  }
   return tipo === 'GE' ? 'GE' : 'OT';
 };
 

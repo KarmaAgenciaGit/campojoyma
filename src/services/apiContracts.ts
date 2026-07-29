@@ -227,6 +227,7 @@ export interface FacturaRecibida {
   vencimientos?: FacturaRecibidaVencimiento[];
   version?: number | null;
   sync_status?: string | null;
+  last_request_id?: string | null;
   accounting_status?: string | null;
   erp_last_read_at?: string | null;
   created_at: string;
