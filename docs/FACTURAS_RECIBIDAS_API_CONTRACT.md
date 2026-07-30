@@ -71,7 +71,15 @@ El cliente v2 debe enviar siempre el siguiente sobre:
 | `dry_run` | booleano | Debe enviarse expresamente. Primero `true`; después, si procede, `false` con el mismo UUID y payload funcional. |
 | `cabecera` | objeto | Campos de la factura `FRR_*` y vencimientos permitidos. |
 | `ctb` | array | Solo filas `FRC_*` reales. Puede ser `[]`. |
-| `punteos` | array | Solo enlaces seleccionados manual y explícitamente por el usuario; ningún flujo de origen puede marcarlos automáticamente. |
+| `punteos` | array | Enlaces seleccionados por el usuario o solicitudes MA exactas verificadas en dos capas. Una marca del modelo o del origen no es autoridad por sí sola. |
+
+Las selecciones recibidas desde extracción se consideran no confiables y se
+sanean primero a `S=false`. Edge solo vuelve a activar el conjunto cuando todas
+las referencias MA documentadas son exactas, únicas, completas, pendientes,
+coherentes con empresa/acreedor y uno-a-uno, con un máximo de 25. Cualquier
+respuesta parcial, ambigua o discordante deja todos los candidatos sin
+seleccionar. Los vínculos de una factura ya existente son evidencia de lectura
+y tampoco se vuelven a seleccionar.
 
 Por compatibilidad, la FastAPI aún acepta el parámetro query `dry_run` y el contrato
 v1 sin los campos nuevos. En v2, `dry_run` del cuerpo tiene prioridad. Todo consumidor
@@ -707,20 +715,32 @@ La exportación local del extractor conserva `active=false` para que importarla
 no active nada por accidente. Esto no contradice que la copia remota desplegada
 esté activa.
 
-## Estado operativo actual
+## Estado operativo trazado
 
 - API v2 vigente: v0.2.4 en `karma-box:8001`, expuesta al VPS por `18001`, con
   proveedor canónico, lectura GE histórica y búsqueda exacta por fecha cuando
   aún no se conoce el ejercicio.
-- El release supera 94 pruebas automatizadas y el gate de grants de solo
-  lectura. No se ha ejecutado DDL ni mutación contra MariaDB Netagro.
-- Extractor n8n v4: reemplazado completamente, activo en remoto con 27 nodos,
-  0 `httpRequestTool` y el webhook `campojoyma-factura-extraer` registrado. La
-  exportación local canónica permanece inactiva.
-- Escritor n8n v2: desactivado.
-- Escritura MA deshabilitada por falta de grants.
-- Contabilización v2 bloqueada por ausencia del mecanismo oficial y del diario.
+- El working tree autoritativo de `api-campojoyma` pasa 104 pruebas locales y el
+  gate de grants. Contiene cambios sin commit posteriores al último release;
+  por eso el resultado local no demuestra por sí solo el estado vivo.
+- Extractor n8n v4.2: declarado activo en remoto el 29/07/2026 con 32 nodos,
+  cinco `httpRequestTool` GET y el webhook
+  `campojoyma-factura-extraer` registrado. El validador local supera 18
+  escenarios y la exportación canónica permanece inactiva para evitar una
+  activación accidental.
+- Escritor n8n v2: inactivo y archivado tras una ventana controlada.
+- La cabecera no contabilizada `TEST-A-00748886-01` se creó exactamente una vez
+  durante esa ventana (`FRR_id=49681`, `FRR_numero=5425`) y se reconcilió por
+  readback sin repetir el POST. Esta evidencia no homologa todavía una operación
+  continua.
+- Escritura MA deshabilitada por falta de grants mínimos y por
+  `ALBMATERIAL_WRITES_ENABLED=false`.
+- Contabilización v2 bloqueada por ausencia del mecanismo oficial de creación
+  del asiento. El diario sí permite readback de asientos históricos.
 - Producción no se ha modificado.
+
+Estos estados externos fueron verificados o declarados en las tareas del
+29/07/2026; no se revalidaron en vivo durante la consolidación del 30/07/2026.
 
 El lote final de diez facturas superó la extracción e ingesta sin errores
 bloqueantes. Todas quedaron con fecha CTB igual a la fecha de factura,

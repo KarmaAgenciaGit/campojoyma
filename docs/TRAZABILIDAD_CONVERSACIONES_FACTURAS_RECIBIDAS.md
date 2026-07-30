@@ -175,3 +175,34 @@ Siguiente acción exacta:
 ```
 
 Una tarea nueva debe empezar leyendo este documento y el runbook, no importando de nuevo todas las transcripciones. Los historiales originales quedan como evidencia secundaria; Git, los artefactos y las verificaciones actuales mandan sobre cualquier resumen antiguo.
+
+## Adenda: convergencia Extracción / Inserción (30/07/2026)
+
+Esta adenda es posterior al recuento cerrado el 17/07/2026. Las dos tareas
+siguientes no están incluidas en las cifras históricas de la cabecera:
+
+| Fecha | Tarea Codex | Papel y resultado |
+|---|---|---|
+| 29 jul | `019fae46-1789-75a0-a9e3-d3895d361610` — `Campojoyma - Extraccion Facturas` | Convirtió el extractor en orquestador de lectura ERP: n8n v4.2, 32 nodos, cinco tools GET, defaults configurables, régimen histórico, referencias MA y doble validación determinista. Mantuvo cerrada la creación del asiento. |
+| 29 jul | `019fae4b-5c41-7d11-93a7-c2c7187b433c` — `Campojoyma - Inserción Facturas` | Fijó `FRR_Contabilizar=N`, validó una creación de cabecera en TEST durante una ventana controlada y la reconcilió por readback; dejó escritor y DML nuevamente cerrados. La prueba posterior con tres punteos MA no insertó nada por falta del permiso mínimo y del webhook activo. |
+
+El relevo combinado, las decisiones que prevalecen y los siguientes pasos están
+en la sección `Convergencia de las conversaciones Extracción / Inserción` de
+[DOCUMENTACION_FACTURAS_CAMPOJOYMA_CONSOLIDADA.md](DOCUMENTACION_FACTURAS_CAMPOJOYMA_CONSOLIDADA.md).
+Ese documento es la autoridad de contexto; esta adenda solo conserva la
+procedencia.
+
+Registro de cierre:
+
+```text
+Fecha y hora: 30/07/2026, Europe/Madrid.
+Herramienta y task/session ID: Codex; fuentes 019fae46… y 019fae4b….
+Repositorio, rama y commit de partida: campojoyma, main, 0d666a7; limpio y alineado con origin/main.
+Qué se comprobó antes de actuar: historiales de ambas tareas, artefactos n8n, contrato/OpenAPI, migraciones, estado Git y working tree de api-campojoyma.
+Cambios locales: consolidación documental; sin cambios de código ni de datos.
+Cambios externos realmente aplicados en esta tarea: ninguno.
+Pruebas y resultados: validador n8n local, 18 escenarios; api-campojoyma, 104 pruebas según auditoría local no mutante.
+Estado trazado: extractor v4.2 declarado activo el 29/07; escritor inactivo/archivado; DML, enlaces MA y contabilización cerrados; frontend externo pendiente.
+Bloqueos confirmados: mecanismo oficial de asiento; grant y puerta de escritura MA; operación continua del writer; working tree API sin commit.
+Siguiente acción exacta: elegir entre operar primero cabeceras N sin punteos o completar enlace MA/GE y asiento antes de abrir el escritor.
+```
