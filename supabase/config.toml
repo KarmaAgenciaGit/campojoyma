@@ -15,6 +15,9 @@ verify_jwt = false
 [functions.facturas-recibidas-erp-read]
 verify_jwt = true
 
+[functions.facturas-recibidas-erp-runtime]
+verify_jwt = true
+
 [functions.factura-recibida-send-erp]
 verify_jwt = true
 

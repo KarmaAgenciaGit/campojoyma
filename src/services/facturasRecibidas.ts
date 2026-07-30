@@ -1,5 +1,6 @@
 import { supabase } from '@/integrations/supabase/client';
 import type { Tables } from '@/integrations/supabase/types';
+import { normalizeFacturaERPReferenceStatus } from '@/lib/facturasErpStatus';
 import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 import { FACTURA_RECIBIDA_NON_INBOX_SOURCE_KINDS } from '@/types/facturasRecibidas';
 import type {
@@ -51,17 +52,173 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
     reader.readAsDataURL(blob);
   });
 
-const getFunctionErrorMessage = (data: unknown): string | null => {
-  if (!data || typeof data !== 'object') return null;
-  const error = (data as { error?: unknown }).error;
-  return typeof error === 'string'
-    ? sanitizeUserFacingErrorMessage(error)
-    : null;
+export type FacturaERPErrorCategory =
+  | 'validation'
+  | 'environment'
+  | 'conflict'
+  | 'transport'
+  | 'accounting'
+  | string;
+
+type FacturaERPErrorData = {
+  code: string;
+  category: FacturaERPErrorCategory;
+  userMessage: string;
+  retryable: boolean;
+  reconciliationRequired: boolean;
+  requestId: string | null;
+  targetId: string | null;
+  datasetEpoch: string | null;
 };
 
-const isReconciliationRequiredResponse = (data: unknown): boolean => {
-  if (!data || typeof data !== 'object') return false;
-  return (data as { reconciliation_required?: unknown }).reconciliation_required === true;
+export class FacturaERPServiceError extends Error {
+  readonly code: string;
+  readonly category: FacturaERPErrorCategory;
+  readonly userMessage: string;
+  readonly retryable: boolean;
+  readonly reconciliationRequired: boolean;
+  readonly requestId: string | null;
+  readonly targetId: string | null;
+  readonly datasetEpoch: string | null;
+
+  constructor(data: FacturaERPErrorData) {
+    const visibleMessage = data.requestId
+      ? `${data.userMessage} Solicitud: ${data.requestId}.`
+      : data.userMessage;
+    super(visibleMessage);
+    this.name = 'FacturaERPServiceError';
+    this.code = data.code;
+    this.category = data.category;
+    this.userMessage = data.userMessage;
+    this.retryable = data.retryable;
+    this.reconciliationRequired = data.reconciliationRequired;
+    this.requestId = data.requestId;
+    this.targetId = data.targetId;
+    this.datasetEpoch = data.datasetEpoch;
+  }
+}
+
+const cleanErrorText = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+const extractERPErrorData = (
+  data: unknown,
+  fallback: Partial<FacturaERPErrorData> = {},
+): FacturaERPErrorData | null => {
+  if (!data || typeof data !== 'object') return null;
+  const source = data as Record<string, unknown>;
+  const nestedCandidates = [source.detail, source.error, source.data];
+  const nested =
+    nestedCandidates
+      .map((candidate) => extractERPErrorData(candidate, fallback))
+      .find(Boolean) ?? null;
+  const rawUserMessage =
+    cleanErrorText(source.user_message) ??
+    cleanErrorText(source.message) ??
+    cleanErrorText(source.error) ??
+    nested?.userMessage ??
+    cleanErrorText(fallback.userMessage);
+  if (!rawUserMessage) return null;
+
+  return {
+    code:
+      cleanErrorText(source.code) ??
+      nested?.code ??
+      cleanErrorText(fallback.code) ??
+      'upstream_unavailable',
+    category:
+      cleanErrorText(source.category) ??
+      nested?.category ??
+      fallback.category ??
+      'transport',
+    userMessage: sanitizeUserFacingErrorMessage(rawUserMessage),
+    retryable:
+      typeof source.retryable === 'boolean'
+        ? source.retryable
+        : nested?.retryable ?? fallback.retryable ?? false,
+    reconciliationRequired:
+      typeof source.reconciliation_required === 'boolean'
+        ? source.reconciliation_required
+        : nested?.reconciliationRequired ??
+          fallback.reconciliationRequired ??
+          false,
+    requestId:
+      cleanErrorText(source.request_id) ??
+      nested?.requestId ??
+      cleanErrorText(fallback.requestId),
+    targetId:
+      cleanErrorText(source.target_id) ??
+      nested?.targetId ??
+      cleanErrorText(fallback.targetId),
+    datasetEpoch:
+      cleanErrorText(source.dataset_epoch) ??
+      nested?.datasetEpoch ??
+      cleanErrorText(fallback.datasetEpoch),
+  };
+};
+
+const getFunctionErrorMessage = (data: unknown): string | null =>
+  extractERPErrorData(data)?.userMessage ?? null;
+
+const genericERPErrorData = (
+  requestId: string | null,
+  userMessage = 'No se pudo completar la operación con el ERP.',
+): FacturaERPErrorData => ({
+  code: 'upstream_unavailable',
+  category: 'transport',
+  userMessage: sanitizeUserFacingErrorMessage(userMessage),
+  retryable: true,
+  reconciliationRequired: false,
+  requestId,
+  targetId: null,
+  datasetEpoch: null,
+});
+
+const getFunctionInvokeERPError = async (
+  error: unknown,
+  data: unknown,
+  requestId: string | null,
+): Promise<FacturaERPServiceError> => {
+  const fallback = genericERPErrorData(requestId);
+  const dataError = extractERPErrorData(data, fallback);
+  if (dataError) return new FacturaERPServiceError(dataError);
+
+  const context =
+    error && typeof error === 'object'
+      ? (error as { context?: unknown }).context
+      : null;
+  if (
+    context &&
+    typeof context === 'object' &&
+    typeof (context as { clone?: unknown }).clone === 'function'
+  ) {
+    try {
+      const raw = (await (context as Response).clone().text()).trim();
+      if (raw) {
+        try {
+          const parsedError = extractERPErrorData(JSON.parse(raw), fallback);
+          if (parsedError) return new FacturaERPServiceError(parsedError);
+        } catch {
+          return new FacturaERPServiceError({
+            ...fallback,
+            userMessage: sanitizeUserFacingErrorMessage(raw),
+          });
+        }
+      }
+    } catch {
+      // El SDK puede haber consumido ya el cuerpo.
+    }
+  }
+
+  return new FacturaERPServiceError(fallback);
+};
+
+const getFunctionInvokeErrorMessage = async (
+  error: unknown,
+  data?: unknown,
+): Promise<string> => {
+  const parsed = await getFunctionInvokeERPError(error, data, null);
+  return parsed.message;
 };
 
 const asValidationErrors = (value: unknown): FacturaValidationIssue[] => {
@@ -153,12 +310,19 @@ const mapAsiento = (row: RawAsiento): FacturaRecibidaAsiento => ({
     .sort((left, right) => left.posicion - right.posicion),
 });
 
-const mapFactura = (row: RawFactura): FacturaRecibida => ({
+const mapFactura = (row: RawFactura): FacturaRecibida => {
+  const raw = row as unknown as Record<string, unknown>;
+  const erpTargetId = String(raw.erp_target_id ?? '').trim() || null;
+  const erpDatasetEpoch =
+    String(raw.erp_dataset_epoch ?? '').trim() || null;
+  const remoteFrrId = row.remote_frr_id ?? null;
+
+  return {
   id: String(row.id),
   archivo_pdf_id: row.archivo_pdf_id ?? null,
   estado: (row.estado ?? 'pendiente_revision') as FacturaRecibidaEstado,
   source_kind: row.source_kind ?? null,
-  remote_frr_id: row.remote_frr_id ?? null,
+  remote_frr_id: remoteFrrId,
   is_readonly_reference: row.is_readonly_reference ?? false,
   match_status: row.match_status ?? null,
   match_evidence: row.match_evidence ?? null,
@@ -181,6 +345,36 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
     : null,
   row_version: row.row_version ?? 1,
   sync_status: row.sync_status ?? null,
+  erp_validation_status:
+    String(
+      raw.erp_validation_status ?? '',
+    ).trim() || null,
+  erp_validation_request_id:
+    String(
+      raw.erp_validation_request_id ?? '',
+    ).trim() || null,
+  erp_validated_at:
+    String(
+      raw.erp_validated_at ?? '',
+    ).trim() || null,
+  erp_payload_hash:
+    String(
+      raw.erp_payload_hash ?? '',
+    ).trim() || null,
+  erp_business_fingerprint:
+    String(raw.erp_business_fingerprint ?? '').trim() || null,
+  erp_reference_status: normalizeFacturaERPReferenceStatus(
+    raw.erp_reference_status,
+    {
+      targetId: erpTargetId,
+      datasetEpoch: erpDatasetEpoch,
+      hasRemoteIdentity: Boolean(remoteFrrId),
+    },
+  ),
+  erp_target_id: erpTargetId,
+  erp_dataset_epoch: erpDatasetEpoch,
+  erp_verified_at:
+    String(raw.erp_verified_at ?? '').trim() || null,
   accounting_status: row.accounting_status ?? null,
   accounting_visible_number: row.accounting_visible_number ?? null,
   accounting_date: row.accounting_date ?? null,
@@ -199,6 +393,12 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   FRR_numerofactura: row.FRR_numerofactura ?? null,
   FRR_fechafactura: row.FRR_fechafactura ?? null,
   FRR_fechactb: row.FRR_fechactb ?? null,
+  fecha_ctb_source:
+    raw.fecha_ctb_source === 'manual'
+      ? 'manual'
+      : raw.fecha_ctb_source === 'invoice_date'
+        ? 'invoice_date'
+        : null,
   FRR_Idempresa: row.FRR_Idempresa ?? null,
   FRR_base1: row.FRR_base1 ?? null,
   FRR_iva1: row.FRR_iva1 ?? null,
@@ -275,7 +475,8 @@ const mapFactura = (row: RawFactura): FacturaRecibida => ({
   asientos: (row.facturasrecibidas_asientos ?? [])
     .map(mapAsiento)
     .sort((left, right) => right.captured_at.localeCompare(left.captured_at)),
-});
+  };
+};
 
 class FacturasRecibidasService {
   async list(filters: FacturaRecibidaListFilters): Promise<FacturaRecibidaPage> {
@@ -321,16 +522,17 @@ class FacturasRecibidasService {
     if (typeof filters.totalTo === 'number') query = query.lte('FRR_totalfac', filters.totalTo);
 
     if (filters.erpStatus === 'sent') {
-      query = query.or(
-        'estado.eq.enviada_erp,erp_sent_at.not.is.null,is_readonly_reference.eq.true,remote_frr_id.not.is.null,FRR_id.not.is.null',
-      );
-    } else if (filters.erpStatus === 'not_sent') {
       query = query
-        .neq('estado', 'enviada_erp')
-        .is('erp_sent_at', null)
-        .eq('is_readonly_reference', false)
-        .is('remote_frr_id', null)
-        .is('FRR_id', null);
+        .filter('erp_reference_status', 'eq', 'valid')
+        .eq('sync_status', 'sent')
+        .not('erp_target_id', 'is', null)
+        .not('erp_dataset_epoch', 'is', null)
+        .not('remote_frr_id', 'is', null)
+        .not('erp_verified_at', 'is', null);
+    } else if (filters.erpStatus === 'not_sent') {
+      query = query.or(
+        'sync_status.neq.sent,sync_status.is.null,erp_reference_status.neq.valid,erp_reference_status.is.null,erp_target_id.is.null,erp_dataset_epoch.is.null,remote_frr_id.is.null,erp_verified_at.is.null',
+      );
     }
 
     if (!filters.includeDiscarded) {
@@ -424,27 +626,64 @@ class FacturasRecibidasService {
     return updated;
   }
 
-  async sendToERP(
+  private async executeERPOperation(
+    operation: 'validate' | 'commit' | 'reconcile',
     facturaId: string,
     version?: number | null,
     requestId?: string | null,
   ): Promise<FacturaRecibida> {
     const expectedVersion = version ?? (await this.getById(facturaId))?.row_version ?? null;
     if (!expectedVersion) throw new Error('No se pudo determinar la versión de la factura antes del envío.');
+    const operationRequestId = requestId ?? crypto.randomUUID();
     const { data, error } = await supabase.functions.invoke('factura-recibida-send-erp', {
       body: {
-        contract_version: 2,
-        request_id: requestId ?? crypto.randomUUID(),
+        contract_version: 3,
+        operation,
+        request_id: operationRequestId,
         factura_id: facturaId,
         expected_version: expectedVersion,
       },
     });
-    if (error) throw error;
-    const message = getFunctionErrorMessage(data);
-    if (message && !isReconciliationRequiredResponse(data)) throw new Error(message);
+    const structuredError = extractERPErrorData(data, {
+      requestId: operationRequestId,
+    });
+    if (error && !structuredError?.reconciliationRequired) {
+      throw await getFunctionInvokeERPError(
+        error,
+        data,
+        operationRequestId,
+      );
+    }
+    if (structuredError && !structuredError.reconciliationRequired) {
+      throw new FacturaERPServiceError(structuredError);
+    }
     const updated = await this.getById(facturaId);
-    if (!updated) throw new Error('Factura no encontrada tras enviar.');
+    if (!updated) throw new Error('Factura no encontrada tras operar con el ERP.');
     return updated;
+  }
+
+  async validateERP(
+    facturaId: string,
+    version?: number | null,
+    requestId?: string | null,
+  ): Promise<FacturaRecibida> {
+    return this.executeERPOperation('validate', facturaId, version, requestId);
+  }
+
+  async commitERP(
+    facturaId: string,
+    version?: number | null,
+    requestId?: string | null,
+  ): Promise<FacturaRecibida> {
+    return this.executeERPOperation('commit', facturaId, version, requestId);
+  }
+
+  async reconcileERP(
+    facturaId: string,
+    version?: number | null,
+    requestId?: string | null,
+  ): Promise<FacturaRecibida> {
+    return this.executeERPOperation('reconcile', facturaId, version, requestId);
   }
 
   async delete(facturaId: string, version?: number | null): Promise<void> {

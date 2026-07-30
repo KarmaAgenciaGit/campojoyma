@@ -1,4 +1,5 @@
 import type { FacturaRecibida, FacturaRecibidaEstado } from '@/services/apiContracts';
+import { isFacturaERPConfirmed } from '@/lib/facturasErpStatus';
 
 export const facturaEstadoLabels: Record<FacturaRecibidaEstado, string> = {
   borrador: 'Borrador',
@@ -29,8 +30,8 @@ export type FacturaEstadoSummary = {
 export type FacturaERPStatus = 'en_erp' | 'fuera_erp';
 
 export const facturaERPStatusLabels: Record<FacturaERPStatus, string> = {
-  en_erp: 'Enviado a ERP',
-  fuera_erp: 'No enviado a ERP',
+  en_erp: 'Confirmado en ERP',
+  fuera_erp: 'No confirmado en ERP',
 };
 
 export type FacturaERPSummary = {
@@ -108,11 +109,7 @@ export const isFacturaUnprocessedUploadDraft = (factura: FacturaRecibida) => {
 };
 
 export const isFacturaInERP = (factura: FacturaRecibida) =>
-  factura.estado === 'enviada_erp' ||
-  Boolean(factura.erp_sent_at) ||
-  factura.is_readonly_reference === true ||
-  factura.source_kind === 'erp_reference' ||
-  Boolean(factura.remote_frr_id);
+  isFacturaERPConfirmed(factura);
 
 export const buildFacturasSummary = (
   facturas: FacturaRecibida[],

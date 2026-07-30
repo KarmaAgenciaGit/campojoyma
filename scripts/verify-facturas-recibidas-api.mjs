@@ -1,4 +1,3 @@
-import { createHmac, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const EXPECTED = {
@@ -34,31 +33,6 @@ const parseEnv = (content) =>
         return [key, value];
       }),
   );
-
-const base64Url = (value) =>
-  Buffer.from(value)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-
-const signJwt = (secret) => {
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const payload = base64Url(
-    JSON.stringify({
-      sub: "agroiris-edge",
-      iat: now,
-      exp: now + 300,
-      jti: randomUUID(),
-    }),
-  );
-  const unsigned = `${header}.${payload}`;
-  const signature = createHmac("sha256", secret)
-    .update(unsigned)
-    .digest("base64url");
-  return `${unsigned}.${signature}`;
-};
 
 const asNumber = (value) => {
   if (value === null || value === undefined || value === "") return null;
@@ -104,18 +78,28 @@ const unwrapList = (payload) => {
 
 const main = async () => {
   const env = parseEnv(await readFile(new URL("../.env", import.meta.url), "utf8"));
-  const webhookUrl = env.N8N_CAMPOJOYMA_READ_WEBHOOK_URL;
-  const jwtSecret = env.N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET;
-  if (!webhookUrl || !jwtSecret) {
-    throw new Error("Faltan N8N_CAMPOJOYMA_READ_WEBHOOK_URL o N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET.");
+  const apiBaseUrl = env.CAMPOJOYMA_API_V2_BASE_URL;
+  const apiSharedSecret = env.CAMPOJOYMA_API_V2_SHARED_SECRET;
+  if (!apiBaseUrl || !apiSharedSecret) {
+    throw new Error(
+      "Faltan CAMPOJOYMA_API_V2_BASE_URL o CAMPOJOYMA_API_V2_SHARED_SECRET.",
+    );
   }
 
-  const jwt = signJwt(jwtSecret);
+  const normalizedBaseUrl = new URL(
+    apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`,
+  );
+  if (
+    normalizedBaseUrl.protocol !== "https:" &&
+    normalizedBaseUrl.hostname !== "127.0.0.1" &&
+    normalizedBaseUrl.hostname !== "localhost"
+  ) {
+    throw new Error("CAMPOJOYMA_API_V2_BASE_URL debe usar HTTPS o loopback.");
+  }
   const apiGet = async (consulta) => {
-    const url = new URL(webhookUrl);
-    url.searchParams.set("consulta", consulta);
+    const url = new URL(consulta.replace(/^\/+/, ""), normalizedBaseUrl);
     const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${jwt}` },
+      headers: { "X-Netagro-Api-Key": apiSharedSecret },
       signal: AbortSignal.timeout(45_000),
     });
     if (!response.ok) {

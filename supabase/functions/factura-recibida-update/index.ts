@@ -86,13 +86,39 @@ Deno.serve(async (req) => {
       [...accountingRules.issues, ...structuralIssues],
       preservedOperationalWarnings,
     );
-    const explicitEstado = typeof body.estado === "string"
-      ? body.estado
-      : typeof facturaInput.estado === "string"
-        ? facturaInput.estado
-        : null;
-    const nextEstado = explicitEstado ??
-      (validationErrors.some((error) => error.severity === "error") ? "pendiente_revision" : "validada");
+    // Document state is derived at the trusted Edge boundary. A caller cannot
+    // force `validada` while blocking validation issues still exist.
+    const discardRequested =
+      body.estado === "descartada" ||
+      facturaInput.estado === "descartada" ||
+      current.estado === "descartada";
+    const nextEstado = discardRequested
+      ? "descartada"
+      : current.duplicada_de
+        ? "duplicada"
+        : validationErrors.some((error) => error.severity === "error")
+          ? "pendiente_revision"
+          : "validada";
+    const requestedFechaCtbSource =
+      body.fecha_ctb_source ?? facturaInput.fecha_ctb_source;
+    const fechaCtbWasEdited =
+      Object.prototype.hasOwnProperty.call(frr, "FRR_fechactb") &&
+      frr.FRR_fechactb !== current.FRR_fechactb;
+    const fechaCtbSource = requestedFechaCtbSource === "manual"
+      ? "manual"
+      : requestedFechaCtbSource === "invoice_date"
+        ? "invoice_date"
+        : fechaCtbWasEdited
+          ? "manual"
+          : current.fecha_ctb_source === "manual"
+            ? "manual"
+            : "invoice_date";
+    if (
+      fechaCtbSource === "invoice_date" &&
+      Object.prototype.hasOwnProperty.call(frr, "FRR_fechafactura")
+    ) {
+      frr.FRR_fechactb = frr.FRR_fechafactura;
+    }
 
     const ctbInput = asObjectArray(body.ctb);
     const punteosInput = asObjectArray(body.punteos);
@@ -108,6 +134,7 @@ Deno.serve(async (req) => {
         proveedor_nombre: body.proveedor_nombre ?? facturaInput.proveedor_nombre ?? current.proveedor_nombre ?? null,
         proveedor_nif: body.proveedor_nif ?? facturaInput.proveedor_nif ?? current.proveedor_nif ?? null,
         estado: nextEstado,
+        fecha_ctb_source: fechaCtbSource,
         match_evidence: resolvedMatchEvidence,
         validation_errors: validationErrors,
       },

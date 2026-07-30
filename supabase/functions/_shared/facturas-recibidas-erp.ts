@@ -33,6 +33,7 @@ export type JsonValue =
 export type JsonObject = Record<string, unknown>;
 
 export const FACTURAS_RECIBIDAS_CONTRACT_VERSION = 2;
+export const FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION = 3;
 export const FACTURAS_RECIBIDAS_PDF_BUCKET = "facturas-recibidas-pdf";
 
 export const corsHeaders = {
@@ -391,6 +392,23 @@ export const isEligibleERPCommitAttempt = (
   text(attempt.request_id, null) === requestId &&
   text(attempt.phase, null) === "commit" &&
   ["unknown", "succeeded"].includes(text(attempt.status, "") ?? "");
+
+export const ERPAttemptMatchesIdentity = (
+  attempt: JsonObject | null | undefined,
+  expected: {
+    targetId: string;
+    datasetEpoch: string;
+    circuit: "genero" | "acreedores";
+    payloadHash: string;
+    businessFingerprint: string;
+  },
+) =>
+  Boolean(attempt) &&
+  text(attempt?.erp_target_id, null) === expected.targetId &&
+  text(attempt?.erp_dataset_epoch, null) === expected.datasetEpoch &&
+  text(attempt?.circuit, null) === expected.circuit &&
+  text(attempt?.payload_hash, null) === expected.payloadHash &&
+  text(attempt?.business_fingerprint, null) === expected.businessFingerprint;
 
 export const rpcErrorStatus = (message: string) => {
   if (message.includes("VERSION_CONFLICT")) return 409;
@@ -818,7 +836,13 @@ export const resolveFacturaIngestAuthority = ({
     normalizedRemoteFrrId > 0;
   return {
     frr: isERPReference ? { ...frr } : sanitizeUntrustedFacturaAccountingFields(frr),
-    ctb: isERPReference ? ctb.map((linea) => ({ ...linea })) : [],
+    // CTB extracted from a draft is user-reviewable business data. Only the
+    // ERP-generated identifiers are untrusted, not the account distribution.
+    ctb: ctb.map((linea, index) =>
+      isERPReference
+        ? { ...linea }
+        : normalizeFrcPayload(linea, index + 1)
+    ),
     punteos: isERPReference
       ? punteos.map((punteo) => ({ ...punteo }))
       : sanitizeUntrustedPunteoSelections(punteos),
@@ -2000,7 +2024,7 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
   { path: /^acreedores\/\d+\/gastos$/, keys: new Set(["schema"]) },
   {
     path: /^cuentas-contables$/,
-    keys: new Set(["account_schema", "limit", "offset", "q", "cuenta", "nif"]),
+    keys: new Set(["empresa_id", "limit", "offset", "q", "cuenta", "nif"]),
   },
   // La ruta `cuentas/...` no existe en FastAPI; mantenerla en la allowlist solo
   // producia 404 rio arriba presentados como 500. La lectura de cuentas es
@@ -4039,39 +4063,37 @@ export const signJwtHs256 = async (secret: string, expSeconds: number) => {
   return `${unsigned}.${encodeBytesBase64Url(new Uint8Array(signature))}`;
 };
 
-const DEFAULT_ERP_READ_WEBHOOK_URL =
-  "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma";
-
 /**
- * Lectura ERP interna autenticada. Se comparte con los resolutores Edge para no
- * encadenar una Edge Function protegida por usuario desde procesos de agente.
+ * Direct authenticated read against FastAPI. n8n is deliberately excluded
+ * from every ERP read/write path and remains only in document extraction.
  */
 export const fetchERPReadConsulta = async (consulta: string): Promise<unknown> => {
   if (!isAllowedERPConsulta(consulta)) {
     throw new Error("ERP_READ_QUERY_NOT_ALLOWED: consulta no permitida.");
   }
-  const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET")?.trim();
-  if (!jwtSecret) {
+  const baseUrlValue = Deno.env.get("CAMPOJOYMA_API_V2_BASE_URL")?.trim();
+  const sharedSecret = Deno.env.get("CAMPOJOYMA_API_V2_SHARED_SECRET")?.trim();
+  if (!baseUrlValue || !sharedSecret) {
     throw new Error("ERP_READ_UNAVAILABLE: falta configuracion interna.");
   }
-  const configuredExpiration = integerValue(
-    Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS"),
-    300,
-  ) ?? 300;
-  const expiration = configuredExpiration > 0 ? configuredExpiration : 300;
-  const webhookUrl =
-    Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim() ||
-    Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_URL")?.trim() ||
-    DEFAULT_ERP_READ_WEBHOOK_URL;
-  const url = new URL(webhookUrl);
-  if (url.protocol !== "https:") {
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(
+      baseUrlValue.endsWith("/") ? baseUrlValue : `${baseUrlValue}/`,
+    );
+  } catch {
+    throw new Error("ERP_READ_UNAVAILABLE: URL interna no valida.");
+  }
+  if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password) {
     throw new Error("ERP_READ_UNAVAILABLE: la URL interna debe usar HTTPS.");
   }
-  url.searchParams.set("consulta", consulta);
-  const jwt = await signJwtHs256(jwtSecret, expiration);
+  const url = new URL(consulta.replace(/^\/+/, ""), baseUrl);
   const upstream = await fetch(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${jwt}` },
+    headers: {
+      "X-Netagro-Api-Key": sharedSecret,
+      Accept: "application/json",
+    },
     signal: AbortSignal.timeout(30_000),
   });
   const { payload } = await parseJsonResponse(upstream);

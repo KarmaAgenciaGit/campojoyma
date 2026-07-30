@@ -72,6 +72,16 @@ type FacturasRecibidasRow = {
   erp_last_read_at: string | null
   erp_last_read_payload: Json | null
   last_request_id: string | null
+  erp_target_id: string | null
+  erp_dataset_epoch: string | null
+  erp_payload_hash: string | null
+  erp_business_fingerprint: string | null
+  erp_verified_at: string | null
+  erp_reference_status: string
+  erp_validation_status: string
+  erp_validation_request_id: string | null
+  erp_validated_at: string | null
+  fecha_ctb_source: string
   FRR_id: number | null
   FRR_numero: number | null
   FRR_fechafactura: string | null
@@ -221,15 +231,39 @@ type FacturasRecibidasSyncAttemptRow = {
   request_id: string
   contract_version: number
   phase: string
+  operation: string
   dry_run: boolean
   status: string
+  erp_target_id: string | null
+  erp_dataset_epoch: string | null
+  circuit: string | null
+  payload_hash: string | null
+  business_fingerprint: string | null
   request_payload: Json
   response_payload: Json | null
   http_status: number | null
   error: string | null
+  error_code: string | null
+  error_category: string | null
+  retryable: boolean
+  reconciliation_required: boolean
   started_at: string
   completed_at: string | null
   created_by: string | null
+  updated_at: string
+}
+
+type ErpTargetRow = {
+  id: string
+  display_name: string
+  environment: string
+  dataset_epoch: string | null
+  snapshot_at: string | null
+  write_mode: string
+  accounting_mode: string
+  active: boolean
+  metadata: Json
+  created_at: string
   updated_at: string
 }
 
@@ -312,6 +346,13 @@ export type Database = {
         }
         Relationships: []
       }
+      erp_targets: {
+        Row: ErpTargetRow
+        Insert: Partial<ErpTargetRow> &
+          Pick<ErpTargetRow, "id" | "display_name" | "environment">
+        Update: Partial<ErpTargetRow>
+        Relationships: []
+      }
       facturas_recibidas_erp_rules: {
         Row: {
           activo: boolean
@@ -324,6 +365,7 @@ export type Database = {
           empresa_id: number
           fecha_ctb_policy: string | null
           id: string
+          punteo_difference_policy: string | null
           proveedor_id: number | null
           regimen_id: number | null
           tipo_factura: string | null
@@ -340,6 +382,7 @@ export type Database = {
           empresa_id: number
           fecha_ctb_policy?: string | null
           id?: string
+          punteo_difference_policy?: string | null
           proveedor_id?: number | null
           regimen_id?: number | null
           tipo_factura?: string | null
@@ -356,6 +399,7 @@ export type Database = {
           empresa_id?: number
           fecha_ctb_policy?: string | null
           id?: string
+          punteo_difference_policy?: string | null
           proveedor_id?: number | null
           regimen_id?: number | null
           tipo_factura?: string | null
@@ -386,6 +430,13 @@ export type Database = {
             columns: ["duplicada_de"]
             isOneToOne: false
             referencedRelation: "facturasrecibidas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facturasrecibidas_erp_target_id_fkey"
+            columns: ["erp_target_id"]
+            isOneToOne: false
+            referencedRelation: "erp_targets"
             referencedColumns: ["id"]
           },
         ]
@@ -430,7 +481,22 @@ export type Database = {
         Insert: Partial<FacturasRecibidasSyncAttemptRow> &
           Pick<FacturasRecibidasSyncAttemptRow, "factura_id" | "request_id" | "phase" | "dry_run">
         Update: Partial<FacturasRecibidasSyncAttemptRow>
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "facturasrecibidas_sync_attempts_factura_id_fkey"
+            columns: ["factura_id"]
+            isOneToOne: false
+            referencedRelation: "facturasrecibidas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facturasrecibidas_sync_attempts_erp_target_id_fkey"
+            columns: ["erp_target_id"]
+            isOneToOne: false
+            referencedRelation: "erp_targets"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       facturasrecibidas_asientos: {
         Row: FacturasRecibidasAsientoRow
@@ -1006,6 +1072,20 @@ export type Database = {
         }
         Returns: Json
       }
+      begin_factura_recibida_sync_v3: {
+        Args: {
+          p_actor?: string | null
+          p_business_fingerprint: string
+          p_dataset_epoch: string
+          p_expected_version: number
+          p_factura_id: string
+          p_payload: Json
+          p_payload_hash: string
+          p_request_id: string
+          p_target_id: string
+        }
+        Returns: Json
+      }
       create_factura_recibida_v2: {
         Args: {
           p_actor?: string | null
@@ -1068,6 +1148,20 @@ export type Database = {
         }
         Returns: Json
       }
+      finalize_factura_recibida_sync_v3: {
+        Args: {
+          p_actor?: string | null
+          p_business_fingerprint: string
+          p_dataset_epoch: string
+          p_factura_id: string
+          p_payload_hash: string
+          p_readback: Json
+          p_request_id: string
+          p_target_id: string
+          p_write_response: Json
+        }
+        Returns: Json
+      }
       finish_factura_recibida_sync_v2: {
         Args: {
           p_actor?: string | null
@@ -1078,6 +1172,71 @@ export type Database = {
           p_request_id: string
           p_response_payload?: Json | null
           p_status: string
+        }
+        Returns: Json
+      }
+      finish_factura_recibida_sync_v3: {
+        Args: {
+          p_actor?: string | null
+          p_error?: string | null
+          p_error_category?: string | null
+          p_error_code?: string | null
+          p_factura_id: string
+          p_http_status?: number | null
+          p_phase: string
+          p_reconciliation_required?: boolean
+          p_request_id: string
+          p_response?: Json | null
+          p_retryable?: boolean
+          p_status: string
+        }
+        Returns: Json
+      }
+      mark_stale_factura_recibida_syncs_v3: {
+        Args: {
+          p_actor?: string | null
+          p_cutoff?: string
+        }
+        Returns: number
+      }
+      record_factura_recibida_validation_v3: {
+        Args: {
+          p_actor?: string | null
+          p_business_fingerprint: string
+          p_dataset_epoch: string
+          p_error?: string | null
+          p_error_category?: string | null
+          p_error_code?: string | null
+          p_expected_version: number
+          p_factura_id: string
+          p_http_status?: number | null
+          p_payload: Json
+          p_payload_hash: string
+          p_request_id: string
+          p_response: Json
+          p_retryable?: boolean
+          p_target_id: string
+          p_valid: boolean
+        }
+        Returns: Json
+      }
+      rotate_erp_target_epoch_v3: {
+        Args: {
+          p_actor?: string | null
+          p_dataset_epoch: string
+          p_snapshot_at: string
+          p_target_id: string
+        }
+        Returns: Json
+      }
+      set_erp_target_write_mode_v3: {
+        Args: {
+          p_actor?: string | null
+          p_confirmation?: string | null
+          p_dataset_epoch: string
+          p_gates?: Json
+          p_target_id: string
+          p_write_mode: string
         }
         Returns: Json
       }

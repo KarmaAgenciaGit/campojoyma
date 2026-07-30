@@ -1,3 +1,5 @@
+import type { FacturaERPReferenceStatus } from '@/lib/facturasErpStatus';
+
 export type FacturaRecibidaEstado =
   | 'pendiente_revision'
   | 'error_ocr'
@@ -117,6 +119,15 @@ export type FacturaRecibida = {
   erp_error: string | null;
   row_version: number;
   sync_status: string | null;
+  erp_validation_status: string | null;
+  erp_validation_request_id: string | null;
+  erp_validated_at: string | null;
+  erp_payload_hash: string | null;
+  erp_business_fingerprint: string | null;
+  erp_reference_status: FacturaERPReferenceStatus;
+  erp_target_id: string | null;
+  erp_dataset_epoch: string | null;
+  erp_verified_at: string | null;
   accounting_status: string | null;
   accounting_visible_number: string | null;
   accounting_date: string | null;
@@ -135,6 +146,7 @@ export type FacturaRecibida = {
   FRR_numerofactura: string | null;
   FRR_fechafactura: string | null;
   FRR_fechactb: string | null;
+  fecha_ctb_source: 'invoice_date' | 'manual' | null;
   FRR_Idempresa: number | null;
   FRR_base1: number | null;
   FRR_iva1: number | null;

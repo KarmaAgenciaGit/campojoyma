@@ -1,6 +1,10 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
 import { supabase } from '@/integrations/supabase/client';
+import {
+  getFacturaERPRegistrationState,
+  normalizeFacturaERPReferenceStatus,
+} from '@/lib/facturasErpStatus';
 import { sanitizeUserFacingErrorMessage } from '@/lib/userFacingErrors';
 import { facturasRecibidas } from '@/services/facturasRecibidas';
 import type {
@@ -66,6 +70,15 @@ export type FacturaRegimenOption = {
 export type FacturaCuentaOption = {
   value: string;
   label: string;
+  description: string | null;
+  nif: string | null;
+};
+
+export type FacturaTipoIvaOption = {
+  value: string;
+  porcentaje: number;
+  label: string;
+  nombre: string | null;
 };
 
 export type FacturaERPMatch = {
@@ -99,6 +112,20 @@ export type FacturaRecibidaUiPage = {
   total: number;
   page: number;
   pageSize: number;
+};
+
+export type FacturasRecibidasERPRuntime = {
+  target_id: string | null;
+  dataset_epoch: string | null;
+  snapshot_at: string | null;
+  write_mode: 'disabled' | 'blocked' | 'management';
+  accounting_mode: 'unavailable' | 'official';
+  ready_for_commit: boolean;
+  capabilities: {
+    validate: boolean;
+    management_commit: boolean;
+    accounting_commit: boolean;
+  };
 };
 
 export type AlbaranEntrada = {
@@ -373,6 +400,62 @@ const erpRead = async <T>(consulta: string): Promise<T> => {
   return data as T;
 };
 
+export const fetchFacturasRecibidasERPRuntime =
+  async (): Promise<FacturasRecibidasERPRuntime> => {
+    const requestId = crypto.randomUUID();
+    const { data, error } = await supabase.functions.invoke(
+      'facturas-recibidas-erp-runtime',
+      {
+        body: {
+          contract_version: 3,
+          request_id: requestId,
+        },
+      },
+    );
+    if (error) {
+      throw new Error(
+        (await getFunctionInvokeErrorMessage(error, data)) ??
+          'No se pudo comprobar la capacidad actual del ERP.',
+      );
+    }
+    const message = getFunctionErrorMessage(data);
+    if (message) throw new Error(message);
+
+    const envelope = asRecord(data);
+    const runtime = asRecord(envelope.runtime);
+    const capabilities = asRecord(runtime.capabilities);
+    const writeMode = cleanText(runtime.write_mode);
+    const accountingMode = cleanText(runtime.accounting_mode);
+    if (
+      envelope.ok !== true ||
+      !['disabled', 'blocked', 'management'].includes(writeMode ?? '') ||
+      !['unavailable', 'official'].includes(accountingMode ?? '') ||
+      typeof runtime.ready_for_commit !== 'boolean' ||
+      typeof capabilities.validate !== 'boolean' ||
+      typeof capabilities.management_commit !== 'boolean' ||
+      typeof capabilities.accounting_commit !== 'boolean'
+    ) {
+      throw new Error(
+        'El ERP no devolvió una descripción válida de sus capacidades.',
+      );
+    }
+
+    return {
+      target_id: cleanText(runtime.target_id),
+      dataset_epoch: cleanText(runtime.dataset_epoch),
+      snapshot_at: cleanText(runtime.snapshot_at),
+      write_mode: writeMode as FacturasRecibidasERPRuntime['write_mode'],
+      accounting_mode:
+        accountingMode as FacturasRecibidasERPRuntime['accounting_mode'],
+      ready_for_commit: runtime.ready_for_commit,
+      capabilities: {
+        validate: capabilities.validate,
+        management_commit: capabilities.management_commit,
+        accounting_commit: capabilities.accounting_commit,
+      },
+    };
+  };
+
 const mapEstadoToUi = (estado: ERPFacturaEstado): UiFacturaEstado => {
   if (estado === 'enviada_erp') return 'enviada_erp';
   if (estado === 'error_erp') return 'error_erp';
@@ -467,6 +550,14 @@ export const getFacturaERPSendConfirmation = (
   factura: Partial<UiFacturaRecibida> | null | undefined,
 ): FacturaERPSendConfirmation => {
   if (!factura) return 'unconfirmed';
+  const registrationState = getFacturaERPRegistrationState(factura);
+  if (registrationState === 'confirmed') return 'confirmed';
+  if (
+    registrationState === 'sending' ||
+    registrationState === 'uncertain'
+  ) {
+    return 'reconciling';
+  }
 
   const response = asRecord(factura.erp_response);
   const responseData = asRecord(response.data ?? response.result);
@@ -489,120 +580,14 @@ export const getFacturaERPSendConfirmation = (
   if (referenceOnly || isERPReferenceFactura(factura)) {
     return 'reference_only';
   }
-  if (
-    readbackStatus === 'unknown' ||
-    ['sending', 'unknown', 'reconciling'].includes(normalizeIssueToken(factura.sync_status))
-  ) {
+  if (readbackStatus === 'unknown') {
     return 'reconciling';
   }
-
-  const remoteId = numberValue(factura.remote_frr_id, null);
-  return factura.estado === 'enviada_erp' && remoteId !== null && remoteId > 0
-    ? 'confirmed'
-    : 'unconfirmed';
+  return 'unconfirmed';
 };
 
 const validationIssues = (factura: ERPFacturaRecibida) =>
   normalizeFacturaValidationIssues(factura.validation_errors);
-
-const erpFacturaPayloadKeys = [
-  'FRR_ejercicio',
-  'FRR_idcentro',
-  'FRR_idproveedor',
-  'FRR_idregimen',
-  'FRR_idcuenta',
-  'FRR_numerofactura',
-  'FRR_fechafactura',
-  'FRR_fechactb',
-  'FRR_Idempresa',
-  'FRR_base1',
-  'FRR_iva1',
-  'FRR_cuota1',
-  'FRR_base2',
-  'FRR_iva2',
-  'FRR_cuota2',
-  'FRR_base3',
-  'FRR_iva3',
-  'FRR_cuota3',
-  'FRR_base4',
-  'FRR_iva4',
-  'FRR_cuota4',
-  'FRR_base5',
-  'FRR_iva5',
-  'FRR_cuota5',
-  'FRR_baseret',
-  'FRR_ret',
-  'FRR_cuotaret',
-  'FRR_igasto1',
-  'FRR_ctagasto1',
-  'FRR_igasto2',
-  'FRR_ctagasto2',
-  'FRR_igasto3',
-  'FRR_ctagasto3',
-  'FRR_igasto4',
-  'FRR_ctagasto4',
-  'FRR_totalfac',
-  'FRR_tipofactura',
-  'FRR_idpuntoventa',
-  'FRR_ClaveIRPF',
-  'FRR_CtaCartera',
-  'FRR_IdBanco',
-  'FRR_IdFormaPago',
-  'FechaVto',
-  'ImporteVto',
-  'FRR_Modificable',
-  'FRR_GeneraCartera',
-  'FRR_idpago',
-  'FRR_FechaVto1',
-  'FRR_ImporteVto1',
-  'FRR_FechaVto2',
-  'FRR_ImporteVto2',
-  'FRR_FechaVto3',
-  'FRR_ImporteVto3',
-  'FRR_IdTipoDoc',
-  'FRR_IdAgricultorDto',
-  'FRR_CtaSuplido',
-  'FRR_Concepto',
-  'FRR_Observaciones',
-  'FRR_ObservacionesAEAT',
-  'FRR_ImpSuplido',
-  'FRR_CuotaNoDeducible',
-  'FRR_FechaPrevPago',
-  'FRR_BancoPrevPago',
-  'FRR_IdSeccion',
-  'FRR_IdActividad',
-  'FRR_CancelarporCtb',
-  'FRR_Contabilizar',
-] as const;
-
-const erpCtbPayloadKeys = [
-  'FRC_Cuenta',
-  'FRC_Importe',
-  'FRC_IdActividad',
-  'FRC_Idseccion',
-  'FRC_Iddepartamento',
-  'FRC_Idsubdepartamento',
-] as const;
-
-const pickPayloadKeys = <TSource extends Record<string, unknown>>(source: TSource, keys: readonly string[]) =>
-  Object.fromEntries(keys.map((key) => [key, source[key] ?? null]));
-
-export const buildERPWebhookPayloadPreview = (factura: ERPFacturaRecibida) => ({
-  contract_version: 2,
-  request_id: factura.id,
-  dry_run: true,
-  cabecera: pickPayloadKeys(factura as unknown as Record<string, unknown>, erpFacturaPayloadKeys),
-  ctb: factura.ctb.map((linea) => pickPayloadKeys(linea as unknown as Record<string, unknown>, erpCtbPayloadKeys)),
-  punteos: factura.punteos
-    .filter((punteo) => punteo.S === true)
-    .map((punteo) => ({
-      source_table: cleanText(punteo.source_table)?.toLowerCase() ?? null,
-      source_id: numberValue(punteo.source_id, null),
-      ...(punteo.importe_factura === null || punteo.importe_factura === undefined
-        ? {}
-        : { importe_factura: numberValue(punteo.importe_factura, null) }),
-    })),
-});
 
 const mapLineToUi = (linea: ERPFacturaRecibida['ctb'][number], index: number): FacturaRecibidaLinea => ({
   id: linea.id,
@@ -715,6 +700,12 @@ export const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida =
   referencia: cleanText(factura.FRR_numero),
   ejercicio: factura.FRR_ejercicio,
   fecha_ctb: factura.FRR_fechactb,
+  fecha_ctb_source:
+    factura.fecha_ctb_source ??
+    (factura.FRR_fechactb &&
+    factura.FRR_fechactb === factura.FRR_fechafactura
+      ? 'invoice_date'
+      : 'manual'),
   tipo_iva_codigo: cleanText(factura.FRR_idregimen),
   asiento: factura.FRR_IdAsientoNet,
   asiento_tecnico: accounting.technical_id,
@@ -779,6 +770,32 @@ export const mapFacturaToUi = (factura: ERPFacturaRecibida): UiFacturaRecibida =
   version: readNumber(source, ['row_version', 'version'], null),
   sync_status: readText(source, ['sync_status'], null),
   last_request_id: cleanText(factura.last_request_id),
+  erp_validation_status: readText(
+    source,
+    ['erp_validation_status'],
+    'not_validated',
+  ) as UiFacturaRecibida['erp_validation_status'],
+  erp_validation_request_id: cleanText(factura.erp_validation_request_id),
+  erp_validated_at: cleanText(factura.erp_validated_at),
+  erp_payload_hash: cleanText(factura.erp_payload_hash),
+  erp_business_fingerprint: cleanText(
+    factura.erp_business_fingerprint,
+  ),
+  erp_reference_status: normalizeFacturaERPReferenceStatus(
+    factura.erp_reference_status,
+    {
+      targetId: factura.erp_target_id,
+      datasetEpoch: factura.erp_dataset_epoch,
+      hasRemoteIdentity:
+        (numberValue(
+          factura.remote_frr_id ?? factura.FRR_id,
+          null,
+        ) ?? 0) > 0,
+    },
+  ),
+  erp_target_id: cleanText(factura.erp_target_id),
+  erp_dataset_epoch: cleanText(factura.erp_dataset_epoch),
+  erp_verified_at: cleanText(factura.erp_verified_at),
   accounting_status: readText(source, ['accounting_status'], accounting.status),
   erp_last_read_at: readText(source, ['erp_last_read_at'], null),
   created_at: factura.created_at,
@@ -882,6 +899,25 @@ export const mapRemoteFacturaToUi = (
   const ivaTramos = buildIvaTramos(factura);
   const vencimientos = buildVencimientos(factura);
   const accounting = mapAccounting(factura, accountingResponse);
+  const erpTargetId = readText(
+    factura,
+    ['erp_target_id', 'target_id'],
+    null,
+  );
+  const erpDatasetEpoch = readText(
+    factura,
+    ['erp_dataset_epoch', 'dataset_epoch'],
+    null,
+  );
+  const erpReferenceStatus = normalizeFacturaERPReferenceStatus(
+    readText(factura, ['erp_reference_status'], null),
+    {
+      targetId: erpTargetId,
+      datasetEpoch: erpDatasetEpoch,
+      hasRemoteIdentity: frrId > 0,
+      verifiedByCurrentReadback: true,
+    },
+  );
 
   return {
     id: erpRemoteId(frrId),
@@ -895,6 +931,10 @@ export const mapRemoteFacturaToUi = (
     referencia: cleanText(readNumber(factura, ['FRR_numero', 'numero'], null)),
     ejercicio: readNumber(factura, ['FRR_ejercicio', 'ejercicio'], null),
     fecha_ctb: fechaContable,
+    fecha_ctb_source:
+      fechaContable && fechaContable === fechaFactura
+        ? 'invoice_date'
+        : 'manual',
     tipo_iva_codigo: cleanText(readNumber(factura, ['FRR_idregimen', 'idregimen', 'tipo_iva_id'], null)),
     asiento: readNumber(factura, ['FRR_IdAsientoNet', 'asiento'], null),
     asiento_tecnico: accounting.technical_id,
@@ -952,6 +992,20 @@ export const mapRemoteFacturaToUi = (
     vencimientos,
     version: readNumber(factura, ['version'], null),
     sync_status: readText(factura, ['sync_status'], null),
+    erp_validation_status:
+      erpReferenceStatus === 'valid' ? 'valid' : 'not_validated',
+    erp_validation_request_id: null,
+    erp_validated_at: readText(factura, ['erp_last_read_at'], null),
+    erp_payload_hash: null,
+    erp_business_fingerprint: readText(
+      factura,
+      ['erp_business_fingerprint', 'business_fingerprint'],
+      null,
+    ),
+    erp_reference_status: erpReferenceStatus,
+    erp_target_id: erpTargetId,
+    erp_dataset_epoch: erpDatasetEpoch,
+    erp_verified_at: readText(factura, ['erp_verified_at'], null),
     accounting_status: readText(factura, ['accounting_status'], accounting.status),
     erp_last_read_at: readText(factura, ['erp_last_read_at'], null),
     created_at: timestamp,
@@ -1050,6 +1104,8 @@ export const buildFacturaPayload = (
     FRR_numerofactura: suppliedTextOrCurrent(factura, 'numero_factura', current?.FRR_numerofactura),
     FRR_fechafactura: suppliedTextOrCurrent(factura, 'fecha_factura', current?.FRR_fechafactura),
     FRR_fechactb: suppliedTextOrCurrent(factura, 'fecha_ctb', current?.FRR_fechactb),
+    fecha_ctb_source:
+      factura.fecha_ctb_source === 'manual' ? 'manual' : 'invoice_date',
     FRR_Idempresa: suppliedNumberOrCurrent(factura, 'fr_alm', current?.FRR_Idempresa),
     FRR_tipofactura: suppliedTextOrCurrent(factura, 'fr_sufa', current?.FRR_tipofactura),
     FRR_baseret: suppliedNumberOrCurrent(factura, 'base_retencion', current?.FRR_baseret) ?? 0,
@@ -1101,8 +1157,18 @@ export const buildFacturaPayload = (
   return payload;
 };
 
+export const isFacturaCtbLineaEmpty = (linea: FacturaRecibidaLinea) =>
+  !cleanText(linea.descripcion) &&
+  Math.abs(numberValue(linea.importe, 0) ?? 0) <= 0.01 &&
+  [
+    linea.FRC_IdActividad,
+    linea.FRC_Idseccion,
+    linea.FRC_Iddepartamento,
+    linea.FRC_Idsubdepartamento,
+  ].every((value) => numberValue(value, null) === null);
+
 export const buildCtbPayload = (lineas: FacturaRecibidaLinea[]) =>
-  lineas.map((linea, index) => ({
+  lineas.filter((linea) => !isFacturaCtbLineaEmpty(linea)).map((linea, index) => ({
     posicion: index + 1,
     FRC_id: numberValue(linea.FRC_id, null),
     FRC_idfacturarecibida: numberValue(linea.FRC_idfacturarecibida, null),
@@ -1415,65 +1481,34 @@ export const sendFacturaRecibidaToERP = async (
   id: string,
   version?: number | null,
   requestId?: string | null,
+  operation: 'commit' | 'reconcile' = 'commit',
 ): Promise<UiFacturaRecibida> => {
   if (erpIdFromUiId(id)) {
     throw new Error('Esta factura ya existe en ERP y se muestra en modo solo lectura.');
   }
 
-  const sent = await facturasRecibidas.sendToERP(id, version, requestId);
+  const sent =
+    operation === 'reconcile'
+      ? await facturasRecibidas.reconcileERP(id, version, requestId)
+      : await facturasRecibidas.commitERP(id, version, requestId);
   return mapFacturaToUi(sent);
 };
 
-export type FacturaERPPayloadPreview = {
-  ok: boolean;
-  can_send: boolean;
-  factura_id: string;
-  validation_errors: FacturaValidationIssue[];
-  blocking_errors: FacturaValidationIssue[];
-  validation_warnings: FacturaValidationIssue[];
-  payload: Record<string, unknown>;
-  body_json: string;
-};
-
-export const fetchFacturaRecibidaERPPayloadPreview = async (
+export const validateFacturaRecibidaERP = async (
   id: string,
-): Promise<FacturaERPPayloadPreview> => {
-  const remoteId = erpIdFromUiId(id);
-  if (remoteId) {
-    const factura = await fetchFacturaRecibidaById(id);
-    return {
-      ok: Boolean(factura),
-      can_send: false,
-      factura_id: id,
-      validation_errors: [],
-      blocking_errors: [],
-      validation_warnings: [],
-      payload: factura?.erp_response ?? {},
-      body_json: JSON.stringify(factura?.erp_response ?? {}, null, 2),
-    };
+  version?: number | null,
+  requestId?: string | null,
+): Promise<UiFacturaRecibida> => {
+  if (erpIdFromUiId(id)) {
+    throw new Error('Esta factura ya existe en ERP y se muestra en modo solo lectura.');
   }
 
-  const factura = await facturasRecibidas.getById(id);
-  const validation = partitionFacturaValidationIssues(
-    factura
-      ? validationIssues(factura)
-      : [{
-          code: 'factura_no_encontrada',
-          field: 'id',
-          message: 'Factura no encontrada.',
-          severity: 'error',
-        }],
+  const validated = await facturasRecibidas.validateERP(
+    id,
+    version,
+    requestId,
   );
-  return {
-    ok: Boolean(factura),
-    can_send: Boolean(factura) && validation.errors.length === 0,
-    factura_id: id,
-    validation_errors: validation.issues,
-    blocking_errors: validation.errors,
-    validation_warnings: validation.warnings,
-    payload: factura ? buildERPWebhookPayloadPreview(factura) : {},
-    body_json: JSON.stringify(factura ? buildERPWebhookPayloadPreview(factura) : {}, null, 2),
-  };
+  return mapFacturaToUi(validated);
 };
 
 export type LocalizarProveedorResponse = {
@@ -1815,6 +1850,7 @@ const looksLikeProveedorNotFoundError = (error: unknown) => {
 
 export const preflightFacturaRecibidaERP = async (
   factura: Partial<UiFacturaRecibida>,
+  options: { gastos?: FacturaRecibidaLinea[] } = {},
 ): Promise<FacturaERPPreflightResult> => {
   const proveedorId = numberValue(factura.proveedor_codigo, null);
   const empresaId = numberValue(factura.fr_alm, null);
@@ -1843,6 +1879,70 @@ export const preflightFacturaRecibidaERP = async (
   }
   if (!numeroFactura) {
     issues.push(validationIssue('numero_factura_requerido', 'FRR_numerofactura', 'Indica el numero de factura.'));
+  }
+
+  const accountingLines = [
+    ...(options.gastos ?? []).map((linea, index) => ({
+      ...linea,
+      kind: 'gasto' as const,
+      index,
+    })),
+    ...(factura.ctb_lineas ?? []).map((linea, index) => ({
+      ...linea,
+      kind: 'ctb' as const,
+      index,
+    })),
+  ];
+  const accountPairIssues = validateFacturaAccountPairs({
+    gastos: options.gastos ?? [],
+    ctb: factura.ctb_lineas ?? [],
+  });
+  issues.push(...accountPairIssues);
+
+  if (
+    empresaId &&
+    !accountPairIssues.some((issue) => issue.severity === 'error')
+  ) {
+    const accounts = Array.from(
+      new Set(
+        accountingLines
+          .map((linea) => cleanText(linea.descripcion))
+          .filter((account): account is string => Boolean(account)),
+      ),
+    );
+    const accountResults = await Promise.allSettled(
+      accounts.map(async (account) => ({
+        account,
+        options: await fetchFacturaCuentas({
+          empresaId,
+          cuenta: account,
+          limit: 10,
+        }),
+      })),
+    );
+    accountResults.forEach((result, index) => {
+      const account = accounts[index];
+      if (result.status === 'rejected') {
+        issues.push(
+          validationIssue(
+            'cuentas_api_no_disponible',
+            'cuentas_contables',
+            'No se pudieron comprobar las cuentas contables en el ERP.',
+          ),
+        );
+      } else if (
+        !result.value.options.some((option) => option.value === account)
+      ) {
+        issues.push(
+          validationIssue(
+            'cuenta_contable_no_encontrada',
+            'cuentas_contables',
+            `La cuenta ${account} no existe para la empresa ERP ${empresaId}.`,
+            { empresa_id: empresaId, cuenta: account },
+          ),
+        );
+      }
+    });
   }
 
   let provider: FacturaProveedorERPDetail | null = null;
@@ -2037,10 +2137,36 @@ export const fetchFacturaRegimenes = async (): Promise<FacturaRegimenOption[]> =
     .filter((item): item is FacturaRegimenOption => Boolean(item));
 };
 
-export const fetchFacturaCuentas = async (search = ''): Promise<FacturaCuentaOption[]> => {
-  const query = search.trim()
-    ? `cuentas-contables?q=${encodeURIComponent(search.trim())}&limit=100`
-    : 'cuentas-contables?limit=100';
+export type FetchFacturaCuentasOptions = {
+  empresaId?: number | null;
+  search?: string;
+  cuenta?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export const fetchFacturaCuentas = async (
+  options: FetchFacturaCuentasOptions | string = {},
+): Promise<FacturaCuentaOption[]> => {
+  const normalized =
+    typeof options === 'string' ? { search: options } : options;
+  const params = new URLSearchParams();
+  if (
+    normalized.empresaId !== null &&
+    normalized.empresaId !== undefined &&
+    Number.isInteger(Number(normalized.empresaId)) &&
+    Number(normalized.empresaId) > 0
+  ) {
+    params.set('empresa_id', String(normalized.empresaId));
+  }
+  if (normalized.search?.trim()) params.set('q', normalized.search.trim());
+  if (normalized.cuenta?.trim()) params.set('cuenta', normalized.cuenta.trim());
+  params.set(
+    'limit',
+    String(Math.min(Math.max(1, Math.trunc(normalized.limit ?? 50)), 100)),
+  );
+  params.set('offset', String(Math.max(0, Math.trunc(normalized.offset ?? 0))));
+  const query = `cuentas-contables?${params.toString()}`;
   const response = await erpRead<ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[]>(query);
   return responseItems(response)
     .map((item) => {
@@ -2049,10 +2175,121 @@ export const fetchFacturaCuentas = async (search = ''): Promise<FacturaCuentaOpt
       const value = readText(record, ['cuenta', 'codigo', 'id', 'CTA_Cuenta'], null);
       const description = readText(record, ['descripcion', 'nombre', 'CTA_Descripcion'], null);
       return value
-        ? { value, label: description ? `${value} - ${description}` : value }
+        ? {
+            value,
+            label: description ? `${value} - ${description}` : value,
+            description,
+            nif: readText(record, ['nif', 'NIF', 'CTA_Nif'], null),
+          }
         : null;
     })
     .filter((item): item is FacturaCuentaOption => Boolean(item));
+};
+
+export const normalizeFacturaTiposIva = (
+  response: ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[],
+): FacturaTipoIvaOption[] => {
+  const byPercentage = new Map<number, FacturaTipoIvaOption>();
+  [
+    { porcentaje: 0, nombre: 'Sin IVA' },
+    { porcentaje: 4, nombre: 'Superreducido' },
+    { porcentaje: 10, nombre: 'Reducido' },
+    { porcentaje: 21, nombre: 'General' },
+  ].forEach(({ porcentaje, nombre }) => {
+    byPercentage.set(porcentaje, {
+      value: String(porcentaje),
+      porcentaje,
+      label: `${porcentaje.toLocaleString('es-ES')} % — ${nombre}`,
+      nombre,
+    });
+  });
+
+  responseItems(response).forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const record = item as ERPReadGenericRow;
+    const porcentaje = readNumber(
+      record,
+      ['iva', 'porcentaje', 'TIV_IVA', 'IVA'],
+      null,
+    );
+    if (
+      porcentaje === null ||
+      !Number.isFinite(porcentaje) ||
+      porcentaje < 0
+    ) {
+      return;
+    }
+    const normalizedPercentage = Number(porcentaje);
+    const nombre = readText(
+      record,
+      ['nombre', 'descripcion', 'TIV_Descripcion'],
+      null,
+    );
+    byPercentage.set(normalizedPercentage, {
+      value: String(normalizedPercentage),
+      porcentaje: normalizedPercentage,
+      label: `${normalizedPercentage.toLocaleString('es-ES')} %${
+        nombre ? ` — ${nombre}` : ''
+      }`,
+      nombre,
+    });
+  });
+
+  return Array.from(byPercentage.values()).sort(
+    (left, right) => left.porcentaje - right.porcentaje,
+  );
+};
+
+export const fetchFacturaTiposIva = async (): Promise<
+  FacturaTipoIvaOption[]
+> => {
+  const response = await erpRead<
+    ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[]
+  >('tipos-iva');
+  return normalizeFacturaTiposIva(response);
+};
+
+export const validateFacturaAccountPairs = (input: {
+  gastos: FacturaRecibidaLinea[];
+  ctb: FacturaRecibidaLinea[];
+}): FacturaValidationIssue[] => {
+  const issues: FacturaValidationIssue[] = [];
+  const validate = (
+    linea: FacturaRecibidaLinea,
+    kind: 'gasto' | 'ctb',
+    index: number,
+  ) => {
+    const account = cleanText(linea.descripcion);
+    const amount = numberValue(linea.importe, 0) ?? 0;
+    const hasAnyData =
+      kind === 'ctb'
+        ? !isFacturaCtbLineaEmpty(linea)
+        : Boolean(account) || Math.abs(amount) > 0.01;
+    if (!hasAnyData) return;
+    const label = kind === 'gasto' ? 'gasto' : 'CTB';
+    if (!account) {
+      issues.push(
+        validationIssue(
+          `${kind}_cuenta_requerida`,
+          `${kind}.${index}.cuenta`,
+          `Indica la cuenta de la línea ${index + 1} de ${label}.`,
+        ),
+      );
+    }
+    if (account && Math.abs(amount) <= 0.01) {
+      issues.push(
+        validationIssue(
+          `${kind}_importe_requerido`,
+          `${kind}.${index}.importe`,
+          `Indica un importe distinto de cero en la línea ${index + 1} de ${label}.`,
+        ),
+      );
+    }
+  };
+
+  input.gastos.forEach((linea, index) => validate(linea, 'gasto', index));
+  input.ctb.forEach((linea, index) => validate(linea, 'ctb', index));
+  return normalizeFacturaValidationIssues(issues);
 };
 
 export const searchFacturasERP = async (search: string): Promise<FacturaERPMatch[]> => {

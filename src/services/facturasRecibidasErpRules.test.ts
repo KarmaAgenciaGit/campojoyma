@@ -20,6 +20,7 @@ const buildRule = (overrides: Partial<FacturaRecibidaErpRule>): FacturaRecibidaE
   cuenta_gasto_default: null,
   concepto_template: null,
   contabilizar_default: null,
+  punteo_difference_policy: null,
   activo: true,
   approval_note: null,
   created_at: '2026-07-22T00:00:00.000Z',
@@ -39,6 +40,7 @@ describe('resolveFacturaRecibidaErpRuleValues', () => {
         cuenta_gasto_default: '60200000001',
         concepto_template: 'FRA. {proveedor}',
         contabilizar_default: 'S',
+        punteo_difference_policy: 'block',
       }),
       buildRule({
         id: 'supplier',
@@ -59,6 +61,7 @@ describe('resolveFacturaRecibidaErpRuleValues', () => {
       cuenta_gasto_default: '60200000001',
       concepto_template: 'FRA. {proveedor} / OT',
       contabilizar_default: 'S',
+      punteo_difference_policy: 'block',
       empresa_rule_id: 'company',
       proveedor_rule_id: 'supplier',
     });
@@ -148,6 +151,7 @@ describe('resolveFacturaRecibidaErpRuleValues', () => {
       cuenta_gasto_default: null,
       concepto_template: null,
       contabilizar_default: null,
+      punteo_difference_policy: 'warning',
       empresa_rule_id: null,
       proveedor_rule_id: null,
     });

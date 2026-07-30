@@ -6,75 +6,121 @@ import {
   integerValue,
   isAllowedERPConsulta,
   jsonResponse,
-  parseJsonResponse,
   requestIdValue,
   requireRouteUser,
-  signJwtHs256,
   upstreamResult,
 } from "../_shared/facturas-recibidas-erp.ts";
+import { callNetagroRead } from "../_shared/netagro-api-v3.ts";
 
-const DEFAULT_READ_WEBHOOK_URL = "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma";
-const DEFAULT_EXP_SECONDS = 300;
-
-const parseExpSeconds = (value: string | undefined) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_EXP_SECONDS;
-};
+const readError = ({
+  status,
+  code,
+  category,
+  userMessage,
+  requestId,
+  retryable = false,
+}: {
+  status: number;
+  code: string;
+  category: "validation" | "environment" | "conflict" | "transport" | "accounting";
+  userMessage: string;
+  requestId: string | null;
+  retryable?: boolean;
+}) =>
+  jsonResponse({
+    contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+    code,
+    category,
+    user_message: userMessage,
+    error: userMessage,
+    technical_details: {},
+    retryable,
+    reconciliation_required: false,
+    request_id: requestId,
+    target_id: null,
+    dataset_epoch: null,
+  }, status);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") {
+    return readError({
+      status: 405,
+      code: "invalid_operation",
+      category: "validation",
+      userMessage: "Método no permitido.",
+      requestId: null,
+    });
+  }
 
+  let responseRequestId: string | null = null;
   try {
     const body = await req.json().catch(() => ({}));
     const contractVersion = integerValue(body.contract_version, null);
     if (contractVersion !== null && contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
-      return jsonResponse({ error: "contract_version no soportada" }, 422);
+      return readError({
+        status: 422,
+        code: "invalid_contract",
+        category: "validation",
+        userMessage: "contract_version no soportada.",
+        requestId: null,
+      });
     }
     const requestId = contractVersion === FACTURAS_RECIBIDAS_CONTRACT_VERSION
       ? requestIdValue(body.request_id)
       : null;
+    responseRequestId = requestId;
     const consulta = String(body.consulta ?? "").trim();
     if (!isAllowedERPConsulta(consulta)) {
-      return jsonResponse({ error: "Consulta no permitida." }, 422);
+      return readError({
+        status: 422,
+        code: "invalid_query",
+        category: "validation",
+        userMessage: "Consulta no permitida.",
+        requestId,
+      });
     }
     const auth = await requireRouteUser(req, getERPReadAuthorizedRoutes(consulta));
-    if (!auth.ok) return auth.response;
-
-    const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET")?.trim();
-    if (!jwtSecret) {
-      return jsonResponse(
-        { error: "Falta configuracion interna para consultar el ERP." },
-        500,
-      );
+    if (!auth.ok) {
+      const status = auth.response.status;
+      return readError({
+        status,
+        code: status === 403
+          ? "forbidden"
+          : status === 401
+            ? "unauthorized"
+            : "upstream_unavailable",
+        category: status >= 500 ? "transport" : "validation",
+        userMessage: status === 403
+          ? "No tiene permiso para realizar esta consulta."
+          : status === 401
+            ? "Debe iniciar sesión para consultar Netagro."
+            : "No se pudo comprobar el acceso a Netagro.",
+        requestId,
+        retryable: status >= 500,
+      });
     }
 
-    const webhookUrl =
-      Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim() ||
-      Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_URL")?.trim() ||
-      DEFAULT_READ_WEBHOOK_URL;
-    const jwt = await signJwtHs256(
-      jwtSecret,
-      parseExpSeconds(Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS")),
-    );
-
-    const url = new URL(webhookUrl);
-    url.searchParams.set("consulta", consulta);
-    const upstream = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${jwt}` },
-      signal: AbortSignal.timeout(30_000),
-    });
-    const { payload } = await parseJsonResponse(upstream);
+    const { response: upstream, payload } = await callNetagroRead(consulta);
     const result = upstreamResult(upstream, payload);
     const responseStatus = upstream.ok && !result.ok ? 502 : upstream.status;
+    if (!result.ok) {
+      return readError({
+        status: responseStatus,
+        code: "upstream_unavailable",
+        category: "transport",
+        userMessage: "Netagro no pudo completar la consulta solicitada.",
+        requestId,
+        retryable: responseStatus >= 500,
+      });
+    }
 
     if (contractVersion === FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
       return jsonResponse(
         {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
-          ok: result.ok,
+          ok: true,
           data: payload,
         },
         responseStatus,
@@ -82,8 +128,18 @@ Deno.serve(async (req) => {
     }
     return jsonResponse(payload, responseStatus);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unexpected error";
     const status = error instanceof DOMException && error.name === "TimeoutError" ? 504 : 500;
-    return jsonResponse({ error: message }, status);
+    const userMessage = status === 504
+      ? "La consulta a Netagro ha tardado demasiado. Puede volver a intentarlo."
+      : "No se pudo consultar Netagro en este momento.";
+    console.error("facturas-recibidas-erp-read error", error);
+    return readError({
+      status,
+      code: "upstream_unavailable",
+      category: "transport",
+      userMessage,
+      requestId: responseRequestId,
+      retryable: status === 504,
+    });
   }
 });

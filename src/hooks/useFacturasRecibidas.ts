@@ -45,8 +45,13 @@ export const useFacturaRecibidaMutations = () => {
     onSuccess: invalidate,
   });
 
-  const send = useMutation({
-    mutationFn: (facturaId: string) => facturasRecibidas.sendToERP(facturaId),
+  const validateERP = useMutation({
+    mutationFn: (facturaId: string) => facturasRecibidas.validateERP(facturaId),
+    onSuccess: invalidate,
+  });
+
+  const commitERP = useMutation({
+    mutationFn: (facturaId: string) => facturasRecibidas.commitERP(facturaId),
     onSuccess: invalidate,
   });
 
@@ -55,5 +60,5 @@ export const useFacturaRecibidaMutations = () => {
     onSuccess: invalidate,
   });
 
-  return { update, send, remove };
+  return { update, validateERP, commitERP, remove };
 };

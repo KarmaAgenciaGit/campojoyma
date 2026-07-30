@@ -32,6 +32,7 @@ import {
   facturasRecibidasErpRules,
   type FacturaContabilizarDefault,
   type FacturaFechaCtbPolicy,
+  type FacturaPunteoDifferencePolicy,
   type FacturaRecibidaErpRule,
 } from '@/services/facturasRecibidasErpRules';
 import {
@@ -78,6 +79,7 @@ type FacturaErpRuleDraft = {
   cuentaGastoDefault: string;
   conceptoTemplate: string;
   contabilizarDefault: FacturaContabilizarDefault | 'manual';
+  punteoDifferencePolicy: FacturaPunteoDifferencePolicy | 'inherit';
   activo: boolean;
   approvalNote: string;
 };
@@ -93,6 +95,7 @@ const emptyFacturaErpRuleDraft = (): FacturaErpRuleDraft => ({
   cuentaGastoDefault: '',
   conceptoTemplate: '',
   contabilizarDefault: 'N',
+  punteoDifferencePolicy: 'inherit',
   activo: true,
   approvalNote: '',
 });
@@ -530,6 +533,7 @@ const AdminSettings = () => {
       cuentaGastoDefault: rule.cuenta_gasto_default ?? '',
       conceptoTemplate: rule.concepto_template ?? '',
       contabilizarDefault: 'N',
+      punteoDifferencePolicy: rule.punteo_difference_policy ?? 'inherit',
       activo: rule.activo,
       approvalNote: rule.approval_note ?? '',
     });
@@ -557,6 +561,10 @@ const AdminSettings = () => {
         cuenta_gasto_default: facturaErpRuleDraft.cuentaGastoDefault,
         concepto_template: facturaErpRuleDraft.conceptoTemplate,
         contabilizar_default: 'N',
+        punteo_difference_policy:
+          facturaErpRuleDraft.punteoDifferencePolicy === 'inherit'
+            ? null
+            : facturaErpRuleDraft.punteoDifferencePolicy,
         activo: facturaErpRuleDraft.activo,
         approval_note: facturaErpRuleDraft.approvalNote,
       });
@@ -1679,6 +1687,38 @@ const AdminSettings = () => {
                     Fijo en No mientras Netagro TEST no tenga disponible el servicio oficial.
                   </p>
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="factura-rule-punteos">
+                    Diferencias de punteos
+                  </Label>
+                  <Select
+                    value={facturaErpRuleDraft.punteoDifferencePolicy}
+                    onValueChange={(value) =>
+                      setFacturaErpRuleDraft((current) => ({
+                        ...current,
+                        punteoDifferencePolicy:
+                          value as FacturaPunteoDifferencePolicy | 'inherit',
+                      }))
+                    }
+                    disabled={facturaErpRuleSaving}
+                  >
+                    <SelectTrigger id="factura-rule-punteos">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="inherit">
+                        {facturaErpRuleDraft.proveedorId === null
+                          ? 'Avisar (predeterminado)'
+                          : 'Heredar regla general'}
+                      </SelectItem>
+                      <SelectItem value="warning">Mostrar aviso</SelectItem>
+                      <SelectItem value="block">Bloquear envío</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Nunca modifica ni selecciona punteos automáticamente.
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -1727,6 +1767,7 @@ const AdminSettings = () => {
                       <TableHead>Tipo</TableHead>
                       <TableHead>R\u00e9gimen</TableHead>
                       <TableHead>Fecha CTB</TableHead>
+                      <TableHead>Punteos</TableHead>
                       <TableHead>Valores contables</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead>Evidencia</TableHead>
@@ -1750,6 +1791,15 @@ const AdminSettings = () => {
                               ? 'Manual'
                               : rule.proveedor_id === null
                                 ? 'Sin regla'
+                                : 'Heredar'}
+                        </TableCell>
+                        <TableCell>
+                          {rule.punteo_difference_policy === 'block'
+                            ? 'Bloquear'
+                            : rule.punteo_difference_policy === 'warning'
+                              ? 'Avisar'
+                              : rule.proveedor_id === null
+                                ? 'Avisar'
                                 : 'Heredar'}
                         </TableCell>
                         <TableCell className="min-w-[220px] text-sm">

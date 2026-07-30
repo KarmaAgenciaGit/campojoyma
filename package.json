@@ -11,7 +11,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run src",
     "test:watch": "vitest src",
-    "test:edge": "npx --yes deno test --allow-env supabase/functions/_shared/facturas-recibidas-erp.test.ts",
+    "test:edge": "npx --yes deno test --allow-env supabase/functions/_shared/facturas-recibidas-erp.test.ts && node --test supabase/tests/facturas_recibidas_erp_v3_static.test.mjs",
     "verify:facturas-api": "node scripts/verify-facturas-recibidas-api.mjs",
     "lint": "eslint .",
     "preview": "vite preview"

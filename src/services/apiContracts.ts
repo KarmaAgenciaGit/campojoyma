@@ -1,3 +1,5 @@
+import type { FacturaERPReferenceStatus } from '@/lib/facturasErpStatus';
+
 export type AppUserRole = 'admin' | 'user';
 
 export type FacturaRecibidaEstado =
@@ -169,6 +171,7 @@ export interface FacturaRecibida {
   referencia: string | null;
   ejercicio: number | null;
   fecha_ctb: string | null;
+  fecha_ctb_source?: 'invoice_date' | 'manual' | null;
   tipo_iva_codigo: string | null;
   /** @deprecated Es el identificador técnico. Usa asiento_tecnico para mostrarlo explícitamente. */
   asiento: number | null;
@@ -228,6 +231,15 @@ export interface FacturaRecibida {
   version?: number | null;
   sync_status?: string | null;
   last_request_id?: string | null;
+  erp_validation_status?: 'not_validated' | 'valid' | 'invalid' | 'stale' | null;
+  erp_validation_request_id?: string | null;
+  erp_validated_at?: string | null;
+  erp_payload_hash?: string | null;
+  erp_business_fingerprint?: string | null;
+  erp_reference_status?: FacturaERPReferenceStatus | null;
+  erp_target_id?: string | null;
+  erp_dataset_epoch?: string | null;
+  erp_verified_at?: string | null;
   accounting_status?: string | null;
   erp_last_read_at?: string | null;
   created_at: string;

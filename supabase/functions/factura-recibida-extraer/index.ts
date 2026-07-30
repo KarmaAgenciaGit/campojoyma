@@ -1,7 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-  applyGastosToFrr,
   cleanBase64,
   corsHeaders,
   ensureArchivoPdf,
@@ -14,9 +13,6 @@ import {
   integerValue,
   jsonResponse,
   loadArchivoPdfBase64,
-  normalizeFrcPayload,
-  normalizePunteoPayload,
-  normalizeFrrPayload,
   pick,
   prepareFacturaExtractionPersistence,
   requestIdValue,
@@ -31,18 +27,13 @@ import {
   verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
+import {
+  assertFacturaExtractionResponseContract,
+  normalizeFacturaExtractionPayload,
+} from "../_shared/factura-recibida-extraction.ts";
 
 const DEFAULT_WEBHOOK_URL =
   "https://n8nbecarios.srv894901.hstgr.cloud/webhook/campojoyma-factura-extraer";
-
-type NormalizedExtraction = {
-  frr: JsonObject;
-  ctb: JsonObject[];
-  punteos: JsonObject[];
-  extraction: JsonObject;
-  metadata: JsonObject;
-  warnings: string[];
-};
 
 const asObject = (value: unknown): JsonObject =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
@@ -65,50 +56,6 @@ const parsePositiveInt = (value: unknown): number | null => {
     null,
   );
   return parsed && parsed > 0 ? parsed : null;
-};
-
-const warningTexts = (...sources: unknown[]): string[] => {
-  const warnings: string[] = [];
-  for (const source of sources) {
-    for (const entry of asArray(source)) {
-      if (typeof entry === "string" && entry.trim()) warnings.push(entry.trim());
-      if (entry && typeof entry === "object") {
-        const message = text(pick(entry as JsonObject, ["message", "mensaje", "warning"]), null);
-        if (message) warnings.push(message);
-      }
-    }
-  }
-  return Array.from(new Set(warnings));
-};
-
-const normalizeN8nResponse = (raw: unknown): NormalizedExtraction => {
-  const rawObject = asObject(raw);
-  if (rawObject.ok === false) {
-    throw new Error(
-      text(
-        pick(rawObject, ["error", "message"]),
-        "El servicio de analisis no pudo extraer la factura",
-      )!,
-    );
-  }
-
-  const root = asObject(rawObject.ingest_payload ?? rawObject.payload ?? rawObject.output ?? rawObject);
-  const output = asObject(root.output ?? root);
-  const extraction = asObject(output.extraction ?? output.factura ?? output.invoice ?? output);
-  const metadata = asObject(output.metadata ?? root.metadata ?? rawObject.metadata);
-  const ctbSource = output.ctb ?? extraction.ctb ?? extraction.lineas_ctb;
-  const punteosSource = output.punteos ?? extraction.punteos;
-
-  return {
-    frr: applyGastosToFrr(normalizeFrrPayload(extraction), output.gastos ?? extraction.gastos),
-    ctb: asArray(ctbSource).map((linea, index) => normalizeFrcPayload(asObject(linea), index + 1)),
-    punteos: asArray(punteosSource).map((punteo, index) =>
-      normalizePunteoPayload(asObject(punteo), index + 1)
-    ),
-    extraction,
-    metadata,
-    warnings: warningTexts(metadata.warnings, extraction.warnings, output.warnings),
-  };
 };
 
 const buildWebhookHeaders = async (): Promise<Record<string, string>> => {
@@ -134,21 +81,87 @@ const readResponseJson = async (response: Response): Promise<unknown> => {
   }
 };
 
+const extractionError = ({
+  status,
+  code,
+  category,
+  userMessage,
+  requestId,
+  retryable = false,
+  extra = {},
+}: {
+  status: number;
+  code: string;
+  category: "validation" | "environment" | "conflict" | "transport" | "accounting";
+  userMessage: string;
+  requestId: string | null;
+  retryable?: boolean;
+  extra?: JsonObject;
+}) =>
+  jsonResponse({
+    contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+    code,
+    category,
+    user_message: userMessage,
+    error: userMessage,
+    technical_details: {},
+    retryable,
+    reconciliation_required: false,
+    request_id: requestId,
+    target_id: null,
+    dataset_epoch: null,
+    ...extra,
+  }, status);
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Metodo no permitido" }, 405);
+  if (req.method !== "POST") {
+    return extractionError({
+      status: 405,
+      code: "invalid_operation",
+      category: "validation",
+      userMessage: "Método no permitido.",
+      requestId: null,
+    });
+  }
 
-  const auth = await requireRouteUser(req);
-  if (!auth.ok) return auth.response;
-
+  let activeRequestId: string | null = null;
   try {
+    const auth = await requireRouteUser(req);
+    if (!auth.ok) {
+      const status = auth.response.status;
+      return extractionError({
+        status,
+        code: status === 403
+          ? "forbidden"
+          : status === 401
+            ? "unauthorized"
+            : "upstream_unavailable",
+        category: status >= 500 ? "transport" : "validation",
+        userMessage: status === 403
+          ? "No tiene permiso para trabajar con facturas recibidas."
+          : status === 401
+            ? "Debe iniciar sesión para trabajar con facturas recibidas."
+            : "No se pudo comprobar el acceso a facturas recibidas.",
+        requestId: null,
+        retryable: status >= 500,
+      });
+    }
+
     const body = asObject(await req.json().catch(() => ({})));
     const contractVersion = integerValue(body.contract_version, FACTURAS_RECIBIDAS_CONTRACT_VERSION);
     if (contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
-      return jsonResponse({ error: "contract_version=2 es requerido" }, 422);
+      return extractionError({
+        status: 422,
+        code: "invalid_contract",
+        category: "validation",
+        userMessage: "contract_version=2 es requerido.",
+        requestId: null,
+      });
     }
 
     const requestId = requestIdValue(body.request_id);
+    activeRequestId = requestId;
     const serviceClient = auth.serviceClient;
     const facturaId = text(body.factura_id, null);
     const source = text(body.source, "front_draft")!;
@@ -165,18 +178,38 @@ Deno.serve(async (req) => {
         .eq("id", facturaId)
         .maybeSingle();
       if (error) throw error;
-      if (!data) return jsonResponse({ error: "Factura no encontrada" }, 404);
+      if (!data) {
+        return extractionError({
+          status: 404,
+          code: "not_found",
+          category: "validation",
+          userMessage: "Factura no encontrada.",
+          requestId,
+        });
+      }
       existingFactura = asObject(data);
       if (!expectedVersion || expectedVersion < 1) {
-        return jsonResponse({ error: "expected_version es requerido para reextraer" }, 422);
+        return extractionError({
+          status: 422,
+          code: "invalid_invoice",
+          category: "validation",
+          userMessage: "expected_version es requerido para volver a extraer.",
+          requestId,
+        });
       }
       if (integerValue(existingFactura.row_version, null) !== expectedVersion) {
-        return jsonResponse(
-          {
-            error: `VERSION_CONFLICT: esperada ${expectedVersion}, actual ${existingFactura.row_version}`,
+        return extractionError({
+          status: 409,
+          code: "version_conflict",
+          category: "conflict",
+          userMessage:
+            "La factura ha cambiado. Recárguela antes de volver a extraer.",
+          requestId,
+          extra: {
+            expected_version: expectedVersion,
+            current_version: existingFactura.row_version,
           },
-          409,
-        );
+        });
       }
       if (
         existingFactura.FRR_id ||
@@ -184,7 +217,13 @@ Deno.serve(async (req) => {
         existingFactura.is_readonly_reference === true ||
         ["sending", "unknown", "reconciling", "sent"].includes(String(existingFactura.sync_status ?? ""))
       ) {
-        return jsonResponse({ error: "FACTURA_LOCKED: la factura no se puede reextraer" }, 409);
+        return extractionError({
+          status: 409,
+          code: "invoice_locked",
+          category: "conflict",
+          userMessage: "La factura ya no se puede volver a extraer.",
+          requestId,
+        });
       }
     }
 
@@ -202,10 +241,13 @@ Deno.serve(async (req) => {
       archivoPdfId = pdf.archivoPdfId;
     }
     if (!archivoPdfId) {
-      return jsonResponse(
-        { error: "Falta pdf_base64, archivo_pdf_id o una factura con PDF asociado" },
-        422,
-      );
+      return extractionError({
+        status: 422,
+        code: "invalid_invoice",
+        category: "validation",
+        userMessage: "Falta un PDF asociado a la factura.",
+        requestId,
+      });
     }
 
     const { data: archivoPdf, error: archivoError } = await serviceClient
@@ -214,11 +256,27 @@ Deno.serve(async (req) => {
       .eq("id", archivoPdfId)
       .maybeSingle();
     if (archivoError) throw archivoError;
-    if (!archivoPdf) return jsonResponse({ error: "PDF no encontrado" }, 404);
+    if (!archivoPdf) {
+      return extractionError({
+        status: 404,
+        code: "not_found",
+        category: "validation",
+        userMessage: "PDF no encontrado.",
+        requestId,
+      });
+    }
 
     const archivo = asObject(archivoPdf);
     const pdfBase64 = incomingBase64 ?? await loadArchivoPdfBase64(serviceClient, archivo);
-    if (!pdfBase64) return jsonResponse({ error: "El PDF no tiene contenido disponible" }, 422);
+    if (!pdfBase64) {
+      return extractionError({
+        status: 422,
+        code: "invalid_invoice",
+        category: "validation",
+        userMessage: "El PDF no tiene contenido disponible.",
+        requestId,
+      });
+    }
 
     const pdfNombre = text(body.pdf_nombre, text(archivo.nombre_archivo, incomingName))!;
     const pdfMimeType = text(body.pdf_mime_type, text(archivo.mime_type, "application/pdf"))!;
@@ -241,6 +299,7 @@ Deno.serve(async (req) => {
         email: asObject(body.email),
         requested_at: new Date().toISOString(),
       }),
+      signal: AbortSignal.timeout(120_000),
     });
 
     const webhookJson = await readResponseJson(webhookResponse);
@@ -249,20 +308,27 @@ Deno.serve(async (req) => {
         {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
-          error: "El servicio de analisis no pudo extraer la factura",
-          status: webhookResponse.status,
-          details: webhookJson,
+          code: "upstream_unavailable",
+          category: "transport",
+          user_message: "El servicio de análisis no pudo extraer la factura.",
+          error: "El servicio de análisis no pudo extraer la factura.",
+          technical_details: {},
+          retryable: webhookResponse.status >= 500,
+          reconciliation_required: false,
+          target_id: null,
+          dataset_epoch: null,
         },
         502,
       );
     }
 
-    const normalized = normalizeN8nResponse(webhookJson);
+    assertFacturaExtractionResponseContract(webhookJson, requestId);
+    const normalized = normalizeFacturaExtractionPayload(webhookJson);
     const sanitizedExtractedFrr = sanitizeUntrustedFacturaAccountingFields(normalized.frr);
     const extractionPersistence = prepareFacturaExtractionPersistence({
       existingFactura,
       extractedFrr: sanitizedExtractedFrr,
-      ctb: [],
+      ctb: normalized.ctb,
       punteos: sanitizeUntrustedPunteoSelections(normalized.punteos),
     });
     const normalizedMatchEvidence = asObject(
@@ -402,6 +468,8 @@ Deno.serve(async (req) => {
       source_pdf_name: pdfNombre,
       confidence,
       source_kind: "front_draft",
+      fecha_ctb_source:
+        existingFactura?.fecha_ctb_source === "manual" ? "manual" : "invoice_date",
       remote_frr_id: null,
       is_readonly_reference: false,
       match_status: normalized.warnings.length > 0 || hasBlockingErrors ? "ambiguous" : "matched",
@@ -441,13 +509,26 @@ Deno.serve(async (req) => {
 
     const { data: saved, error: saveError } = await serviceClient.rpc(rpcName, rpcArguments);
     if (saveError) {
+      console.error("factura-recibida-extraer persistence error", saveError);
+      const status = rpcErrorStatus(saveError.message);
+      const userMessage = status === 409
+        ? "La factura ha cambiado mientras se procesaba. Recárguela antes de continuar."
+        : "La extracción terminó, pero no se pudo guardar la factura.";
       return jsonResponse(
         {
           contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
           request_id: requestId,
-          error: saveError.message,
+          code: status === 409 ? "idempotency_conflict" : "upstream_unavailable",
+          category: status === 409 ? "conflict" : "transport",
+          user_message: userMessage,
+          error: userMessage,
+          technical_details: {},
+          retryable: status >= 500,
+          reconciliation_required: false,
+          target_id: null,
+          dataset_epoch: null,
         },
-        rpcErrorStatus(saveError.message),
+        status,
       );
     }
 
@@ -470,6 +551,23 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("factura-recibida-extraer error", error);
     const message = error instanceof Error ? error.message : "No se pudo extraer la factura recibida";
-    return jsonResponse({ error: message }, rpcErrorStatus(message));
+    const timeout = error instanceof DOMException && error.name === "TimeoutError";
+    const status = timeout ? 504 : rpcErrorStatus(message);
+    const userMessage = timeout
+      ? "La extracción ha tardado demasiado. Puede volver a intentarlo."
+      : "No se pudo completar la extracción de la factura.";
+    return jsonResponse({
+      contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      request_id: activeRequestId,
+      code: "upstream_unavailable",
+      category: "transport",
+      user_message: userMessage,
+      error: userMessage,
+      technical_details: {},
+      retryable: timeout || status >= 500,
+      reconciliation_required: false,
+      target_id: null,
+      dataset_epoch: null,
+    }, status);
   }
 });

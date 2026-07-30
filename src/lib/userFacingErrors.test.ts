@@ -24,4 +24,39 @@ describe('sanitizeUserFacingErrorMessage', () => {
       'No se pudo analizar la factura.',
     );
   });
+
+  it('no muestra nombres de webhooks ni rutas internas', () => {
+    const message =
+      'The requested webhook "POST apiCampojoyma-facturas-write-v2" is not registered.';
+    const sanitized = sanitizeUserFacingErrorMessage(message);
+
+    expect(sanitized).toBe(
+      'El servicio de envío al ERP no está disponible temporalmente.',
+    );
+    expect(sanitized.toLowerCase()).not.toContain('webhook');
+    expect(sanitized).not.toContain('apiCampojoyma');
+  });
+
+  it('no muestra technical_details aunque lleguen serializados como texto', () => {
+    const sanitized = sanitizeUserFacingErrorMessage(
+      '{"technical_details":{"endpoint":"POST /internal/write","stack":"secret"}}',
+    );
+
+    expect(sanitized).toBe(
+      'El servicio de envío al ERP no está disponible temporalmente.',
+    );
+    expect(sanitized).not.toContain('technical_details');
+    expect(sanitized).not.toContain('/internal/write');
+  });
+
+  it('oculta cualquier referencia a un webhook aunque cambie el texto del proveedor', () => {
+    const sanitized = sanitizeUserFacingErrorMessage(
+      'Webhook POST /facturasrecibidas devolvió 404.',
+    );
+
+    expect(sanitized).toBe(
+      'El servicio de envío al ERP no está disponible temporalmente.',
+    );
+    expect(sanitized.toLowerCase()).not.toContain('webhook');
+  });
 });

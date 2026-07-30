@@ -118,10 +118,11 @@ tributos. Son ejemplos del Plan General Contable, no defaults universales.
   `2115` para inmovilizado, además de regímenes distintos para operaciones
   intracomunitarias o sin IVA.
 
-La explicación de `Fecha CTB` entra en conflicto con la política técnica
-actual `invoice_date`. Hasta que Campojoyma confirme el criterio exacto que
-debe aplicar la automatización, no debe cambiarse silenciosamente un valor por
-otro ni considerarse resuelta esta discrepancia.
+La reunión demostró que `Fecha CTB` puede diferir. La decisión de producto
+posterior quedó fijada en el
+[plan maestro](../../../PLAN_MAESTRO_FACTURAS_RECIBIDAS_2026-07-30.md):
+inicializarla con la fecha de factura, mantenerla editable y no sobrescribir
+una edición manual.
 
 ### 4. Los albaranes de materiales nacen antes que la factura
 
@@ -166,7 +167,7 @@ contabilización de nuestra API sin conocer y homologar el mecanismo oficial.
 |---|---|---|---|
 | `dry_run` | No aparece en el ERP ni forma parte del trabajo del operador. | Es un preflight de la API que valida sin escribir. | Mantenerlo como protección técnica y no presentarlo como un nuevo flujo de facturas. |
 | `Contabilizar` | Marcado al guardar: traspasa a contabilidad y crea asiento. | En TEST se fuerza `FRR_Contabilizar=N`; creación oficial del asiento aún no homologada. | Separar el objetivo funcional de la capacidad técnica actual. No basta con cambiar `N` por `S`. |
-| Fecha CTB | Fecha de contabilización; puede diferir si la factura llega tarde. | La regla configurada actualmente es `invoice_date`. | Marcar la regla como pendiente de revalidación y no alterar la semántica automáticamente. |
+| Fecha CTB | Fecha de contabilización; puede diferir si la factura llega tarde. | La regla configurada es `invoice_date` con edición manual. | Inicializar desde la factura; después de una edición manual, no volver a sobrescribirla. |
 | Cuenta de gasto | Fija por acreedor solo cuando no cambia; en casos ambiguos se elige manualmente. | Existe una propuesta general `60200000001`, especializable. | Revisar el alcance de esa propuesta; conservar resolución manual cuando haya más de una naturaleza posible. |
 | Origen `GC`/`CG` | Se habló de gastos comerciales o gastos de compra asumidos; la propia conversación contiene dudas y cambios de sigla. | Los orígenes ya se tratan como eje distinto del tipo de factura. | No crear un nuevo mapeo rígido hasta contrastar el diccionario oficial del ERP. |
 | Descuento del 3 % | Caso específico de Onduspan, distribuido por línea de albarán. | No queda homologado como regla automática general. | Configurarlo por proveedor solo tras confirmar identidad, base y redondeo. |

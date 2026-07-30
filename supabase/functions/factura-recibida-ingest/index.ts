@@ -1,7 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-  cleanBase64,
   corsHeaders,
   createServiceClient,
   ensureArchivoPdf,
@@ -12,124 +11,171 @@ import {
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
   integerValue,
+  isValidRequestId,
   jsonResponse,
-  applyGastosToFrr,
-  normalizeFrcPayload,
-  normalizeConfidence,
-  normalizePunteoPayload,
-  normalizeFrrPayload,
-  numberValue,
-  pick,
-  requestIdValue,
   requireAgentToken,
   requestHasServiceRoleCredential,
   resolveFacturaIngestAuthority,
   resolveFacturaProveedorTipo,
   rpcErrorStatus,
-  sanitizeAuditValue,
   syncFacturaERPAccountingMatchEvidence,
   text,
-  timestampValue,
   verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
+import {
+  extractionObject,
+  normalizeFacturaExtractionPayload,
+} from "../_shared/factura-recibida-extraction.ts";
 
-const asObject = (value: unknown): JsonObject =>
-  value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
+const asObject = extractionObject;
 
-const asArray = (value: unknown): JsonObject[] =>
-  Array.isArray(value) ? value.filter((item): item is JsonObject => item && typeof item === "object" && !Array.isArray(item)) : [];
+type IngestErrorCategory =
+  | "validation"
+  | "environment"
+  | "conflict"
+  | "transport"
+  | "accounting";
 
-const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value)
-    ? value.map((item) => text(item, null)).filter((item): item is string => Boolean(item)).slice(0, 25)
-    : [];
+type IngestErrorEnvelope = JsonObject & {
+  code: string;
+  category: IngestErrorCategory;
+  user_message: string;
+  technical_details: JsonObject;
+  retryable: boolean;
+  reconciliation_required: boolean;
+  request_id: string | null;
+  target_id: null;
+  dataset_epoch: null;
+  status: number;
+};
+
+const buildIngestError = ({
+  status,
+  code,
+  category,
+  userMessage,
+  requestId,
+  retryable = false,
+  extra = {},
+}: {
+  status: number;
+  code: string;
+  category: IngestErrorCategory;
+  userMessage: string;
+  requestId: string | null;
+  retryable?: boolean;
+  extra?: JsonObject;
+}): IngestErrorEnvelope => ({
+  contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+  code,
+  category,
+  user_message: userMessage,
+  error: userMessage,
+  technical_details: {},
+  retryable,
+  reconciliation_required: false,
+  request_id: requestId,
+  target_id: null,
+  dataset_epoch: null,
+  status,
+  ...extra,
+});
+
+const ingestErrorResponse = (
+  input: Parameters<typeof buildIngestError>[0],
+) => {
+  const error = buildIngestError(input);
+  return jsonResponse(error, error.status);
+};
+
+const classifyIngestError = (
+  message: string,
+  requestId: string | null,
+  index: number,
+): IngestErrorEnvelope => {
+  const status = rpcErrorStatus(message);
+  if (message.includes("contract_version")) {
+    return buildIngestError({
+      status: 422,
+      code: "invalid_contract",
+      category: "validation",
+      userMessage: "contract_version=2 es requerido en cada factura.",
+      requestId,
+      extra: { index },
+    });
+  }
+  if (message.includes("request_id")) {
+    return buildIngestError({
+      status: 422,
+      code: "invalid_request_id",
+      category: "validation",
+      userMessage: "Cada factura debe incluir un request_id UUID explícito.",
+      requestId,
+      extra: { index },
+    });
+  }
+  if (/duplicad|unique|conflict/i.test(message) || status === 409) {
+    return buildIngestError({
+      status: 409,
+      code: /duplicad|unique/i.test(message)
+        ? "duplicate_invoice"
+        : "idempotency_conflict",
+      category: "conflict",
+      userMessage: /duplicad|unique/i.test(message)
+        ? "La factura coincide con otra factura ya registrada."
+        : "La factura cambió durante la ingesta. Revise el resultado antes de reintentar.",
+      requestId,
+      extra: { index },
+    });
+  }
+  if (status === 422) {
+    return buildIngestError({
+      status,
+      code: "invalid_invoice",
+      category: "validation",
+      userMessage: "La factura no cumple el formato requerido para la ingesta.",
+      requestId,
+      extra: { index },
+    });
+  }
+  return buildIngestError({
+    status: status >= 500 ? status : 500,
+    code: "upstream_unavailable",
+    category: "transport",
+    userMessage: "No se pudo guardar la factura recibida.",
+    requestId,
+    retryable: true,
+    extra: { index },
+  });
+};
 
 const normalizeOnePayload = (raw: JsonObject, trustedImportSignal: boolean) => {
-  const extraction = asObject(raw.extraction ?? raw.cabecera ?? raw.factura ?? raw.invoice ?? raw);
-  const fileName = text(pick(raw, ["file_name", "filename", "source_pdf_name", "nombre_archivo", "pdf_nombre"]), "factura-recibida.pdf");
-  const pdfBase64 = cleanBase64(pick(raw, ["file_base64", "pdf_base64", "b64_pdf", "B64_PDF", "pdf", "data"]));
-  const email = asObject(raw.email);
-  const rawMetadata = asObject(raw.metadata);
-  const source = text(
-    pick(raw, ["source", "workflow", "origin"]),
-    text(
-      pick(rawMetadata, ["source", "workflow", "origin"]),
-      text(pick(extraction, ["source", "workflow", "origin"]), null),
-    ),
-  );
-  const remoteFrrId = integerValue(extraction.remote_id, null);
-  const lineasRaw =
-    asArray(extraction.ctb).length > 0
-      ? asArray(extraction.ctb)
-      : asArray(extraction.lineas_ctb).length > 0
-        ? asArray(extraction.lineas_ctb)
-        : asArray(raw.ctb);
-  const normalizedCtb = lineasRaw.map((linea, index) =>
-    normalizeFrcPayload(linea, index + 1, { preserveRemoteIds: true })
-  );
-  const normalizedPunteos = asArray(extraction.punteos ?? raw.punteos).map((punteo, index) =>
-    normalizePunteoPayload(punteo, index + 1)
-  );
+  const normalizedExtraction = normalizeFacturaExtractionPayload(raw);
   const ingestAuthority = resolveFacturaIngestAuthority({
-    frr: applyGastosToFrr(normalizeFrrPayload(extraction), extraction.gastos ?? raw.gastos),
-    source,
-    remoteFrrId,
+    frr: normalizedExtraction.frr,
+    source: normalizedExtraction.source,
+    remoteFrrId: normalizedExtraction.remoteFrrId,
     trustedImportSignal,
-    ctb: normalizedCtb,
-    punteos: normalizedPunteos,
+    ctb: normalizedExtraction.ctb,
+    punteos: normalizedExtraction.punteos,
   });
-  const frr = ingestAuthority.frr;
-  const ctb = ingestAuthority.ctb;
-  const punteos = ingestAuthority.punteos;
-
-  const proveedorNombre = text(pick(extraction, ["proveedor_nombre", "nombre_proveedor", "acreedor_nombre", "FRR_proveedor_nombre"]), null);
-  const proveedorNif = text(pick(extraction, ["proveedor_nif", "nif_proveedor", "acreedor_nif", "cif"]), null);
-
-  const sourcePageNumber = integerValue(pick(raw, ["source_page_number", "page_number"]), null);
-  const sourcePageCount = integerValue(pick(raw, ["source_page_count", "page_count"]), null);
-
-  const metadata = {
-    proveedor_nombre: proveedorNombre,
-    proveedor_nif: proveedorNif,
-    source_pdf_name: text(pick(raw, ["source_pdf_name", "file_name", "filename"]), fileName),
-    source_page_number: sourcePageNumber,
-    source_page_count: sourcePageCount,
-    email_from: text(pick(email, ["from", "from_email", "sender"]), null),
-    email_subject: text(pick(email, ["subject", "asunto"]), null),
-    email_received_at: timestampValue(pick(email, ["date", "received_at", "fecha"]), null),
-    confidence: normalizeConfidence(
-      pick(rawMetadata, ["confidence", "confianza"]) ??
-        pick(extraction, ["confidence", "confianza"]),
-    ),
-  };
-
-  const auditMetadata = {
-    confidence: metadata.confidence,
-    warnings: asStringArray(rawMetadata.warnings ?? extraction.warnings),
-    raw_text_summary: text(rawMetadata.raw_text_summary ?? extraction.raw_text_summary, null),
-  };
-
-  const matchEvidence = asObject(
-    sanitizeAuditValue(
-      rawMetadata.match_evidence ??
-        (extraction as JsonObject).match_evidence ??
-        (extraction as JsonObject).matching,
-    ),
-  );
 
   return {
-    frr,
-    ctb,
-    punteos,
-    requestedPunteos: ingestAuthority.isERPReference ? [] : normalizedPunteos,
-    extraction,
-    pdfBase64,
-    fileName,
-    metadata,
-    auditMetadata,
-    matchEvidence,
-    source,
+    frr: ingestAuthority.frr,
+    ctb: ingestAuthority.ctb,
+    punteos: ingestAuthority.punteos,
+    requestedPunteos: ingestAuthority.isERPReference
+      ? []
+      : normalizedExtraction.punteos,
+    extraction: normalizedExtraction.extraction,
+    pdfBase64: normalizedExtraction.pdfBase64,
+    fileName: normalizedExtraction.fileName,
+    metadata: normalizedExtraction.documentMetadata,
+    auditMetadata: normalizedExtraction.auditMetadata,
+    warnings: normalizedExtraction.warnings,
+    matchEvidence: normalizedExtraction.matchEvidence,
+    source: normalizedExtraction.source,
     isERPReference: ingestAuthority.isERPReference,
     remoteFrrId: ingestAuthority.remoteFrrId,
   };
@@ -137,18 +183,50 @@ const normalizeOnePayload = (raw: JsonObject, trustedImportSignal: boolean) => {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") {
+    return ingestErrorResponse({
+      status: 405,
+      code: "invalid_operation",
+      category: "validation",
+      userMessage: "Método no permitido.",
+      requestId: null,
+    });
+  }
 
-  const tokenResult = await requireAgentToken(req);
-  if (!tokenResult.ok) return tokenResult.response;
-  const trustedImportSignal = await requestHasServiceRoleCredential(req);
-
+  let activeRequestId: string | null = null;
   try {
+    const tokenResult = await requireAgentToken(req);
+    if (!tokenResult.ok) {
+      const status = tokenResult.response.status;
+      return ingestErrorResponse({
+        status,
+        code: status === 401 ? "unauthorized" : "upstream_unavailable",
+        category: status === 401 ? "validation" : "transport",
+        userMessage: status === 401
+          ? "La credencial de ingesta no es válida."
+          : "No se pudo comprobar la credencial de ingesta.",
+        requestId: null,
+        retryable: status >= 500,
+      });
+    }
+    const trustedImportSignal = await requestHasServiceRoleCredential(req);
+
     const body = await req.json();
     const envelope = asObject(body);
-    const contractVersion = integerValue(envelope.contract_version, FACTURAS_RECIBIDAS_CONTRACT_VERSION);
+    activeRequestId = isValidRequestId(envelope.request_id)
+      ? envelope.request_id.trim()
+      : null;
+    const contractVersion = integerValue(envelope.contract_version, null);
     if (contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
-      return jsonResponse({ error: "contract_version=2 es requerido" }, 422);
+      return ingestErrorResponse({
+        status: 422,
+        code: "invalid_contract",
+        category: "validation",
+        userMessage: "contract_version=2 es requerido.",
+        requestId: isValidRequestId(envelope.request_id)
+          ? envelope.request_id.trim()
+          : null,
+      });
     }
     const inputs: JsonObject[] = Array.isArray(body)
       ? body
@@ -157,12 +235,26 @@ Deno.serve(async (req) => {
         : [body];
 
     const supabase = createServiceClient();
-    const results: unknown[] = [];
-    const errors: unknown[] = [];
+    const results: JsonObject[] = [];
+    const errors: IngestErrorEnvelope[] = [];
 
     for (const [index, input] of inputs.entries()) {
+      let itemRequestId: string | null = null;
       try {
-        const requestId = requestIdValue(input.request_id ?? (inputs.length === 1 ? envelope.request_id : null));
+        if (
+          input.contract_version !== undefined &&
+          integerValue(input.contract_version, null) !==
+            FACTURAS_RECIBIDAS_CONTRACT_VERSION
+        ) {
+          throw new Error("contract_version=2 es requerido en cada factura");
+        }
+        const requestIdValue = input.request_id ??
+          (inputs.length === 1 ? envelope.request_id : null);
+        if (!isValidRequestId(requestIdValue)) {
+          throw new Error("request_id UUID explicito es requerido");
+        }
+        const requestId = requestIdValue.trim();
+        itemRequestId = requestId;
         const normalized = normalizeOnePayload(input, trustedImportSignal);
         const proveedorTipo = getFacturaProveedorTipoFromMatchEvidence(
           normalized.matchEvidence,
@@ -258,7 +350,7 @@ Deno.serve(async (req) => {
             ...documentedReferenceIssues,
             ...baseValidationErrors,
           ],
-          normalized.auditMetadata.warnings,
+          normalized.warnings,
         );
         const duplicateOf = duplicateCandidates[0] ?? null;
         const nextEstado = duplicateOf
@@ -275,6 +367,7 @@ Deno.serve(async (req) => {
             duplicada_de: duplicateOf,
             estado: nextEstado,
             source_kind: normalized.isERPReference ? "erp_reference" : "n8n_draft",
+            fecha_ctb_source: "invoice_date",
             remote_frr_id: normalized.remoteFrrId,
             is_readonly_reference: normalized.isERPReference,
             match_status: normalized.isERPReference ? "reference" : "matched",
@@ -310,21 +403,67 @@ Deno.serve(async (req) => {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        errors.push({ index, error: message, status: rpcErrorStatus(message) });
+        errors.push(classifyIngestError(message, itemRequestId, index));
       }
+    }
+
+    if (errors.length > 0) {
+      const primaryError = errors[0];
+      const partial = results.length > 0;
+      const userMessage = partial
+        ? `Se registraron ${results.length} facturas, pero ${errors.length} requieren revisión.`
+        : "No se pudo registrar ninguna factura del lote.";
+      return jsonResponse(
+        {
+          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+          success: false,
+          facturas_created: results.length,
+          results,
+          errors,
+          code: primaryError.code,
+          category: primaryError.category,
+          user_message: userMessage,
+          error: userMessage,
+          technical_details: {},
+          retryable: errors.some((item) => item.retryable),
+          reconciliation_required: false,
+          request_id: inputs.length === 1
+            ? primaryError.request_id ??
+              (results[0]?.request_id as string | undefined) ??
+              null
+            : isValidRequestId(envelope.request_id)
+              ? envelope.request_id.trim()
+              : null,
+          target_id: null,
+          dataset_epoch: null,
+        },
+        partial ? 207 : primaryError.status,
+      );
     }
 
     return jsonResponse(
       {
         contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-        success: errors.length === 0,
+        request_id: inputs.length === 1
+          ? (results[0]?.request_id as string | undefined) ?? null
+          : isValidRequestId(envelope.request_id)
+            ? envelope.request_id.trim()
+            : null,
+        success: true,
         facturas_created: results.length,
         results,
-        errors: errors.length > 0 ? errors : undefined,
       },
-      errors.length > 0 && results.length === 0 ? 400 : errors.length > 0 ? 207 : 200,
+      200,
     );
   } catch (error) {
-    return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
+    console.error("factura-recibida-ingest error", error);
+    return ingestErrorResponse({
+      status: 500,
+      code: "upstream_unavailable",
+      category: "transport",
+      userMessage: "No se pudo completar la ingesta de facturas.",
+      requestId: activeRequestId,
+      retryable: true,
+    });
   }
 });

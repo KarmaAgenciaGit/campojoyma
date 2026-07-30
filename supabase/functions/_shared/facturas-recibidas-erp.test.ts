@@ -1,5 +1,6 @@
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertThrows } from "jsr:@std/assert@1";
 import {
+  ERPAttemptMatchesIdentity,
   ERPWriterRelationsMatchSnapshot,
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   applyFacturaERPDeterministicDefaults,
@@ -58,7 +59,19 @@ import {
   validateERPWriteRequestV2,
   validateERPWriteResponseV2,
   verifyFacturaERPExactMAPunteos,
+  type JsonObject,
 } from "./facturas-recibidas-erp.ts";
+import {
+  assertFacturaExtractionResponseContract,
+  normalizeFacturaExtractionPayload,
+} from "./factura-recibida-extraction.ts";
+import {
+  buildERPContractV3,
+  buildFacturaWriteIdentity,
+  parseStructuredERPError,
+  timestampsReferToSameInstant,
+  validateNetagroWriteResponseV3,
+} from "./netagro-api-v3.ts";
 
 const requestWithToken = (token?: string, header = "x-agent-token") =>
   new Request("https://edge.invalid/factura-recibida-ingest", {
@@ -84,6 +97,188 @@ Deno.test("normaliza la confianza de porcentaje a fraccion y rechaza valores imp
   assertEquals(normalizeConfidence("100"), 1);
   assertEquals(normalizeConfidence(101), null);
   assertEquals(normalizeConfidence(-1), null);
+});
+
+Deno.test("extraccion interactiva e ingesta producen la misma cabecera, CTB y punteos", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const output = {
+    extraction: {
+      FRR_Idempresa: 1,
+      FRR_numerofactura: "A-100",
+      FRR_fechafactura: "30/07/2026",
+      proveedor_nombre: "PROVEEDOR TEST",
+      proveedor_nif: "B12345678",
+    },
+    ctb: [{
+      FRC_id: 999,
+      FRC_idfacturarecibida: 888,
+      FRC_Cuenta: "60200000001",
+      FRC_Importe: 100,
+      FRC_FechaLog: "2026-07-30",
+      FRC_HoraLog: "10:00:00",
+    }],
+    punteos: [{
+      source_table: "albmaterial",
+      source_id: 42,
+      S: true,
+    }],
+    metadata: { confidence: 98 },
+    source: "n8n-facturas-v2",
+    source_pdf_name: "factura.pdf",
+  };
+  const interactive = {
+    contract_version: 2,
+    request_id: requestId,
+    output,
+  };
+  const ingest = {
+    contract_version: 2,
+    request_id: requestId,
+    ingest_payload: { output },
+  };
+
+  assertEquals(
+    assertFacturaExtractionResponseContract(interactive, requestId),
+    interactive,
+  );
+  assertEquals(
+    assertFacturaExtractionResponseContract(ingest, requestId),
+    ingest,
+  );
+  const normalizedInteractive = normalizeFacturaExtractionPayload(interactive);
+  const normalizedIngest = normalizeFacturaExtractionPayload(ingest);
+  assertEquals(normalizedInteractive.frr, normalizedIngest.frr);
+  assertEquals(normalizedInteractive.ctb, normalizedIngest.ctb);
+  assertEquals(normalizedInteractive.punteos, normalizedIngest.punteos);
+  assertEquals(normalizedInteractive.documentMetadata, normalizedIngest.documentMetadata);
+  assertEquals(normalizedInteractive.ctb[0].FRC_Cuenta, "60200000001");
+  assertEquals(normalizedInteractive.ctb[0].FRC_id, null);
+  assertEquals(normalizedInteractive.ctb[0].FRC_idfacturarecibida, null);
+});
+
+Deno.test("extraccion rechaza version implicita o request_id cruzado", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  assertThrows(
+    () => assertFacturaExtractionResponseContract({ request_id: requestId }, requestId),
+    Error,
+    "EXTRACTION_CONTRACT_MISMATCH",
+  );
+  assertThrows(
+    () =>
+      assertFacturaExtractionResponseContract(
+        {
+          contract_version: 2,
+          request_id: "22222222-2222-4222-8222-222222222222",
+        },
+        requestId,
+      ),
+    Error,
+    "EXTRACTION_REQUEST_MISMATCH",
+  );
+});
+
+Deno.test("contrato ERP v3 no envia hash cliente y valida la identidad devuelta", async () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const targetId = "netagro-test-write";
+  const datasetEpoch = "33333333-3333-4333-8333-333333333333";
+  const cabecera = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_tipofactura: "OT",
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-100",
+    FRR_fechafactura: "2026-07-30",
+    FRR_totalfac: 121,
+  };
+  const ctb = [{ FRC_Cuenta: "60200000001", FRC_Importe: 100 }];
+  const punteos: JsonObject[] = [];
+  const identity = await buildFacturaWriteIdentity({ cabecera, ctb, punteos });
+  const payload = buildERPContractV3({
+    operation: "validate",
+    requestId,
+    targetId,
+    datasetEpoch,
+    cabecera,
+    ctb,
+    punteos,
+  });
+
+  assertEquals(payload.contract_version, 3);
+  assertEquals(payload.operation, "validate");
+  assertEquals("payload_hash" in payload, false);
+  assertEquals(identity.payloadHash.length, 64);
+  assertEquals(identity.businessFingerprint.length, 64);
+  assertEquals(
+    validateNetagroWriteResponseV3({
+      contract_version: 3,
+      operation: "validate",
+      request_id: requestId,
+      target_id: targetId,
+      dataset_epoch: datasetEpoch,
+      payload_hash: identity.payloadHash,
+    }, {
+      operation: "validate",
+      requestId,
+      targetId,
+      datasetEpoch,
+      payloadHash: identity.payloadHash,
+    }).ok,
+    true,
+  );
+});
+
+Deno.test("identidad runtime exige snapshot presente y el mismo instante", () => {
+  assertEquals(
+    timestampsReferToSameInstant(
+      "2026-07-30T10:15:00Z",
+      "2026-07-30T12:15:00+02:00",
+    ),
+    true,
+  );
+  assertEquals(
+    timestampsReferToSameInstant(
+      "2026-07-30T10:15:00Z",
+      "2026-07-30T10:15:01Z",
+    ),
+    false,
+  );
+  assertEquals(timestampsReferToSameInstant(null, null), false);
+  assertEquals(timestampsReferToSameInstant("no-es-fecha", "no-es-fecha"), false);
+});
+
+Deno.test("errores FastAPI bajo detail conservan categoria e identidad estructuradas", () => {
+  assertEquals(
+    parseStructuredERPError({
+      detail: {
+        code: "counter_drift",
+        category: "conflict",
+        user_message: "No se puede reservar la numeración de Netagro.",
+        technical_details: { counter: "facturasrecibidas" },
+        retryable: false,
+        reconciliation_required: false,
+        request_id: "11111111-1111-4111-8111-111111111111",
+        target_id: "netagro-test-write",
+        dataset_epoch: "33333333-3333-4333-8333-333333333333",
+      },
+    }),
+    {
+      code: "counter_drift",
+      category: "conflict",
+      user_message: "No se puede reservar la numeración de Netagro.",
+      technical_details: { counter: "facturasrecibidas" },
+      retryable: false,
+      reconciliation_required: false,
+      request_id: "11111111-1111-4111-8111-111111111111",
+      target_id: "netagro-test-write",
+      dataset_epoch: "33333333-3333-4333-8333-333333333333",
+    },
+  );
+  assertEquals(
+    parseStructuredERPError({
+      error: "The requested webhook POST apiCampojoyma-facturas-write-v2 is not registered.",
+    }).user_message,
+    "No se pudo completar la operacion con Netagro.",
+  );
 });
 
 Deno.test("la evidencia de auditoria elimina respuestas y secretos antes de persistir", () => {
@@ -221,7 +416,11 @@ Deno.test("ingesta normal rechaza inyeccion contable aunque se falsifique source
   assertEquals(result.remoteFrrId, null);
   assertEquals(result.frr.FRR_numerofactura, "INJECTED");
   assertEquals(result.frr.FRR_Contabilizar, undefined);
-  assertEquals(result.ctb, []);
+  assertEquals(result.ctb.length, 1);
+  assertEquals(result.ctb[0].FRC_Cuenta, "69999999999");
+  assertEquals(result.ctb[0].FRC_Importe, 999);
+  assertEquals(result.ctb[0].FRC_id, null);
+  assertEquals(result.ctb[0].FRC_idfacturarecibida, null);
   assertEquals(result.punteos, [{ S: false, source_table: "albmaterial", source_id: 88 }]);
   for (const field of [
     "FRR_id",
@@ -1377,7 +1576,7 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "agricultores?nif=F04661460&activo=true",
     "agricultores/1680",
     "agricultores/1680/gastos",
-    "cuentas-contables?q=41000000017&limit=100",
+    "cuentas-contables?empresa_id=1&q=41000000017&limit=100",
     "facturasrecibidas?numero_factura=A-00748886&limit=20",
     "facturasrecibidas/buscar?empresa_id=1&ejercicio=25&proveedor_id=17&numero_factura=A-00748886&tipo_factura=OT",
     "facturasrecibidas/49305/punteos?include_lines=true&limit=100",
@@ -1406,6 +1605,7 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "agricultores/no-numerico",
     "cuentas/60200000001",
     "cuentas?q=602",
+    "cuentas-contables?account_schema=netagrocomer&q=602",
     "facturasrecibidas/49305/delete",
     "facturasrecibidas?redirect=https://attacker.invalid",
     "facturasrecibidas/49305/asiento?include_lines=true",
@@ -1425,6 +1625,36 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "albaranes/material/23210/lineas/extra",
   ];
   for (const consulta of denied) assert(!isAllowedERPConsulta(consulta), consulta);
+});
+
+Deno.test("reconciliacion rechaza target, epoch, circuito, hash o huella cruzados", () => {
+  const expected = {
+    targetId: "netagro-test-write",
+    datasetEpoch: "33333333-3333-4333-8333-333333333333",
+    circuit: "acreedores" as const,
+    payloadHash: "a".repeat(64),
+    businessFingerprint: "b".repeat(64),
+  };
+  const attempt = {
+    erp_target_id: expected.targetId,
+    erp_dataset_epoch: expected.datasetEpoch,
+    circuit: expected.circuit,
+    payload_hash: expected.payloadHash,
+    business_fingerprint: expected.businessFingerprint,
+  };
+  assertEquals(ERPAttemptMatchesIdentity(attempt, expected), true);
+  for (const crossed of [
+    { ...attempt, erp_target_id: "netagro-other" },
+    {
+      ...attempt,
+      erp_dataset_epoch: "44444444-4444-4444-8444-444444444444",
+    },
+    { ...attempt, circuit: "genero" },
+    { ...attempt, payload_hash: "c".repeat(64) },
+    { ...attempt, business_fingerprint: "d".repeat(64) },
+  ]) {
+    assertEquals(ERPAttemptMatchesIdentity(crossed, expected), false);
+  }
 });
 
 Deno.test("perfiles IVA conserva el permiso exclusivo de facturas", () => {

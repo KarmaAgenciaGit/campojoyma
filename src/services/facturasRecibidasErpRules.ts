@@ -6,10 +6,12 @@ type RuleInsert = Database['public']['Tables']['facturas_recibidas_erp_rules']['
 
 export type FacturaFechaCtbPolicy = 'manual' | 'invoice_date';
 export type FacturaContabilizarDefault = 'S' | 'N';
+export type FacturaPunteoDifferencePolicy = 'warning' | 'block';
 
 export type FacturaRecibidaErpRule = Omit<RuleRow, 'fecha_ctb_policy' | 'contabilizar_default'> & {
   fecha_ctb_policy: FacturaFechaCtbPolicy | null;
   contabilizar_default: FacturaContabilizarDefault | null;
+  punteo_difference_policy: FacturaPunteoDifferencePolicy | null;
 };
 
 export type FacturaRecibidaErpRuleInput = {
@@ -23,6 +25,7 @@ export type FacturaRecibidaErpRuleInput = {
   cuenta_gasto_default?: string | null;
   concepto_template?: string | null;
   contabilizar_default?: FacturaContabilizarDefault | null;
+  punteo_difference_policy?: FacturaPunteoDifferencePolicy | null;
   activo?: boolean;
   approval_note?: string | null;
 };
@@ -35,6 +38,7 @@ export type FacturaRecibidaErpRuleValues = {
   cuenta_gasto_default: string | null;
   concepto_template: string | null;
   contabilizar_default: FacturaContabilizarDefault | null;
+  punteo_difference_policy: FacturaPunteoDifferencePolicy;
 };
 
 export type FacturaRecibidaErpRuleResolution = FacturaRecibidaErpRuleValues & {
@@ -48,10 +52,21 @@ const isFechaCtbPolicy = (value: unknown): value is FacturaFechaCtbPolicy =>
 const isContabilizarDefault = (value: unknown): value is FacturaContabilizarDefault =>
   value === 'S' || value === 'N';
 
+const isPunteoDifferencePolicy = (
+  value: unknown,
+): value is FacturaPunteoDifferencePolicy =>
+  value === 'warning' || value === 'block';
+
 const normalizeRule = (row: RuleRow): FacturaRecibidaErpRule => ({
   ...row,
   fecha_ctb_policy: isFechaCtbPolicy(row.fecha_ctb_policy) ? row.fecha_ctb_policy : null,
   contabilizar_default: isContabilizarDefault(row.contabilizar_default) ? row.contabilizar_default : null,
+  punteo_difference_policy: isPunteoDifferencePolicy(
+    (row as unknown as Record<string, unknown>).punteo_difference_policy,
+  )
+    ? (row as unknown as Record<string, unknown>)
+        .punteo_difference_policy as FacturaPunteoDifferencePolicy
+    : null,
 });
 
 const normalizePositiveInteger = (value: number | null | undefined, field: string): number | null => {
@@ -111,6 +126,16 @@ const normalizeFechaCtbPolicy = (
   return value;
 };
 
+const normalizePunteoDifferencePolicy = (
+  value: FacturaPunteoDifferencePolicy | null | undefined,
+): FacturaPunteoDifferencePolicy | null => {
+  if (value === null || value === undefined) return null;
+  if (!isPunteoDifferencePolicy(value)) {
+    throw new Error('La política de diferencias de punteos no es válida.');
+  }
+  return value;
+};
+
 const hasConfiguredValue = (input: {
   ejercicio_erp: number | null;
   tipo_factura: string | null;
@@ -119,6 +144,7 @@ const hasConfiguredValue = (input: {
   cuenta_gasto_default: string | null;
   concepto_template: string | null;
   contabilizar_default: FacturaContabilizarDefault | null;
+  punteo_difference_policy: FacturaPunteoDifferencePolicy | null;
 }) =>
   input.ejercicio_erp !== null ||
   input.tipo_factura !== null ||
@@ -126,7 +152,8 @@ const hasConfiguredValue = (input: {
   input.fecha_ctb_policy === 'invoice_date' ||
   input.cuenta_gasto_default !== null ||
   input.concepto_template !== null ||
-  input.contabilizar_default !== null;
+  input.contabilizar_default !== null ||
+  input.punteo_difference_policy !== null;
 
 export const normalizeFacturaRecibidaErpRuleInput = (
   input: FacturaRecibidaErpRuleInput,
@@ -144,9 +171,14 @@ export const normalizeFacturaRecibidaErpRuleInput = (
     cuenta_gasto_default: normalizeCuentaGastoDefault(input.cuenta_gasto_default),
     concepto_template: normalizeConceptoTemplate(input.concepto_template),
     contabilizar_default: normalizeContabilizarDefault(input.contabilizar_default),
+    punteo_difference_policy: normalizePunteoDifferencePolicy(
+      input.punteo_difference_policy,
+    ),
     activo: input.activo ?? true,
     approval_note: input.approval_note?.trim() || null,
-  } satisfies RuleInsert;
+  } as RuleInsert & {
+    punteo_difference_policy: FacturaPunteoDifferencePolicy | null;
+  };
 
   if (hasConfiguredValue(normalized) && !normalized.approval_note) {
     throw new Error('A\u00f1ade una nota o evidencia de aprobaci\u00f3n para activar valores autom\u00e1ticos.');
@@ -203,6 +235,13 @@ export const resolveFacturaRecibidaErpRuleValues = (
         proveedorRule?.contabilizar_default ??
         empresaRule?.contabilizar_default,
     ),
+    punteo_difference_policy:
+      (isPunteoDifferencePolicy(current.punteo_difference_policy)
+        ? current.punteo_difference_policy
+        : null) ??
+      proveedorRule?.punteo_difference_policy ??
+      empresaRule?.punteo_difference_policy ??
+      'warning',
     empresa_rule_id: empresaRule?.id ?? null,
     proveedor_rule_id: proveedorRule?.id ?? null,
   };

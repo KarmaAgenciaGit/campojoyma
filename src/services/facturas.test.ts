@@ -15,7 +15,6 @@ vi.mock('@/services/facturasRecibidas', () => ({
 
 import {
   buildCtbPayload,
-  buildERPWebhookPayloadPreview,
   buildFacturaDuplicateConsulta,
   buildFacturaPayload,
   buildPunteosPayload,
@@ -23,6 +22,7 @@ import {
   fetchAlbaranMaterialLineas,
   fetchFacturaPunteables,
   fetchFacturaPunteosLive,
+  fetchFacturasRecibidasERPRuntime,
   facturaProveedorERPKind,
   getFacturaERPSendConfirmation,
   getFacturaERPReconciliationRequestId,
@@ -36,9 +36,11 @@ import {
   mapFacturaToUi,
   mapRemoteFacturaToUi,
   normalizeFacturaValidationIssues,
+  normalizeFacturaTiposIva,
   partitionFacturaValidationIssues,
   preflightFacturaRecibidaERP,
   tipoFacturaRadioValue,
+  validateFacturaAccountPairs,
 } from '@/services/facturas';
 import { supabase } from '@/integrations/supabase/client';
 import { isFacturaRecibidaInboxSourceKind } from '@/types/facturasRecibidas';
@@ -160,7 +162,7 @@ describe('reintentos ERP', () => {
     expect(factura.erp_error).toBe('El intento anterior devolvio HTTP 422');
   });
 
-  it('recupera la identidad ERP confirmada de FRR_id para registros finalizados antiguos', () => {
+  it('conserva FRR_id histórico sin presentar la referencia legacy como confirmada', () => {
     const factura = mapFacturaToUi({
       id: 'factura-finalizada-antigua',
       estado: 'enviada_erp',
@@ -175,8 +177,9 @@ describe('reintentos ERP', () => {
     } as never);
 
     expect(factura.remote_frr_id).toBe(49305);
+    expect(factura.erp_reference_status).toBe('legacy_unverified');
     expect(factura.last_request_id).toBe('c2caa09c-3574-46f7-9b47-11c6651b8e55');
-    expect(getFacturaERPSendConfirmation(factura)).toBe('confirmed');
+    expect(getFacturaERPSendConfirmation(factura)).toBe('unconfirmed');
   });
 });
 
@@ -441,58 +444,6 @@ describe('modelo reversible de facturas recibidas', () => {
     });
   });
 
-  it('previsualiza el contrato estricto con solo punteos seleccionados', () => {
-    const preview = buildERPWebhookPayloadPreview({
-      ...onduSpanHeader,
-      id: 'factura-preview',
-      ctb: [{
-        FRC_id: 91,
-        FRC_idfacturarecibida: 49305,
-        FRC_Cuenta: '60200000001',
-        FRC_Importe: 42341.52,
-        FRC_IdUsuarioLog: 7,
-        FRC_FechaLog: '2026-07-22',
-        FRC_HoraLog: '10:00:00',
-      }],
-      punteos: [
-        {
-          S: false,
-          source_table: 'albmaterial',
-          source_id: 1,
-          importe_factura: 10,
-          Origen: 'MA',
-        },
-        {
-          S: true,
-          source_table: 'ALBMATERIAL',
-          source_id: 2,
-          importe_factura: null,
-          Origen: 'MA',
-          Ref: 'no-enviar',
-        },
-      ],
-    } as never);
-
-    expect(preview).not.toHaveProperty('factura');
-    expect(preview).not.toHaveProperty('operation');
-    expect(preview.cabecera).not.toHaveProperty('FRR_id');
-    expect(preview.cabecera).not.toHaveProperty('FRR_numero');
-    expect(preview.cabecera).not.toHaveProperty('FRR_IdAsientoNet');
-    expect(preview.cabecera).not.toHaveProperty('FRR_IdUsuarioLog');
-    expect(preview.ctb[0]).toEqual({
-      FRC_Cuenta: '60200000001',
-      FRC_Importe: 42341.52,
-      FRC_IdActividad: null,
-      FRC_Idseccion: null,
-      FRC_Iddepartamento: null,
-      FRC_Idsubdepartamento: null,
-    });
-    expect(preview.punteos).toEqual([{
-      source_table: 'albmaterial',
-      source_id: 2,
-    }]);
-  });
-
   it('convierte un borrador nuevo revisado en payload ERP sin copiar identidad ni inventar relaciones', () => {
     const cabecera = buildFacturaPayload(
       {
@@ -521,21 +472,7 @@ describe('modelo reversible de facturas recibidas', () => {
         importe: 42341.52,
       }],
     );
-    const preview = buildERPWebhookPayloadPreview({
-      ...cabecera,
-      id: 'pdf-nuevo-revisado',
-      ctb: [],
-      punteos: [],
-    } as never);
-
-    expect(preview).toEqual(expect.objectContaining({
-      contract_version: 2,
-      request_id: 'pdf-nuevo-revisado',
-      dry_run: true,
-      ctb: [],
-      punteos: [],
-    }));
-    expect(preview.cabecera).toMatchObject({
+    expect(cabecera).toMatchObject({
       FRR_Idempresa: 1,
       FRR_ejercicio: 25,
       FRR_idproveedor: 17,
@@ -554,9 +491,9 @@ describe('modelo reversible de facturas recibidas', () => {
       FRR_Contabilizar: 'N',
       FRR_GeneraCartera: 'N',
     });
-    expect(preview.cabecera).not.toHaveProperty('FRR_id');
-    expect(preview.cabecera).not.toHaveProperty('FRR_numero');
-    expect(preview.cabecera).not.toHaveProperty('FRR_IdAsientoNet');
+    expect(cabecera).not.toHaveProperty('FRR_id');
+    expect(cabecera.FRR_numero).toBeNull();
+    expect(cabecera).not.toHaveProperty('FRR_IdAsientoNet');
   });
 
   it('conserva cinco tramos de IVA, cuatro gastos y cuatro vencimientos al volver al contrato ERP', () => {
@@ -1165,7 +1102,15 @@ describe('validacion ERP autoritativa', () => {
       sync_status: 'unknown',
     })).toBe('reconciling');
     expect(getFacturaERPSendConfirmation({ estado: 'enviada_erp', remote_frr_id: null })).toBe('unconfirmed');
-    expect(getFacturaERPSendConfirmation({ estado: 'enviada_erp', remote_frr_id: 49305 })).toBe('confirmed');
+    expect(getFacturaERPSendConfirmation({
+      estado: 'enviada_erp',
+      sync_status: 'sent',
+      remote_frr_id: 49305,
+      erp_reference_status: 'valid',
+      erp_target_id: 'netagro-test-write',
+      erp_dataset_epoch: 'epoch-actual',
+      erp_verified_at: '2026-07-30T12:00:00Z',
+    })).toBe('confirmed');
   });
 
   it('solo reutiliza un request_id valido en estados de reconciliacion', () => {
@@ -1480,5 +1425,112 @@ describe('tipoFacturaRadioValue', () => {
     expect(tipoFacturaRadioValue(null, {
       proveedor: { matched: true, provider_id: 1957, entity_type: 'agricultor' },
     }, 1957)).toBe('');
+  });
+});
+
+describe('catálogos y líneas contables de facturas', () => {
+  it('normaliza y ordena los porcentajes IVA, incluyendo siempre el 0 %', () => {
+    expect(
+      normalizeFacturaTiposIva({
+        items: [
+          { id: 2, nombre: 'General', iva: '21.00' },
+          { id: 1, nombre: 'SuperReducido', iva: '4.00' },
+          { id: 3, nombre: 'Reducido', iva: '10.00' },
+          { id: 20, nombre: 'General duplicado', iva: '21.00' },
+        ],
+      }),
+    ).toMatchObject([
+      { porcentaje: 0 },
+      { porcentaje: 4 },
+      { porcentaje: 10 },
+      { porcentaje: 21 },
+    ]);
+  });
+
+  it('garantiza 0, 4, 10 y 21 aunque el catálogo no los devuelva', () => {
+    expect(
+      normalizeFacturaTiposIva({
+        items: [{ nombre: 'Histórico especial', iva: '5.5' }],
+      }).map((option) => option.porcentaje),
+    ).toEqual([0, 4, 5.5, 10, 21]);
+  });
+
+  it('filtra las filas CTB completamente vacías del payload', () => {
+    expect(
+      buildCtbPayload([
+        { posicion: 1, descripcion: '', importe: 0 },
+        { posicion: 2, descripcion: '60200000001', importe: 50 },
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        posicion: 1,
+        FRC_Cuenta: '60200000001',
+        FRC_Importe: 50,
+      }),
+    ]);
+  });
+
+  it('bloquea pares incompletos de cuenta e importe en gastos y CTB', () => {
+    const issues = validateFacturaAccountPairs({
+      gastos: [{ posicion: 1, descripcion: '', importe: 15 }],
+      ctb: [
+        { posicion: 1, descripcion: '60200000001', importe: 0 },
+        {
+          posicion: 2,
+          descripcion: '',
+          importe: 0,
+          FRC_IdActividad: 7,
+        },
+      ],
+    });
+
+    expect(issues.map((issue) => issue.code)).toEqual([
+      'gasto_cuenta_requerida',
+      'ctb_importe_requerido',
+      'ctb_cuenta_requerida',
+    ]);
+  });
+});
+
+describe('runtime ERP de facturas', () => {
+  it('usa la capacidad autenticada del Edge sin inferir contabilidad', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 3,
+        ok: true,
+        runtime: {
+          target_id: 'netagro-test-write',
+          dataset_epoch: 'epoch-actual',
+          snapshot_at: '2026-07-30T12:00:00Z',
+          write_mode: 'management',
+          accounting_mode: 'unavailable',
+          ready_for_commit: true,
+          capabilities: {
+            validate: true,
+            management_commit: true,
+            accounting_commit: false,
+          },
+        },
+      },
+      error: null,
+    } as never);
+
+    await expect(fetchFacturasRecibidasERPRuntime()).resolves.toMatchObject({
+      target_id: 'netagro-test-write',
+      dataset_epoch: 'epoch-actual',
+      accounting_mode: 'unavailable',
+      capabilities: {
+        accounting_commit: false,
+      },
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      'facturas-recibidas-erp-runtime',
+      expect.objectContaining({
+        body: expect.objectContaining({
+          contract_version: 3,
+          request_id: expect.any(String),
+        }),
+      }),
+    );
   });
 });

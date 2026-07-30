@@ -1,9 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
+  ERPAttemptMatchesIdentity,
   ERPWriterRelationsMatchSnapshot,
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+  FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
   buildERPDuplicateConsulta,
-  buildERPContractV2,
   corsHeaders,
   forceFacturaERPAccountingDisabled,
   getFacturaSyncEntryDecision,
@@ -23,12 +24,10 @@ import {
   normalizePunteoPayload,
   parseERPArrayEnvelope,
   parseERPProviderDetailResponse,
-  parseJsonResponse,
   requestIdValue,
   requireRouteUser,
   resolveFacturaProveedorTipo,
   rpcErrorStatus,
-  signJwtHs256,
   text,
   toERPCtbPayload,
   toERPFacturaPayload,
@@ -39,40 +38,150 @@ import {
   validateERPDuplicateSearchResponse,
   validateERPReadbackAgainstWrite,
   validateERPWriteRequestV2,
-  validateERPWriteResponseV2,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
-
-const DEFAULT_EXP_SECONDS = 300;
-const UPSTREAM_TIMEOUT_MS = 30_000;
-// URL canonica del webhook v2 de escritura (no es un secreto: exige JWT firmado).
-// Se usa solo si el secreto N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL apunta por error al webhook de lectura.
-const DEFAULT_WRITE_WEBHOOK_URL_V2 =
-  "https://n8nbecarios.srv894901.hstgr.cloud/webhook/apiCampojoyma-facturas-write-v2";
+import {
+  buildERPContractV3,
+  buildFacturaWriteIdentity,
+  callNetagroRead,
+  callNetagroWriteV3,
+  fetchNetagroRuntime,
+  parseStructuredERPError,
+  timestampsReferToSameInstant,
+  validateNetagroWriteResponseV3,
+  type StructuredERPError,
+} from "../_shared/netagro-api-v3.ts";
 
 const asObject = (value: unknown): JsonObject =>
   value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 
-const parseExpSeconds = (value: string | undefined) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_EXP_SECONDS;
-};
+const edgeError = ({
+  status,
+  error,
+  extra = {},
+}: {
+  status: number;
+  error: StructuredERPError;
+  extra?: JsonObject;
+}) => jsonResponse({
+  contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+  ...error,
+  technical_details: {},
+  error: error.user_message,
+  ...extra,
+}, status);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
-
-  const auth = await requireRouteUser(req);
-  if (!auth.ok) return auth.response;
+  if (req.method !== "POST") {
+    return edgeError({
+      status: 405,
+      error: {
+        code: "invalid_operation",
+        category: "validation",
+        user_message: "Método no permitido.",
+        technical_details: {},
+        retryable: false,
+        reconciliation_required: false,
+        request_id: null,
+        target_id: null,
+        dataset_epoch: null,
+      },
+    });
+  }
 
   let activeFacturaId: string | null = null;
   let activeRequestId: string | null = null;
+  let activeTargetId: string | null = null;
+  let activeDatasetEpoch: string | null = null;
+  let activeWriterOpened = false;
 
   try {
+    const auth = await requireRouteUser(req);
+    if (!auth.ok) {
+      const status = auth.response.status;
+      return edgeError({
+        status,
+        error: {
+          code: status === 403
+            ? "forbidden"
+            : status === 401
+              ? "unauthorized"
+              : "upstream_unavailable",
+          category: status >= 500 ? "transport" : "validation",
+          user_message: status === 403
+            ? "No tiene permiso para operar con facturas recibidas."
+            : status === 401
+              ? "Debe iniciar sesión para operar con facturas recibidas."
+              : "No se pudo comprobar el acceso al flujo ERP.",
+          technical_details: {},
+          retryable: status >= 500,
+          reconciliation_required: false,
+          request_id: null,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
+    }
+
     const body = asObject(await req.json());
-    const contractVersion = integerValue(body.contract_version, FACTURAS_RECIBIDAS_CONTRACT_VERSION);
-    if (contractVersion !== FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
-      return jsonResponse({ error: "contract_version=2 es requerido" }, 422);
+    const contractVersion = integerValue(body.contract_version, null);
+    const requestId = requestIdValue(body.request_id);
+    activeRequestId = requestId;
+    if (contractVersion === FACTURAS_RECIBIDAS_CONTRACT_VERSION) {
+      return edgeError({
+        status: 426,
+        error: {
+          code: "contract_upgrade_required",
+          category: "validation",
+          user_message:
+            "Este flujo requiere usar primero «Validar con ERP» y confirmar después el envío.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
+    }
+    if (contractVersion !== FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION) {
+      return edgeError({
+        status: 422,
+        error: {
+          code: "invalid_contract",
+          category: "validation",
+          user_message: "contract_version=3 es requerido.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
+    }
+    const rawOperation = text(body.operation, null);
+    const requestedOperation = rawOperation;
+    if (
+      !["validate", "commit", "reconcile"].includes(
+        requestedOperation ?? "",
+      )
+    ) {
+      return edgeError({
+        status: 422,
+        error: {
+          code: "invalid_operation",
+          category: "validation",
+          user_message: "operation debe ser validate, commit o reconcile.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
     }
 
     const facturaId = text(body.factura_id ?? body.id, null);
@@ -80,14 +189,45 @@ Deno.serve(async (req) => {
       body.expected_version ?? body.row_version ?? body.version,
       null,
     );
-    const requestId = requestIdValue(body.request_id);
     activeFacturaId = facturaId;
-    activeRequestId = requestId;
 
-    if (!facturaId) return jsonResponse({ error: "factura_id es requerido" }, 422);
-    if (!expectedVersion || expectedVersion < 1) {
-      return jsonResponse({ error: "expected_version es requerido" }, 422);
+    if (!facturaId) {
+      return edgeError({
+        status: 422,
+        error: {
+          code: "invalid_invoice",
+          category: "validation",
+          user_message: "factura_id es requerido.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
     }
+    if (!expectedVersion || expectedVersion < 1) {
+      return edgeError({
+        status: 422,
+        error: {
+          code: "invalid_invoice",
+          category: "validation",
+          user_message: "expected_version es requerido.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
+    }
+
+    await auth.serviceClient.rpc("mark_stale_factura_recibida_syncs_v3", {
+      p_cutoff: "00:10:00",
+      p_actor: auth.user.id,
+    });
 
     const { data: factura, error: facturaError } = await auth.serviceClient
       .from("facturasrecibidas")
@@ -95,28 +235,51 @@ Deno.serve(async (req) => {
       .eq("id", facturaId)
       .single();
     if (facturaError || !factura) {
-      return jsonResponse(
-        { error: facturaError?.message ?? "Factura no encontrada." },
-        facturaError ? 500 : 404,
-      );
+      if (facturaError) console.error("factura-recibida-send-erp load error", facturaError);
+      return edgeError({
+        status: facturaError ? 500 : 404,
+        error: {
+          code: facturaError ? "upstream_unavailable" : "not_found",
+          category: facturaError ? "transport" : "validation",
+          user_message: facturaError
+            ? "No se pudo cargar la factura antes de contactar con Netagro."
+            : "Factura no encontrada.",
+          technical_details: {},
+          retryable: Boolean(facturaError),
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
     }
     if (isFacturaERPReadOnlyReference(factura as JsonObject)) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      return edgeError({
+        status: 409,
+        error: {
+          code: "reference_read_only",
+          category: "conflict",
+          user_message:
+            "Esta factura es una referencia importada del ERP y no se puede volver a enviar.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
           request_id: requestId,
-          code: "ERP_REFERENCE_READ_ONLY",
-          error: "Esta factura es una referencia importada del ERP y no se puede volver a enviar.",
+          target_id: text((factura as JsonObject).erp_target_id, null),
+          dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
         },
-        409,
-      );
+      });
     }
 
     const entryDecision = getFacturaSyncEntryDecision(factura as JsonObject, requestId);
     if (entryDecision.mode === "replay") {
       return jsonResponse({
-        contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: requestedOperation,
         request_id: requestId,
+        target_id: text((factura as JsonObject).erp_target_id, null),
+        dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
+        payload_hash: text((factura as JsonObject).erp_payload_hash, null),
         ok: true,
         idempotent_replay: true,
         factura,
@@ -125,106 +288,220 @@ Deno.serve(async (req) => {
       });
     }
     if (entryDecision.mode === "blocked_sent") {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      return edgeError({
+        status: 409,
+        error: {
+          code: "idempotency_conflict",
+          category: "conflict",
+          user_message: "La factura ya fue enviada con otro request_id.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
           request_id: requestId,
-          code: "ERP_ALREADY_SENT",
-          error: "La factura ya fue enviada con otro request_id.",
-          factura,
+          target_id: text((factura as JsonObject).erp_target_id, null),
+          dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
         },
-        409,
-      );
+      });
     }
     if (entryDecision.mode === "blocked_in_flight") {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_SYNC_IN_FLIGHT",
+      return edgeError({
+        status: 202,
+        error: {
+          code: "ambiguous_commit",
+          category: "conflict",
+          user_message:
+            "Hay un envío ERP en curso; no se iniciará otra operación.",
+          technical_details: {},
+          retryable: false,
           reconciliation_required: true,
-          error: "Hay un envio ERP en curso; no se iniciara otro writer.",
-          factura,
+          request_id: entryDecision.syncRequestId,
+          target_id: text((factura as JsonObject).erp_target_id, null),
+          dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
         },
-        202,
-      );
+      });
     }
     if (entryDecision.mode === "blocked_reconciliation") {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_RECONCILIATION_INVALID_STATE",
+      return edgeError({
+        status: 409,
+        error: {
+          code: "ambiguous_commit",
+          category: "conflict",
+          user_message:
+            "El resultado incierto no conserva una identidad válida para reconciliar.",
+          technical_details: {},
+          retryable: false,
           reconciliation_required: true,
-          error: "La sincronizacion ambigua no conserva un request_id original valido.",
-          factura,
+          request_id: requestId,
+          target_id: text((factura as JsonObject).erp_target_id, null),
+          dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
         },
-        409,
-      );
+      });
     }
-    const reconciliationMode = entryDecision.mode === "reconcile";
+    const reconciliationMode = requestedOperation === "reconcile";
+    if (entryDecision.mode === "reconcile" && !reconciliationMode) {
+      return edgeError({
+        status: 409,
+        error: {
+          code: "ambiguous_commit",
+          category: "conflict",
+          user_message:
+            "El resultado anterior es incierto. Debe reconciliarse antes de continuar.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: true,
+          request_id: entryDecision.syncRequestId,
+          target_id: text((factura as JsonObject).erp_target_id, null),
+          dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
+        },
+      });
+    }
+    if (requestedOperation === "reconcile" && entryDecision.mode !== "reconcile") {
+      return edgeError({
+        status: 409,
+        error: {
+          code: "reconciliation_not_required",
+          category: "conflict",
+          user_message: "La factura no tiene un resultado incierto que reconciliar.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+          target_id: text((factura as JsonObject).erp_target_id, null),
+          dataset_epoch: text((factura as JsonObject).erp_dataset_epoch, null),
+        },
+      });
+    }
     const syncRequestId = entryDecision.syncRequestId;
     activeRequestId = syncRequestId;
 
-    const jwtSecret = Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_SECRET")?.trim();
-    let writeWebhookUrl = Deno.env.get("N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL")?.trim();
-    const readWebhookUrl = Deno.env.get("N8N_CAMPOJOYMA_READ_WEBHOOK_URL")?.trim();
-    if (writeWebhookUrl && readWebhookUrl && writeWebhookUrl === readWebhookUrl) {
-      console.warn(
-        "N8N_CAMPOJOYMA_WRITE_WEBHOOK_URL apunta al webhook de lectura; se usa el webhook v2 documentado.",
-      );
-      writeWebhookUrl = DEFAULT_WRITE_WEBHOOK_URL_V2;
-    }
-    if (!jwtSecret || !readWebhookUrl || (!reconciliationMode && !writeWebhookUrl)) {
-      return jsonResponse(
-        {
-          error: "Falta configuracion interna requerida para la operacion ERP.",
-        },
-        500,
-      );
-    }
-
-    let parsedWriteUrl: URL | null = null;
-    let parsedReadUrl: URL;
+    let runtime;
     try {
-      parsedWriteUrl = writeWebhookUrl ? new URL(writeWebhookUrl) : null;
-      parsedReadUrl = new URL(readWebhookUrl);
-    } catch {
-      return jsonResponse(
-        { error: "La configuracion de lectura/escritura ERP no es valida." },
-        500,
-      );
+      runtime = await fetchNetagroRuntime();
+    } catch (error) {
+      console.error("factura-recibida-send-erp runtime error", error);
+      return edgeError({
+        status: 503,
+        error: {
+          code: "upstream_unavailable",
+          category: "transport",
+          user_message: "No se pudo comprobar el entorno Netagro.",
+          technical_details: {},
+          retryable: true,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: null,
+          dataset_epoch: null,
+        },
+      });
     }
-    if ((parsedWriteUrl && parsedWriteUrl.protocol !== "https:") || parsedReadUrl.protocol !== "https:") {
-      return jsonResponse(
-        { error: "Los servicios ERP configurados deben usar HTTPS." },
-        500,
-      );
+    if (!runtime.target_id || !runtime.dataset_epoch) {
+      return edgeError({
+        status: 503,
+        error: {
+          code: "stale_environment",
+          category: "environment",
+          user_message: "El entorno Netagro no tiene una generación provisionada.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: runtime.target_id,
+          dataset_epoch: runtime.dataset_epoch,
+        },
+      });
     }
-    if (parsedWriteUrl && parsedWriteUrl.toString() === parsedReadUrl.toString()) {
-      return jsonResponse(
-        { error: "El webhook v2 de escritura debe ser distinto del webhook de lectura." },
-        500,
-      );
+    const targetId = runtime.target_id;
+    const datasetEpoch = runtime.dataset_epoch;
+    activeTargetId = targetId;
+    activeDatasetEpoch = datasetEpoch;
+    if (
+      (body.target_id && text(body.target_id, null) !== targetId) ||
+      (body.dataset_epoch && text(body.dataset_epoch, null) !== datasetEpoch)
+    ) {
+      return edgeError({
+        status: 409,
+        error: {
+          code: "stale_environment",
+          category: "environment",
+          user_message: "La generación de Netagro ha cambiado. Vuelva a validar la factura.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+        },
+      });
     }
-    const jwt = await signJwtHs256(
-      jwtSecret,
-      parseExpSeconds(Deno.env.get("N8N_CAMPOJOYMA_WEBHOOK_JWT_EXP_SECONDS")),
-    );
+    const { data: localTarget, error: targetError } = await auth.serviceClient
+      .from("erp_targets")
+      .select("*")
+      .eq("id", targetId)
+      .eq("active", true)
+      .maybeSingle();
+    if (
+      targetError ||
+      !localTarget ||
+      text((localTarget as JsonObject).dataset_epoch, null) !== datasetEpoch ||
+      !timestampsReferToSameInstant(
+        (localTarget as JsonObject).snapshot_at,
+        runtime.snapshot_at,
+      )
+    ) {
+      return edgeError({
+        status: 409,
+        error: {
+          code: "stale_environment",
+          category: "environment",
+          user_message:
+            "Supabase y Netagro no identifican la misma generación de datos.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+        },
+      });
+    }
+    if (
+      !reconciliationMode &&
+      (
+        (requestedOperation === "validate" &&
+          (!runtime.capabilities.validate ||
+            (localTarget as JsonObject).write_mode === "disabled")) ||
+        (requestedOperation === "commit" &&
+          (!runtime.ready_for_commit ||
+            !runtime.capabilities.management_commit ||
+            (localTarget as JsonObject).write_mode !== "management"))
+      )
+    ) {
+      return edgeError({
+        status: 503,
+        error: {
+          code: "writer_disabled",
+          category: "environment",
+          user_message:
+            requestedOperation === "validate"
+              ? "La validación con Netagro no está habilitada."
+              : "Las altas de gestión en Netagro no están habilitadas.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+        },
+      });
+    }
 
     const callReadResponse = async (consulta: string) => {
-      const url = new URL(readWebhookUrl);
-      url.searchParams.set("consulta", consulta);
-      const response = await fetch(url, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${jwt}`, Accept: "application/json" },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      const parsed = await parseJsonResponse(response);
+      const { response, payload } = await callNetagroRead(consulta);
       return {
         response,
-        ...parsed,
-        result: upstreamResult(response, parsed.payload),
+        payload,
+        raw: "",
+        result: upstreamResult(response, payload),
       };
     };
 
@@ -255,16 +532,22 @@ Deno.serve(async (req) => {
       (punteos ?? []) as JsonObject[],
     );
     if (!reconciliationMode && punteoPreflightIssues.length > 0) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      return edgeError({
+        status: 422,
+        error: {
+          code: "punteo_conflict",
+          category: "validation",
+          user_message:
+            "Los punteos seleccionados no tienen identidades ERP válidas y únicas.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
           request_id: requestId,
-          code: "ERP_PUNTEOS_INVALID",
-          error: "Los punteos seleccionados no tienen identidades ERP validas y unicas.",
-          validation_errors: punteoPreflightIssues,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
         },
-        422,
-      );
+        extra: { validation_errors: punteoPreflightIssues },
+      });
     }
 
     let authoritativeFactura = factura as JsonObject;
@@ -286,18 +569,23 @@ Deno.serve(async (req) => {
       );
       const blockingErrors = validationErrors.filter((error) => error.severity === "error");
       if (blockingErrors.length > 0) {
-        return jsonResponse(
-          {
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: requestId,
+        return edgeError({
+          status: 422,
+          error: {
             code: accountingRules.issues.length > 0
-              ? "ERP_RULE_CONFLICT"
-              : "ERP_VALIDATION_FAILED",
-            error: "La factura no supera la validacion.",
-            validation_errors: validationErrors,
+              ? "invalid_accounting_rule"
+              : "invalid_invoice",
+            category: "validation",
+            user_message: "La factura no supera la validación.",
+            technical_details: {},
+            retryable: false,
+            reconciliation_required: false,
+            request_id: requestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
           },
-          422,
-        );
+          extra: { validation_errors: validationErrors },
+        });
       }
     }
 
@@ -308,29 +596,43 @@ Deno.serve(async (req) => {
     const punteosPayload = toERPSelectedPunteosPayload(
       (punteos ?? []) as JsonObject[],
     );
-    const dryRunPayload = buildERPContractV2({
-      requestId: syncRequestId,
-      dryRun: true,
+    const { businessFingerprint } = await buildFacturaWriteIdentity({
       cabecera,
       ctb: ctbPayload,
       punteos: punteosPayload,
     });
+    let authoritativePayloadHash = text(
+      (factura as JsonObject).erp_payload_hash,
+      null,
+    );
+    let authoritativeBusinessFingerprint = text(
+      (factura as JsonObject).erp_business_fingerprint,
+      businessFingerprint,
+    )!;
 
     const finishPhase = async ({
       phase,
       status,
       response = null,
       httpStatus = null,
+      errorCode = null,
+      errorCategory = null,
       error = null,
+      retryable = false,
+      reconciliationRequired = false,
     }: {
-      phase: "dry_run" | "commit" | "readback" | "reconcile";
+      phase: "commit" | "readback" | "reconcile";
       status: "in_progress" | "succeeded" | "failed" | "unknown";
       response?: unknown;
       httpStatus?: number | null;
+      errorCode?: string | null;
+      errorCategory?: string | null;
       error?: string | null;
+      retryable?: boolean;
+      reconciliationRequired?: boolean;
     }) => {
       const { data, error: rpcError } = await auth.serviceClient.rpc(
-        "finish_factura_recibida_sync_v2",
+        "finish_factura_recibida_sync_v3",
         {
           p_factura_id: facturaId,
           p_request_id: syncRequestId,
@@ -338,7 +640,11 @@ Deno.serve(async (req) => {
           p_status: status,
           p_response: response,
           p_http_status: httpStatus,
+          p_error_code: errorCode,
+          p_error_category: errorCategory,
           p_error: error,
+          p_retryable: retryable,
+          p_reconciliation_required: reconciliationRequired,
           p_actor: auth.user.id,
         },
       );
@@ -381,9 +687,67 @@ Deno.serve(async (req) => {
     };
 
     if (reconciliationMode) {
+      const reconciliationError = ({
+        message,
+        code = "ambiguous_commit",
+        status = 202,
+        category = "conflict",
+        extra = {},
+      }: {
+        message: string;
+        code?: string;
+        status?: number;
+        category?: StructuredERPError["category"];
+        extra?: JsonObject;
+      }) =>
+        edgeError({
+          status,
+          error: {
+            code,
+            category,
+            user_message: message,
+            technical_details: {},
+            retryable: false,
+            reconciliation_required: true,
+            request_id: syncRequestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
+          },
+          extra: {
+            requested_request_id: requestId,
+            ...extra,
+          },
+        });
+      if (
+        !authoritativePayloadHash ||
+        !authoritativeBusinessFingerprint ||
+        text((factura as JsonObject).erp_target_id, null) !== targetId ||
+        text((factura as JsonObject).erp_dataset_epoch, null) !== datasetEpoch
+      ) {
+        return edgeError({
+          status: 409,
+          error: {
+            code: "stale_environment",
+            category: "environment",
+            user_message:
+              "El intento incierto no pertenece a la generación Netagro actual.",
+            technical_details: {},
+            retryable: false,
+            reconciliation_required: true,
+            request_id: syncRequestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
+          },
+        });
+      }
+      const reconciliationPayloadHash = authoritativePayloadHash;
+      const reconciliationBusinessFingerprint =
+        authoritativeBusinessFingerprint;
       const { data: attempts, error: attemptError } = await auth.serviceClient
         .from("facturasrecibidas_sync_attempts")
-        .select("request_id, phase, status, request_payload, response_payload")
+        .select(
+          "request_id, phase, status, request_payload, response_payload, erp_target_id, erp_dataset_epoch, circuit, payload_hash, business_fingerprint",
+        )
         .eq("factura_id", facturaId)
         .eq("request_id", syncRequestId)
         .in("phase", ["dry_run", "commit"]);
@@ -392,17 +756,42 @@ Deno.serve(async (req) => {
       const commitAttempt = attemptRows.find((attempt) => attempt.phase === "commit");
       const dryRunAttempt = attemptRows.find((attempt) => attempt.phase === "dry_run");
       if (!commitAttempt || !isEligibleERPCommitAttempt(commitAttempt as JsonObject, syncRequestId)) {
-        return jsonResponse(
-          {
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: syncRequestId,
-            requested_request_id: requestId,
-            code: "ERP_RECONCILIATION_NOT_ELIGIBLE",
+        return reconciliationError({
+          message:
+            "No existe un intento de envío ambiguo o confirmado que se pueda reconciliar.",
+          code: "reconciliation_not_eligible",
+          status: 409,
+        });
+      }
+      const expectedCircuit = text(cabecera.FRR_tipofactura, null) === "GE"
+        ? "genero"
+        : "acreedores";
+      const attemptsMatchIdentity = [commitAttempt, dryRunAttempt].every(
+        (attempt) =>
+          ERPAttemptMatchesIdentity(attempt, {
+            targetId,
+            datasetEpoch,
+            circuit: expectedCircuit,
+            payloadHash: reconciliationPayloadHash,
+            businessFingerprint: reconciliationBusinessFingerprint,
+          }),
+      );
+      if (!attemptsMatchIdentity) {
+        return edgeError({
+          status: 409,
+          error: {
+            code: "stale_environment",
+            category: "environment",
+            user_message:
+              "El intento incierto no coincide con el entorno y circuito validados.",
+            technical_details: {},
+            retryable: false,
             reconciliation_required: true,
-            error: "No existe un intento commit ambiguo o confirmado que se pueda reconciliar.",
+            request_id: syncRequestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
           },
-          409,
-        );
+        });
       }
 
       await finishPhase({
@@ -412,16 +801,12 @@ Deno.serve(async (req) => {
       });
 
       if (text(dryRunAttempt?.status, null) !== "succeeded") {
-        const message = "El intento dry_run original no consta como completado.";
+        const message = "La validación ERP original no consta como completada.";
         await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          code: "ERP_RECONCILIATION_INVALID_SNAPSHOT",
-          reconciliation_required: true,
-          error: message,
-        }, 202);
+        return reconciliationError({
+          message,
+          code: "reconciliation_invalid_snapshot",
+        });
       }
       const originalRequest = validateERPWriteRequestV2(dryRunAttempt?.request_payload, {
         requestId: syncRequestId,
@@ -430,14 +815,10 @@ Deno.serve(async (req) => {
       if (!originalRequest.ok) {
         const message = originalRequest.errors.join(" ");
         await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          code: "ERP_RECONCILIATION_INVALID_SNAPSHOT",
-          reconciliation_required: true,
-          error: message,
-        }, 202);
+        return reconciliationError({
+          message: "La validación original no conserva un snapshot verificable.",
+          code: "reconciliation_invalid_snapshot",
+        });
       }
       const snapshotPunteoIssues = getSelectedPunteoPreflightIssues(
         originalRequest.punteos.map((punteo) => ({ ...punteo, S: true })),
@@ -445,15 +826,11 @@ Deno.serve(async (req) => {
       if (snapshotPunteoIssues.length > 0) {
         const message = "El request original contiene punteos sin identidad ERP valida y unica.";
         await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          code: "ERP_RECONCILIATION_INVALID_SNAPSHOT",
-          reconciliation_required: true,
-          validation_errors: snapshotPunteoIssues,
-          error: message,
-        }, 202);
+        return reconciliationError({
+          message: "La validación original contiene punteos sin identidad válida y única.",
+          code: "reconciliation_invalid_snapshot",
+          extra: { validation_errors: snapshotPunteoIssues },
+        });
       }
       if (!ERPWriterRelationsMatchSnapshot({
         currentCtb: ctbPayload,
@@ -463,14 +840,10 @@ Deno.serve(async (req) => {
       })) {
         const message = "CTB o punteos locales ya no coinciden con el request original.";
         await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          code: "ERP_RECONCILIATION_LOCAL_DRIFT",
-          reconciliation_required: true,
-          error: message,
-        }, 202);
+        return reconciliationError({
+          message: "La distribución CTB o los punteos ya no coinciden con la validación.",
+          code: "reconciliation_local_drift",
+        });
       }
       const reconciliationCabecera = originalRequest.cabecera;
       const reconciliationCtb = originalRequest.ctb;
@@ -481,39 +854,46 @@ Deno.serve(async (req) => {
         null,
       );
       if ((!reconciledRemoteId || reconciledRemoteId <= 0) && commitAttempt.status === "succeeded") {
-        const committedResponse = validateERPWriteResponseV2(commitAttempt.response_payload, {
-          requestId: syncRequestId,
-          expectedDryRun: false,
-        });
-        if (committedResponse.ok) reconciledRemoteId = committedResponse.remoteFacturaId;
+        const committedResponse = validateNetagroWriteResponseV3(
+          commitAttempt.response_payload,
+          {
+            operation: "commit",
+            requestId: syncRequestId,
+            targetId,
+            datasetEpoch,
+            payloadHash: reconciliationPayloadHash,
+          },
+        );
+        if (committedResponse.ok) {
+          reconciledRemoteId = integerValue(
+            committedResponse.response.FRR_id ??
+              asObject(committedResponse.response.factura).FRR_id,
+            null,
+          );
+        }
       }
       if (!reconciledRemoteId || reconciledRemoteId <= 0) {
         const duplicateConsulta = buildERPDuplicateConsulta(reconciliationCabecera);
         if (!duplicateConsulta) {
           const message = "Faltan datos para localizar la factura ambigua en el ERP.";
           await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-          return jsonResponse({
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: syncRequestId,
-            requested_request_id: requestId,
-            reconciliation_required: true,
-            error: message,
-          }, 202);
+          return reconciliationError({
+            message,
+            code: "reconciliation_incomplete",
+          });
         }
         let duplicateCall: Awaited<ReturnType<typeof callReadResponse>>;
         try {
           duplicateCall = await callReadResponse(duplicateConsulta);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Busqueda ERP no disponible.";
+          console.error("factura-recibida-send-erp reconcile duplicate error", error);
           await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-          return jsonResponse({
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: syncRequestId,
-            requested_request_id: requestId,
-            reconciliation_required: true,
-            error: "No se pudo localizar de forma unica la factura ambigua.",
-            details: message,
-          }, 202);
+          return reconciliationError({
+            message: "No se pudo localizar de forma única la factura ambigua.",
+            code: "upstream_unavailable",
+            category: "transport",
+          });
         }
         const duplicateValidation = duplicateCall.result.ok
           ? validateERPDuplicateSearchResponse(duplicateCall.payload, reconciliationCabecera)
@@ -532,13 +912,10 @@ Deno.serve(async (req) => {
             httpStatus: duplicateCall.response.status,
             error: message,
           });
-          return jsonResponse({
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: syncRequestId,
-            requested_request_id: requestId,
-            reconciliation_required: true,
-            error: message,
-          }, 202);
+          return reconciliationError({
+            message:
+              "La búsqueda ERP no devolvió exactamente una factura coincidente.",
+          });
         }
         reconciledRemoteId = integerValue(duplicateValidation.candidates[0].FRR_id, null);
       }
@@ -546,13 +923,9 @@ Deno.serve(async (req) => {
       if (!reconciledRemoteId || reconciledRemoteId <= 0) {
         const message = "No se pudo determinar un FRR_id unico para reconciliar.";
         await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          reconciliation_required: true,
-          error: message,
-        }, 202);
+        return reconciliationError({
+          message: "No se pudo determinar una referencia ERP única para reconciliar.",
+        });
       }
 
       const reconciledWriteResponse = {
@@ -568,16 +941,13 @@ Deno.serve(async (req) => {
         reconciledReadback = await readERPReadback(reconciledRemoteId, reconciliationCabecera);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Readback ERP no disponible.";
+        console.error("factura-recibida-send-erp reconcile readback error", error);
         await finishPhase({ phase: "reconcile", status: "unknown", error: message });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          reconciliation_required: true,
-          remote_frr_id: reconciledRemoteId,
-          error: "La factura candidata no se pudo confirmar mediante readback.",
-          details: message,
-        }, 202);
+        return reconciliationError({
+          message: "La factura candidata no se pudo confirmar mediante lectura ERP.",
+          category: "transport",
+          extra: { remote_frr_id: reconciledRemoteId },
+        });
       }
 
       if (String(reconciliationCabecera.FRR_Contabilizar ?? "N") === "S") {
@@ -590,15 +960,16 @@ Deno.serve(async (req) => {
             response: reconciledReadback,
             error: message,
           });
-          return jsonResponse({
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: syncRequestId,
-            requested_request_id: requestId,
-            reconciliation_required: true,
-            remote_frr_id: reconciledRemoteId,
-            accounting: accountingCheck,
-            error: message,
-          }, 202);
+          return reconciliationError({
+            message:
+              "La referencia contable no está confirmada con un asiento visible y cuadrado.",
+            code: "accounting_unavailable",
+            category: "accounting",
+            extra: {
+              remote_frr_id: reconciledRemoteId,
+              accounting: accountingCheck,
+            },
+          });
         }
       }
 
@@ -617,43 +988,43 @@ Deno.serve(async (req) => {
           response: reconciledReadback,
           error: message,
         });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          code: "ERP_READBACK_MISMATCH",
-          reconciliation_required: true,
-          remote_frr_id: reconciledRemoteId,
-          validation_errors: reconciliationReadbackCheck.errors,
-          error: message,
-        }, 202);
+        return reconciliationError({
+          message,
+          code: "readback_mismatch",
+          extra: {
+            remote_frr_id: reconciledRemoteId,
+            validation_errors: reconciliationReadbackCheck.errors,
+          },
+        });
       }
 
       const { data: finalized, error: finalizeError } = await auth.serviceClient.rpc(
-        "finalize_factura_recibida_sync_v2",
+        "finalize_factura_recibida_sync_v3",
         {
           p_factura_id: facturaId,
           p_request_id: syncRequestId,
+          p_target_id: targetId,
+          p_dataset_epoch: datasetEpoch,
+          p_payload_hash: reconciliationPayloadHash,
+          p_business_fingerprint: reconciliationBusinessFingerprint,
           p_write_response: reconciledWriteResponse,
           p_readback: reconciledReadback,
           p_actor: auth.user.id,
         },
       );
       if (finalizeError) {
+        console.error("factura-recibida-send-erp reconcile finalize error", finalizeError);
         await finishPhase({
           phase: "reconcile",
           status: "unknown",
           response: reconciledReadback,
           error: finalizeError.message,
         });
-        return jsonResponse({
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: syncRequestId,
-          requested_request_id: requestId,
-          reconciliation_required: true,
-          remote_frr_id: reconciledRemoteId,
-          error: finalizeError.message,
-        }, 202);
+        return reconciliationError({
+          message: "No se pudo confirmar exactamente la factura reconciliada.",
+          code: "readback_mismatch",
+          extra: { remote_frr_id: reconciledRemoteId },
+        });
       }
       await finishPhase({
         phase: "reconcile",
@@ -661,11 +1032,14 @@ Deno.serve(async (req) => {
         response: reconciledReadback,
       });
       return jsonResponse({
-        contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: "reconcile",
         request_id: syncRequestId,
         requested_request_id: requestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+        payload_hash: reconciliationPayloadHash,
         ok: true,
-        dry_run: false,
         reconciled: true,
         ...asObject(finalized),
         response: reconciledWriteResponse,
@@ -673,26 +1047,55 @@ Deno.serve(async (req) => {
       });
     }
 
+    const preflightError = ({
+      status,
+      code,
+      message,
+      category = "validation",
+      extra = {},
+    }: {
+      status: number;
+      code: string;
+      message: string;
+      category?: StructuredERPError["category"];
+      extra?: JsonObject;
+    }) =>
+      edgeError({
+        status,
+        error: {
+          code,
+          category,
+          user_message: message,
+          technical_details: {},
+          retryable: status >= 500,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+        },
+        extra,
+      });
+
     const proveedorId = integerValue(authoritativeFactura.FRR_idproveedor, null);
     const proveedorTipo = resolveFacturaProveedorTipo(
       authoritativeFactura,
       matchedProveedorTipo,
     );
     if (!proveedorTipo) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_PROVIDER_TYPE_INVALID",
-          error: "El tipo de factura no permite determinar si el proveedor es acreedor o agricultor.",
+      return preflightError({
+        status: 422,
+        code: "invalid_invoice",
+        message:
+          "El tipo de factura no permite determinar si el proveedor es acreedor o agricultor.",
+        extra: {
           validation_errors: [{
             field: "FRR_tipofactura",
-            message: "Falta un tipo de factura ERP valido para resolver el maestro del proveedor.",
+            message:
+              "Falta un tipo de factura ERP válido para resolver el maestro del proveedor.",
             severity: "error",
           }],
         },
-        422,
-      );
+      });
     }
     const proveedorLabel = proveedorTipo === "agricultor" ? "agricultor" : "acreedor";
     const proveedorRoute = proveedorTipo === "agricultor" ? "agricultores" : "acreedores";
@@ -700,17 +1103,13 @@ Deno.serve(async (req) => {
     try {
       providerCall = await callReadResponse(`${proveedorRoute}/${proveedorId}`);
     } catch (error) {
-      const details = error instanceof Error ? error.message : "La API ERP no esta disponible.";
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_PROVIDER_UNAVAILABLE",
-          error: `No se pudo validar el ${proveedorLabel} contra el ERP.`,
-          details,
-        },
-        503,
-      );
+      console.error("factura-recibida-send-erp provider lookup error", error);
+      return preflightError({
+        status: 503,
+        code: "upstream_unavailable",
+        category: "transport",
+        message: `No se pudo validar el ${proveedorLabel} contra el ERP.`,
+      });
     }
 
     const providerStatus = integerValue(
@@ -719,45 +1118,35 @@ Deno.serve(async (req) => {
     );
     if (!providerCall.result.ok) {
       if (providerCall.response.status === 404 || providerStatus === 404) {
-        return jsonResponse(
-          {
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: requestId,
-            code: "ERP_PROVIDER_NOT_FOUND",
-            error: `El ${proveedorLabel} seleccionado no existe en el ERP.`,
+        return preflightError({
+          status: 422,
+          code: "invalid_account",
+          message: `El ${proveedorLabel} seleccionado no existe en el ERP.`,
+          extra: {
             validation_errors: [{
               field: "FRR_idproveedor",
               message: `El ${proveedorLabel} seleccionado no existe en el ERP.`,
               severity: "error",
             }],
           },
-          422,
-        );
+        });
       }
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_PROVIDER_UNAVAILABLE",
-          error: `No se pudo validar el ${proveedorLabel} contra el ERP.`,
-          details: providerCall.result.message,
-        },
-        503,
-      );
+      return preflightError({
+        status: 503,
+        code: "upstream_unavailable",
+        category: "transport",
+        message: `No se pudo validar el ${proveedorLabel} contra el ERP.`,
+      });
     }
 
     const providerDetail = parseERPProviderDetailResponse(providerCall.payload, proveedorTipo);
     if (!providerDetail.ok) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_PROVIDER_INVALID_RESPONSE",
-          error: `El ERP devolvio un detalle de ${proveedorLabel} no verificable.`,
-          details: providerDetail.error,
-        },
-        503,
-      );
+      return preflightError({
+        status: 503,
+        code: "upstream_unavailable",
+        category: "transport",
+        message: `El ERP devolvió un detalle de ${proveedorLabel} no verificable.`,
+      });
     }
 
     const providerIssues = getERPProviderPreflightIssues(
@@ -766,58 +1155,42 @@ Deno.serve(async (req) => {
       proveedorTipo,
     );
     if (providerIssues.length > 0) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_PROVIDER_MISMATCH",
-          error: `El ${proveedorLabel} o su cuenta no coinciden con el maestro ERP.`,
-          validation_errors: providerIssues,
-        },
-        422,
-      );
+      return preflightError({
+        status: 422,
+        code: "invalid_account",
+        message: `El ${proveedorLabel} o su cuenta no coinciden con el maestro ERP.`,
+        extra: { validation_errors: providerIssues },
+      });
     }
 
     const duplicateConsulta = buildERPDuplicateConsulta(authoritativeFactura);
     if (!duplicateConsulta) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_DUPLICATE_CHECK_INCOMPLETE",
-          error: "Faltan datos para comprobar el duplicado exacto en el ERP.",
-        },
-        422,
-      );
+      return preflightError({
+        status: 422,
+        code: "invalid_invoice",
+        message: "Faltan datos para comprobar el duplicado exacto en el ERP.",
+      });
     }
 
     let duplicateCall: Awaited<ReturnType<typeof callReadResponse>>;
     try {
       duplicateCall = await callReadResponse(duplicateConsulta);
     } catch (error) {
-      const details = error instanceof Error ? error.message : "La API ERP no esta disponible.";
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_DUPLICATE_CHECK_UNAVAILABLE",
-          error: "No se pudo comprobar si la factura ya existe en el ERP.",
-          details,
-        },
-        503,
-      );
+      console.error("factura-recibida-send-erp duplicate lookup error", error);
+      return preflightError({
+        status: 503,
+        code: "upstream_unavailable",
+        category: "transport",
+        message: "No se pudo comprobar si la factura ya existe en el ERP.",
+      });
     }
     if (!duplicateCall.result.ok) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_DUPLICATE_CHECK_UNAVAILABLE",
-          error: "No se pudo comprobar si la factura ya existe en el ERP.",
-          details: duplicateCall.result.message,
-        },
-        503,
-      );
+      return preflightError({
+        status: 503,
+        code: "upstream_unavailable",
+        category: "transport",
+        message: "No se pudo comprobar si la factura ya existe en el ERP.",
+      });
     }
 
     const duplicateValidation = validateERPDuplicateSearchResponse(
@@ -825,58 +1198,306 @@ Deno.serve(async (req) => {
       authoritativeFactura,
     );
     if (!duplicateValidation.ok) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_DUPLICATE_CHECK_UNAVAILABLE",
-          error: "El ERP devolvio una respuesta de duplicados no verificable.",
-          details: duplicateValidation.error,
-        },
-        503,
-      );
+      return preflightError({
+        status: 503,
+        code: "upstream_unavailable",
+        category: "transport",
+        message: "El ERP devolvió una respuesta de duplicados no verificable.",
+      });
     }
     const duplicateCandidates = duplicateValidation.candidates;
     const duplicateTotal = duplicateValidation.total!;
     if (duplicateTotal > 0 || duplicateCandidates.length > 0) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "ERP_DUPLICATE_FOUND",
-          error: "La factura ya existe en el ERP para la misma empresa, ejercicio, proveedor y numero.",
+      return preflightError({
+        status: 409,
+        code: "duplicate_invoice",
+        category: "conflict",
+        message:
+          "La factura ya existe en el ERP para la misma empresa, ejercicio, proveedor y número.",
+        extra: {
           duplicate_total: duplicateTotal,
           duplicate_candidates: duplicateCandidates,
         },
-        409,
-      );
+      });
     }
 
+    const validatePayload = buildERPContractV3({
+      operation: "validate",
+      requestId: syncRequestId,
+      targetId,
+      datasetEpoch,
+      cabecera,
+      ctb: ctbPayload,
+      punteos: punteosPayload,
+    });
+
+    const performValidation = async () => {
+      let validationCall;
+      try {
+        validationCall = await callNetagroWriteV3(validatePayload);
+      } catch (error) {
+        console.error("factura-recibida-send-erp validation transport error", error);
+        return {
+          ok: false as const,
+          response: edgeError({
+            status: 503,
+            error: {
+              code: "upstream_unavailable",
+              category: "transport",
+              user_message: "No se pudo validar la factura con Netagro.",
+              technical_details: {},
+              retryable: true,
+              reconciliation_required: false,
+              request_id: syncRequestId,
+              target_id: targetId,
+              dataset_epoch: datasetEpoch,
+            },
+          }),
+        };
+      }
+
+      if (!validationCall.response.ok) {
+        const structured = parseStructuredERPError(validationCall.payload, {
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+          category: validationCall.response.status >= 500
+            ? "transport"
+            : "validation",
+          retryable: validationCall.response.status >= 500,
+        });
+        return {
+          ok: false as const,
+          response: edgeError({
+            status: validationCall.response.status,
+            error: structured,
+          }),
+        };
+      }
+
+      const responseObject = asObject(validationCall.payload);
+      const serverPayloadHash = text(responseObject.payload_hash, null);
+      if (!serverPayloadHash || !/^[0-9a-f]{64}$/.test(serverPayloadHash)) {
+        return {
+          ok: false as const,
+          response: edgeError({
+            status: 502,
+            error: {
+              code: "upstream_invalid_response",
+              category: "transport",
+              user_message: "Netagro no devolvió una validación verificable.",
+              technical_details: {},
+              retryable: true,
+              reconciliation_required: false,
+              request_id: syncRequestId,
+              target_id: targetId,
+              dataset_epoch: datasetEpoch,
+            },
+          }),
+        };
+      }
+      const contract = validateNetagroWriteResponseV3(validationCall.payload, {
+        operation: "validate",
+        requestId: syncRequestId,
+        targetId,
+        datasetEpoch,
+        payloadHash: serverPayloadHash,
+      });
+      if (!contract.ok) {
+        return {
+          ok: false as const,
+          response: edgeError({
+            status: 502,
+            error: {
+              code: "upstream_invalid_response",
+              category: "transport",
+              user_message: "Netagro no confirmó la identidad de la validación.",
+              technical_details: {},
+              retryable: true,
+              reconciliation_required: false,
+              request_id: syncRequestId,
+              target_id: targetId,
+              dataset_epoch: datasetEpoch,
+            },
+          }),
+        };
+      }
+
+      const valid = !hasBlockingERPValidationErrors(validationCall.payload);
+      const validationMessage = valid
+        ? null
+        : "La factura no supera la validación de Netagro.";
+      const { data: validationState, error: validationRpcError } =
+        await auth.serviceClient.rpc(
+          "record_factura_recibida_validation_v3",
+          {
+            p_factura_id: facturaId,
+            p_expected_version: expectedVersion,
+            p_request_id: syncRequestId,
+            p_target_id: targetId,
+            p_dataset_epoch: datasetEpoch,
+            p_payload_hash: serverPayloadHash,
+            p_business_fingerprint: businessFingerprint,
+            p_payload: validatePayload,
+            p_response: validationCall.payload,
+            p_valid: valid,
+            p_http_status: validationCall.response.status,
+            p_error_code: valid ? null : "validation_failed",
+            p_error_category: valid ? null : "validation",
+            p_error: validationMessage,
+            p_retryable: false,
+            p_actor: auth.user.id,
+          },
+        );
+      if (validationRpcError) {
+        return {
+          ok: false as const,
+          response: edgeError({
+            status: rpcErrorStatus(validationRpcError.message),
+            error: {
+              code: validationRpcError.message.includes("STALE_ENVIRONMENT")
+                ? "stale_environment"
+                : "validation_state_error",
+              category: validationRpcError.message.includes("STALE_ENVIRONMENT")
+                ? "environment"
+                : "conflict",
+              user_message:
+                "No se pudo fijar la validación; vuelva a intentarlo antes de enviar.",
+              technical_details: {},
+              retryable: false,
+              reconciliation_required: false,
+              request_id: syncRequestId,
+              target_id: targetId,
+              dataset_epoch: datasetEpoch,
+            },
+          }),
+        };
+      }
+      authoritativePayloadHash = serverPayloadHash;
+      authoritativeBusinessFingerprint = businessFingerprint;
+      if (!valid) {
+        return {
+          ok: false as const,
+          response: jsonResponse({
+            contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+            operation: "validate",
+            request_id: syncRequestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
+            payload_hash: serverPayloadHash,
+            ok: false,
+            code: "validation_failed",
+            category: "validation",
+            user_message: validationMessage,
+            error: validationMessage,
+            technical_details: {},
+            retryable: false,
+            reconciliation_required: false,
+            validation: validationCall.payload,
+            ...asObject(validationState),
+          }, 422),
+        };
+      }
+      return {
+        ok: true as const,
+        payloadHash: serverPayloadHash,
+        state: asObject(validationState),
+        upstream: validationCall.payload,
+      };
+    };
+
+    if (requestedOperation === "validate") {
+      const validation = await performValidation();
+      if (!validation.ok) return validation.response;
+      return jsonResponse({
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: "validate",
+        request_id: syncRequestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+        payload_hash: validation.payloadHash,
+        ok: true,
+        validation: validation.upstream,
+        ...validation.state,
+      });
+    }
+
+    if (!authoritativePayloadHash || !authoritativeBusinessFingerprint) {
+      return edgeError({
+        status: 409,
+        error: {
+          code: "validation_required",
+          category: "conflict",
+          user_message: "Debe validar de nuevo la factura antes de enviarla.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+        },
+      });
+    }
+
+    const commitPayload = buildERPContractV3({
+      operation: "commit",
+      requestId: syncRequestId,
+      targetId,
+      datasetEpoch,
+      cabecera,
+      ctb: ctbPayload,
+      punteos: punteosPayload,
+    });
     const { data: beginData, error: beginError } = await auth.serviceClient.rpc(
-      "begin_factura_recibida_sync_v2",
+      "begin_factura_recibida_sync_v3",
       {
         p_factura_id: facturaId,
         p_expected_version: expectedVersion,
         p_request_id: syncRequestId,
-        p_payload: dryRunPayload,
+        p_target_id: targetId,
+        p_dataset_epoch: datasetEpoch,
+        p_payload_hash: authoritativePayloadHash,
+        p_business_fingerprint: authoritativeBusinessFingerprint,
+        p_payload: commitPayload,
         p_actor: auth.user.id,
       },
     );
     if (beginError) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      return edgeError({
+        status: rpcErrorStatus(beginError.message),
+        error: {
+          code: beginError.message.includes("VALIDATION_REQUIRED")
+            ? "validation_required"
+            : beginError.message.includes("STALE_ENVIRONMENT")
+              ? "stale_environment"
+              : beginError.message.includes("WRITER_DISABLED")
+                ? "writer_disabled"
+                : "idempotency_conflict",
+          category: beginError.message.includes("STALE_ENVIRONMENT") ||
+              beginError.message.includes("WRITER_DISABLED")
+            ? "environment"
+            : "conflict",
+          user_message:
+            "La validación ya no coincide con el estado actual de la factura.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required:
+            beginError.message.includes("SYNC_RECONCILIATION_REQUIRED"),
           request_id: syncRequestId,
-          error: beginError.message,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
         },
-        rpcErrorStatus(beginError.message),
-      );
+      });
     }
     const begin = asObject(beginData);
     if (begin.replayed === true && begin.terminal === true) {
       return jsonResponse({
-        contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: "commit",
         request_id: syncRequestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+        payload_hash: authoritativePayloadHash,
         ok: true,
         idempotent_replay: true,
         factura: begin.factura,
@@ -884,157 +1505,145 @@ Deno.serve(async (req) => {
         response: begin.response,
       });
     }
-
-    const callWrite = async (payload: JsonObject) => {
-      const response = await fetch(writeWebhookUrl!, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${jwt}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      const parsed = await parseJsonResponse(response);
-      return { response, ...parsed, result: upstreamResult(response, parsed.payload) };
-    };
-
-    let dryRunCall;
-    try {
-      dryRunCall = await callWrite(dryRunPayload);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Dry-run no disponible";
-      await finishPhase({ phase: "dry_run", status: "failed", error: message });
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          error: message,
-        },
-        504,
-      );
-    }
-
-    const dryRunContract = validateERPWriteResponseV2(dryRunCall.payload, {
-      requestId,
-      expectedDryRun: true,
-    });
-    const dryRunHasBlockingValidation = hasBlockingERPValidationErrors(dryRunCall.payload);
-    if (
-      !dryRunCall.response.ok ||
-      !dryRunCall.result.ok ||
-      !dryRunContract.ok ||
-      dryRunHasBlockingValidation
-    ) {
-      const message = !dryRunCall.response.ok || !dryRunCall.result.ok
-        ? dryRunCall.result.message ?? `Dry-run ERP HTTP ${dryRunCall.response.status}`
-        : dryRunContract.errors.length > 0
-          ? dryRunContract.errors.join(" ")
-          : "El dry-run ERP contiene errores de validacion.";
-      await finishPhase({
-        phase: "dry_run",
-        status: "failed",
-        response: dryRunCall.payload,
-        httpStatus: dryRunCall.response.status,
-        error: message,
-      });
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          error: message,
-          validation: dryRunCall.payload,
-        },
-        dryRunCall.response.ok ? 422 : dryRunCall.response.status,
-      );
-    }
-    await finishPhase({
-      phase: "dry_run",
-      status: "succeeded",
-      response: dryRunCall.payload,
-      httpStatus: dryRunCall.response.status,
-    });
-
-    const commitPayload = buildERPContractV2({
-      requestId,
-      dryRun: false,
-      cabecera,
-      ctb: ctbPayload,
-      punteos: punteosPayload,
-    });
-    await finishPhase({ phase: "commit", status: "in_progress", response: commitPayload });
+    activeWriterOpened = true;
 
     let commitCall;
     try {
-      commitCall = await callWrite(commitPayload);
+      commitCall = await callNetagroWriteV3(commitPayload);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Resultado de escritura desconocido";
+      console.error("factura-recibida-send-erp commit transport error", error);
       const state = await finishPhase({
         phase: "commit",
         status: "unknown",
-        error: message,
+        errorCode: "ambiguous_commit",
+        errorCategory: "transport",
+        error: "Netagro puede haber creado la factura.",
+        retryable: false,
+        reconciliationRequired: true,
       });
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          ok: false,
-          reconciliation_required: true,
-          error: "El ERP puede haber creado la factura. No se reenviara hasta reconciliar.",
-          details: message,
-          factura: state.factura,
-          version: state.version,
-        },
-        202,
-      );
+      return jsonResponse({
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: "commit",
+        request_id: syncRequestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+        payload_hash: authoritativePayloadHash,
+        ok: false,
+        code: "ambiguous_commit",
+        category: "transport",
+        user_message:
+          "El resultado es incierto. No se reenviará hasta reconciliar.",
+        technical_details: {},
+        retryable: false,
+        reconciliation_required: true,
+        factura: state.factura,
+        version: state.version,
+      }, 202);
     }
 
-    const commitContract = validateERPWriteResponseV2(commitCall.payload, {
-      requestId,
-      expectedDryRun: false,
+    const commitStructuredError = !commitCall.response.ok
+      ? parseStructuredERPError(commitCall.payload, {
+        request_id: syncRequestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+        retryable: commitCall.response.status >= 500,
+        reconciliation_required: commitCall.response.status >= 500,
+      })
+      : null;
+    const commitContract = validateNetagroWriteResponseV3(commitCall.payload, {
+      operation: "commit",
+      requestId: syncRequestId,
+      targetId,
+      datasetEpoch,
+      payloadHash: authoritativePayloadHash,
     });
-    const commitHasBlockingValidation = hasBlockingERPValidationErrors(commitCall.payload);
+    const commitHasBlockingValidation =
+      hasBlockingERPValidationErrors(commitCall.payload);
     if (
       !commitCall.response.ok ||
-      !commitCall.result.ok ||
       !commitContract.ok ||
       commitHasBlockingValidation
     ) {
-      const ambiguous = commitCall.response.status >= 500 ||
-        (commitCall.response.ok &&
-          (!commitCall.result.ok || !commitContract.ok || commitHasBlockingValidation));
-      const message = !commitCall.response.ok || !commitCall.result.ok
-        ? commitCall.result.message ?? `Escritura ERP HTTP ${commitCall.response.status}`
-        : commitContract.errors.length > 0
-          ? commitContract.errors.join(" ")
-          : "La escritura ERP contiene errores de validacion.";
+      const ambiguous = commitStructuredError?.reconciliation_required === true ||
+        commitCall.response.status >= 500 ||
+        (commitCall.response.ok && !commitContract.ok);
+      const structured = commitStructuredError ?? {
+        code: ambiguous ? "ambiguous_commit" : "validation_failed",
+        category: ambiguous ? "transport" : "validation",
+        user_message: ambiguous
+          ? "No se pudo confirmar el resultado del alta en Netagro."
+          : "Netagro rechazó el alta de la factura.",
+        technical_details: {},
+        retryable: false,
+        reconciliation_required: ambiguous,
+        request_id: syncRequestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+      } satisfies StructuredERPError;
       const state = await finishPhase({
         phase: "commit",
         status: ambiguous ? "unknown" : "failed",
         response: commitCall.payload,
         httpStatus: commitCall.response.status,
-        error: message,
+        errorCode: structured.code,
+        errorCategory: structured.category,
+        error: structured.user_message,
+        retryable: structured.retryable,
+        reconciliationRequired: structured.reconciliation_required,
       });
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          ok: false,
-          reconciliation_required: ambiguous,
-          error: message,
-          response: commitCall.payload,
-          factura: state.factura,
-          version: state.version,
-        },
-        ambiguous ? 202 : commitCall.response.status,
-      );
+      return jsonResponse({
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: "commit",
+        ...structured,
+        technical_details: {},
+        error: structured.user_message,
+        payload_hash: authoritativePayloadHash,
+        factura: state.factura,
+        version: state.version,
+      }, ambiguous ? 202 : commitCall.response.status);
     }
 
-    const remoteFacturaId = commitContract.remoteFacturaId!;
+    const commitResponse = asObject(commitCall.payload);
+    const remoteFacturaId = integerValue(
+      commitResponse.FRR_id ?? asObject(commitResponse.factura).FRR_id,
+      null,
+    );
+    if (!remoteFacturaId || remoteFacturaId <= 0) {
+      const state = await finishPhase({
+        phase: "commit",
+        status: "unknown",
+        response: commitCall.payload,
+        httpStatus: commitCall.response.status,
+        errorCode: "ambiguous_commit",
+        errorCategory: "transport",
+        error: "Netagro no devolvió un identificador de factura verificable.",
+        retryable: false,
+        reconciliationRequired: true,
+      });
+      return jsonResponse({
+        contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+        operation: "commit",
+        request_id: syncRequestId,
+        target_id: targetId,
+        dataset_epoch: datasetEpoch,
+        payload_hash: authoritativePayloadHash,
+        code: "ambiguous_commit",
+        category: "transport",
+        user_message:
+          "Netagro no confirmó el identificador del alta; es necesario reconciliar.",
+        error:
+          "Netagro no confirmó el identificador del alta; es necesario reconciliar.",
+        technical_details: {},
+        retryable: false,
+        reconciliation_required: true,
+        factura: state.factura,
+        version: state.version,
+      }, 202);
+    }
 
     const normalizedWriteResponse = {
-      ...asObject(commitCall.payload),
+      contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
+      request_id: syncRequestId,
       ok: true,
       dry_run: false,
       FRR_id: remoteFacturaId,
@@ -1042,7 +1651,7 @@ Deno.serve(async (req) => {
     await finishPhase({
       phase: "commit",
       status: "succeeded",
-      response: normalizedWriteResponse,
+      response: commitCall.payload,
       httpStatus: commitCall.response.status,
     });
     await finishPhase({ phase: "readback", status: "in_progress" });
@@ -1080,22 +1689,36 @@ Deno.serve(async (req) => {
         accounting: normalizeAccountingReadback(accountingRaw),
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Readback ERP no disponible";
+      console.error("factura-recibida-send-erp readback transport error", error);
       const state = await finishPhase({
         phase: "readback",
         status: "unknown",
         response: normalizedWriteResponse,
-        error: message,
+        errorCode: "ambiguous_commit",
+        errorCategory: "transport",
+        error:
+          "La factura fue creada, pero no se pudo confirmar su lectura completa.",
+        retryable: false,
+        reconciliationRequired: true,
       });
       return jsonResponse(
         {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
+          contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+          operation: "commit",
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+          payload_hash: authoritativePayloadHash,
           ok: false,
+          code: "ambiguous_commit",
+          category: "transport",
+          user_message:
+            "La factura fue creada, pero no se pudo confirmar su lectura completa.",
           reconciliation_required: true,
           remote_frr_id: remoteFacturaId,
           error: "La factura fue escrita, pero no se pudo confirmar su lectura completa.",
-          details: message,
+          technical_details: {},
+          retryable: false,
           factura: state.factura,
           version: state.version,
         },
@@ -1110,18 +1733,32 @@ Deno.serve(async (req) => {
           phase: "readback",
           status: "unknown",
           response: readback,
+          errorCode: "accounting_unavailable",
+          errorCategory: "accounting",
           error:
             "El ERP no devolvio un asiento creado con ID tecnico, numero visible y apuntes Debe/Haber cuadrados.",
+          retryable: false,
+          reconciliationRequired: true,
         });
         return jsonResponse(
           {
-            contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-            request_id: requestId,
+            contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+            operation: "commit",
+            request_id: syncRequestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
+            payload_hash: authoritativePayloadHash,
+            code: "accounting_unavailable",
+            category: "accounting",
+            user_message:
+              "La factura fue creada, pero el asiento contable completo aún no está confirmado.",
+            technical_details: {},
             reconciliation_required: true,
+            retryable: false,
             remote_frr_id: remoteFacturaId,
             accounting: accountingCheck,
             error:
-              "La factura fue creada, pero el asiento contable completo aun no esta confirmado.",
+              "La factura fue creada, pero el asiento contable completo aún no está confirmado.",
             factura: state.factura,
             version: state.version,
           },
@@ -1142,15 +1779,28 @@ Deno.serve(async (req) => {
         phase: "readback",
         status: "unknown",
         response: readback,
+        errorCode: "readback_mismatch",
+        errorCategory: "conflict",
         error: "El readback no coincide exactamente con la cabecera, CTB o punteos enviados.",
+        retryable: false,
+        reconciliationRequired: true,
       });
       return jsonResponse(
         {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
+          contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+          operation: "commit",
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+          payload_hash: authoritativePayloadHash,
           reconciliation_required: true,
+          retryable: false,
           remote_frr_id: remoteFacturaId,
-          code: "ERP_READBACK_MISMATCH",
+          code: "readback_mismatch",
+          category: "conflict",
+          user_message:
+            "La factura fue escrita, pero su lectura no coincide con el payload confirmado.",
+          technical_details: {},
           error: "La factura fue escrita, pero su lectura no coincide con el payload confirmado.",
           validation_errors: readbackCheck.errors,
           factura: state.factura,
@@ -1161,10 +1811,14 @@ Deno.serve(async (req) => {
     }
 
     const { data: finalized, error: finalizeError } = await auth.serviceClient.rpc(
-      "finalize_factura_recibida_sync_v2",
+      "finalize_factura_recibida_sync_v3",
       {
         p_factura_id: facturaId,
-        p_request_id: requestId,
+        p_request_id: syncRequestId,
+        p_target_id: targetId,
+        p_dataset_epoch: datasetEpoch,
+        p_payload_hash: authoritativePayloadHash,
+        p_business_fingerprint: authoritativeBusinessFingerprint,
         p_write_response: normalizedWriteResponse,
         p_readback: readback,
         p_actor: auth.user.id,
@@ -1175,15 +1829,28 @@ Deno.serve(async (req) => {
         phase: "readback",
         status: "unknown",
         response: readback,
-        error: finalizeError.message,
+        errorCode: "readback_mismatch",
+        errorCategory: "conflict",
+        error: "No se pudo cerrar el readback exacto de la factura.",
+        retryable: false,
+        reconciliationRequired: true,
       });
       return jsonResponse(
         {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
+          contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+          operation: "commit",
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+          payload_hash: authoritativePayloadHash,
           reconciliation_required: true,
+          retryable: false,
           remote_frr_id: remoteFacturaId,
-          error: finalizeError.message,
+          code: "readback_mismatch",
+          category: "conflict",
+          user_message: "No se pudo confirmar exactamente el alta en Netagro.",
+          technical_details: {},
+          error: "No se pudo confirmar exactamente el alta en Netagro.",
           factura: state.factura,
           version: state.version,
         },
@@ -1192,27 +1859,62 @@ Deno.serve(async (req) => {
     }
 
     return jsonResponse({
-      contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-      request_id: requestId,
+      contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
+      operation: "commit",
+      request_id: syncRequestId,
+      target_id: targetId,
+      dataset_epoch: datasetEpoch,
+      payload_hash: authoritativePayloadHash,
       ok: true,
-      dry_run: false,
       ...asObject(finalized),
-      response: normalizedWriteResponse,
+      response: commitCall.payload,
       readback,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected error";
-    if (activeFacturaId && activeRequestId && /Timeout|timed out|aborted/i.test(message)) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: activeRequestId,
+    console.error("factura-recibida-send-erp error", error);
+    if (activeWriterOpened && activeFacturaId && activeRequestId) {
+      return edgeError({
+        status: 202,
+        error: {
+          code: "ambiguous_commit",
+          category: "transport",
+          user_message:
+            "La operación no respondió a tiempo. Se comprobará antes de permitir otro envío.",
+          technical_details: {},
+          retryable: false,
           reconciliation_required: true,
-          error: message,
+          request_id: activeRequestId,
+          target_id: activeTargetId,
+          dataset_epoch: activeDatasetEpoch,
         },
-        202,
-      );
+      });
     }
-    return jsonResponse({ error: message }, rpcErrorStatus(message));
+    return edgeError({
+      status: rpcErrorStatus(message),
+      error: {
+        code: message.includes("STALE_ENVIRONMENT")
+          ? "stale_environment"
+          : message.includes("WRITER_DISABLED")
+            ? "writer_disabled"
+            : message.includes("VERSION_CONFLICT")
+              ? "version_conflict"
+              : "upstream_unavailable",
+        category: message.includes("STALE_ENVIRONMENT") ||
+            message.includes("WRITER_DISABLED")
+          ? "environment"
+          : message.includes("CONFLICT")
+            ? "conflict"
+            : "transport",
+        user_message:
+          "No se pudo completar la operación con Netagro. Revise el estado antes de reintentar.",
+        technical_details: {},
+        retryable: false,
+        reconciliation_required: false,
+        request_id: activeRequestId,
+        target_id: activeTargetId,
+        dataset_epoch: activeDatasetEpoch,
+      },
+    });
   }
 });
