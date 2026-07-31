@@ -355,11 +355,6 @@ const getErrorMessage = (error: unknown, fallback: string) => {
 const hasAccountingLineData = (linea: FacturaRecibidaLinea) =>
   Boolean(cleanOptionalString(linea.descripcion)) || Math.abs(Number(linea.importe) || 0) > ACCOUNTING_AMOUNT_TOLERANCE;
 
-const ivaTramoTieneDato = (tramo: FacturaRecibidaIvaTramo) =>
-  Math.abs(Number(tramo.base) || 0) > ACCOUNTING_AMOUNT_TOLERANCE ||
-  Math.abs(Number(tramo.porcentaje) || 0) > 0 ||
-  Math.abs(Number(tramo.cuota) || 0) > ACCOUNTING_AMOUNT_TOLERANCE;
-
 const shouldOpenAccountingBreakdownFor = (
   factura: FacturaDraft | null | undefined,
   lineas: FacturaRecibidaLinea[],
@@ -1067,7 +1062,6 @@ const Facturas = () => {
   const historialRunRef = useRef(0);
   const regimenIvaRunRef = useRef(0);
   const [regimenIvaFeedback, setRegimenIvaFeedback] = useState<RegimenIvaFeedback | null>(null);
-  const [ivaTramosExtra, setIvaTramosExtra] = useState(0);
   const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
   const { toast } = useToast();
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -1185,9 +1179,8 @@ const Facturas = () => {
     [historialProveedor, draft?.iva_porcentaje],
   );
 
-  // Al cambiar de factura se vuelve a colapsar el desglose de IVA.
+  // Una factura nueva invalida cualquier sugerencia asíncrona de régimen anterior.
   useEffect(() => {
-    setIvaTramosExtra(0);
     regimenIvaRunRef.current += 1;
     setRegimenIvaFeedback(null);
   }, [draft?.id]);
@@ -2749,20 +2742,8 @@ const Facturas = () => {
     : createEmptyDraft().iva_tramos ?? [];
   const ivaBaseTotal = ivaTramos.reduce((sum, tramo) => sum + Number(tramo.base ?? 0), 0);
   const ivaCuotaTotal = ivaTramos.reduce((sum, tramo) => sum + Number(tramo.cuota ?? 0), 0);
-  // El ERP tiene 5 huecos fijos (FRR_base1..5), no una tabla hija: el tope es 5 y no
-  // se puede ampliar. Pero el 96,8% de las facturas medidas solo usa el tramo 1, asi
-  // que se muestran los tramos con dato y el usuario revela los demas si los necesita.
-  // Los 5 siguen existiendo en el borrador y en el payload; esto es solo presentacion.
-  const ultimoIvaTramoConDato = ivaTramos.reduce(
-    (ultimo, tramo) => (ivaTramoTieneDato(tramo) ? tramo.posicion : ultimo),
-    0,
-  );
-  const ivaTramosVisibles = Math.min(
-    ivaTramos.length,
-    Math.max(1, ultimoIvaTramoConDato + ivaTramosExtra),
-  );
-  const visibleIvaTramos = ivaTramos.slice(0, ivaTramosVisibles);
-  const ivaTramosOcultos = ivaTramos.length - ivaTramosVisibles;
+  // Netagro dispone de cinco huecos fijos (FRR_base1..5). Se muestran siempre
+  // para que el usuario pueda revisar todo el desglose sin revelar filas manualmente.
   const calculatedInvoiceTotal =
     ivaBaseTotal +
     ivaCuotaTotal -
@@ -3501,7 +3482,7 @@ const Facturas = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                      {visibleIvaTramos.map((tramo) => (
+                      {ivaTramos.map((tramo) => (
                         <tr key={tramo.posicion} className="bg-white dark:bg-slate-950">
                           <td className="px-3 py-3 font-bold text-slate-500">{tramo.posicion}</td>
                           <td className="px-3 py-3">
@@ -3539,22 +3520,6 @@ const Facturas = () => {
                     </tbody>
                   </table>
                 </div>
-                {ivaTramosOcultos > 0 ? (
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
-                    <button
-                      type="button"
-                      className="font-semibold text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline"
-                      disabled={isReadOnlyDetail}
-                      onClick={() => setIvaTramosExtra((current) => current + 1)}
-                    >
-                      Añadir tramo de IVA
-                    </button>
-                    <span>
-                      {ivaTramosOcultos} de {ivaTramos.length} sin usar. El ERP admite un máximo de{' '}
-                      {ivaTramos.length}.
-                    </span>
-                  </div>
-                ) : null}
                 <div className="mt-4 grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
                   <Field label="Cuota no deducible">
                     <Input className={detailInputClass} inputMode="decimal" value={numberInputValue(draft.cuota_no_deducible)} disabled={isReadOnlyDetail} onChange={(event) => updateDraft('cuota_no_deducible', parseNumber(event.target.value) ?? 0)} />
