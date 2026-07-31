@@ -13,12 +13,12 @@ const migrationPath = join(
 );
 const migration = readFileSync(migrationPath, "utf8");
 
-const functionBody = (name) => {
-  const marker = `create or replace function public.${name}(`;
+const functionBody = (name, schema = "public") => {
+  const marker = `create or replace function ${schema}.${name}(`;
   const start = migration.toLowerCase().indexOf(marker);
-  assert.notEqual(start, -1, `No se encuentra ${name}`);
+  assert.notEqual(start, -1, `No se encuentra ${schema}.${name}`);
   const next = migration.toLowerCase().indexOf(
-    "create or replace function public.",
+    "create or replace function ",
     start + marker.length,
   );
   return migration.slice(start, next === -1 ? migration.length : next);
@@ -41,6 +41,21 @@ test("errores y watchdog no contaminan el estado documental ni contable", () => 
     assert.doesNotMatch(body, /accounting_status\s*=/i);
     assert.doesNotMatch(body, /estado\s*=\s*'error_erp'/i);
   }
+});
+
+test("finish v3 deriva el estado antes del IF anidado", () => {
+  const finish = functionBody("finish_factura_recibida_sync_v3");
+  const executableFinish = finish.replace(/--[^\r\n]*/g, "");
+
+  assert.match(finish, /v_target_sync_status text/i);
+  assert.match(
+    finish,
+    /v_target_sync_status := case[\s\S]*?end;[\s\S]*?v_current\.sync_status is distinct from v_target_sync_status/i,
+  );
+  assert.doesNotMatch(
+    executableFinish,
+    /is distinct from\s+case[\s\S]*?\bend\s+then/i,
+  );
 });
 
 test("estado derivado preserva descarte manual y duplicado enlazado", () => {
@@ -80,7 +95,10 @@ test("watchdog se ejecuta cada minuto y caduca intentos a los diez minutos", () 
 });
 
 test("activación management exige blocked, confirmación y gates completos", () => {
-  const activation = functionBody("set_erp_target_write_mode_v3");
+  const activation = functionBody(
+    "set_erp_target_write_mode_v3_impl",
+    "private",
+  );
   assert.match(activation, /security definer[\s\S]*?set search_path = ''/i);
   assert.match(activation, /v_target\.write_mode\s*<>\s*'blocked'/i);
   assert.match(activation, /ENABLE_VALIDATION:/i);
@@ -99,8 +117,57 @@ test("activación management exige blocked, confirmación y gates completos", ()
   assert.match(activation, /sync_status in \('sending', 'unknown', 'reconciling'\)/i);
 });
 
+test("RPC privilegiadas usan wrappers invoker y helpers privados cerrados", () => {
+  const privilegedFunctions = [
+    "finalize_factura_recibida_sync_v3",
+    "rotate_erp_target_epoch_v3",
+    "set_erp_target_write_mode_v3",
+  ];
+
+  for (const name of privilegedFunctions) {
+    const wrapper = functionBody(name);
+    const helper = functionBody(`${name}_impl`, "private");
+
+    assert.match(wrapper, /security invoker[\s\S]*?set search_path = ''/i);
+    assert.doesNotMatch(wrapper, /security definer/i);
+    assert.match(wrapper, new RegExp(`return private\\.${name}_impl\\s*\\(`, "i"));
+    assert.match(helper, /security definer[\s\S]*?set search_path = ''/i);
+  }
+
+  assert.match(
+    migration,
+    /create schema if not exists private;[\s\S]*?revoke all on schema private from public, anon, authenticated, service_role;[\s\S]*?grant usage on schema private to service_role;/i,
+  );
+  for (const name of privilegedFunctions) {
+    assert.match(
+      migration,
+      new RegExp(
+        `revoke all on function private\\.${name}_impl\\([\\s\\S]*?\\) from public, anon, authenticated, service_role;`,
+        "i",
+      ),
+    );
+    assert.match(
+      migration,
+      new RegExp(
+        `grant execute on function private\\.${name}_impl\\([\\s\\S]*?\\) to service_role;`,
+        "i",
+      ),
+    );
+    assert.match(
+      migration,
+      new RegExp(
+        `revoke execute on function public\\.${name}\\([\\s\\S]*?\\) from public, anon, authenticated;[\\s\\S]*?grant execute on function public\\.${name}\\([\\s\\S]*?\\) to service_role;`,
+        "i",
+      ),
+    );
+  }
+
+  const config = readFileSync(join(supabaseRoot, "config.toml"), "utf8");
+  assert.doesNotMatch(config, /schemas\s*=\s*\[[^\]]*private/i);
+});
+
 test("rotar epoch separa referencias reales de validaciones no enviadas", () => {
-  const rotation = functionBody("rotate_erp_target_epoch_v3");
+  const rotation = functionBody("rotate_erp_target_epoch_v3_impl", "private");
   assert.match(rotation, /security definer[\s\S]*?set search_path = ''/i);
 
   assert.match(
@@ -164,7 +231,10 @@ test("backfills legacy son estables en una segunda ejecución", () => {
 });
 
 test("readback v3 deja una revisión inmutable posterior al finalizador legacy", () => {
-  const finalize = functionBody("finalize_factura_recibida_sync_v3");
+  const finalize = functionBody(
+    "finalize_factura_recibida_sync_v3_impl",
+    "private",
+  );
   assert.match(finalize, /row_version\s*=\s*factura\.row_version\s*\+\s*1/i);
   assert.match(finalize, /'edge_readback_v3'/i);
   assert.match(finalize, /'readback_verified_v3'/i);
@@ -313,11 +383,26 @@ test("RPC v2 no puede abrir ni finalizar el writer con service_role", () => {
   }
 
   const finalize = functionBody("finalize_factura_recibida_sync_v3");
-  assert.match(finalize, /security definer[\s\S]*?set search_path = ''/i);
+  const finalizeImpl = functionBody(
+    "finalize_factura_recibida_sync_v3_impl",
+    "private",
+  );
+  assert.match(finalize, /security invoker[\s\S]*?set search_path = ''/i);
+  assert.match(
+    finalize,
+    /return private\.finalize_factura_recibida_sync_v3_impl/i,
+  );
+  assert.match(
+    finalizeImpl,
+    /security definer[\s\S]*?set search_path = ''/i,
+  );
 });
 
 test("reconciliacion exacta puede cerrar commit unknown, pero no sin intento activo", () => {
-  const finalize = functionBody("finalize_factura_recibida_sync_v3");
+  const finalize = functionBody(
+    "finalize_factura_recibida_sync_v3_impl",
+    "private",
+  );
   const unknownBranch = finalize.indexOf("if v_commit.status = 'unknown'");
   const reconcileAttempt = finalize.indexOf("and phase = 'reconcile'", unknownBranch);
   const activeGuard = finalize.indexOf("v_reconcile.status <> 'in_progress'", reconcileAttempt);
@@ -384,7 +469,7 @@ test("target, epoch y snapshot forman una sola identidad runtime", () => {
   assert.match(send, /timestampsReferToSameInstant\([\s\S]*?snapshot_at[\s\S]*?runtime\.snapshot_at/i);
   assert.match(runtime, /timestampsReferToSameInstant\(local\.snapshot_at, upstream\.snapshot_at\)/i);
 
-  const rotation = functionBody("rotate_erp_target_epoch_v3");
+  const rotation = functionBody("rotate_erp_target_epoch_v3_impl", "private");
   assert.match(
     rotation,
     /dataset_epoch is not distinct from p_dataset_epoch[\s\S]*?snapshot_at is distinct from p_snapshot_at[\s\S]*?IDEMPOTENCY_CONFLICT/i,

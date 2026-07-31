@@ -9,6 +9,10 @@
 
 create extension if not exists pgcrypto with schema extensions;
 
+create schema if not exists private;
+revoke all on schema private from public, anon, authenticated, service_role;
+grant usage on schema private to service_role;
+
 create table if not exists public.erp_targets (
   id text primary key,
   display_name text not null,
@@ -1338,6 +1342,8 @@ begin
       updated_at = now();
 
   if p_status in ('failed', 'unknown') then
+    -- Derive the state before the nested IF. This keeps the CASE and the
+    -- surrounding IF/END IF blocks explicit and avoids the former 42601 parse.
     v_target_sync_status := case
       when p_status = 'unknown' then 'unknown'
       else 'error'
@@ -1397,7 +1403,7 @@ begin
 end;
 $$;
 
-create or replace function public.finalize_factura_recibida_sync_v3(
+create or replace function private.finalize_factura_recibida_sync_v3_impl(
   p_factura_id uuid,
   p_request_id uuid,
   p_target_id text,
@@ -1619,6 +1625,37 @@ begin
 end;
 $$;
 
+create or replace function public.finalize_factura_recibida_sync_v3(
+  p_factura_id uuid,
+  p_request_id uuid,
+  p_target_id text,
+  p_dataset_epoch uuid,
+  p_payload_hash text,
+  p_business_fingerprint text,
+  p_write_response jsonb,
+  p_readback jsonb,
+  p_actor uuid default null
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  return private.finalize_factura_recibida_sync_v3_impl(
+    p_factura_id,
+    p_request_id,
+    p_target_id,
+    p_dataset_epoch,
+    p_payload_hash,
+    p_business_fingerprint,
+    p_write_response,
+    p_readback,
+    p_actor
+  );
+end;
+$$;
+
 create or replace function public.mark_stale_factura_recibida_syncs_v3(
   p_cutoff interval default interval '10 minutes',
   p_actor uuid default null
@@ -1708,7 +1745,7 @@ begin
 end;
 $$;
 
-create or replace function public.rotate_erp_target_epoch_v3(
+create or replace function private.rotate_erp_target_epoch_v3_impl(
   p_target_id text,
   p_dataset_epoch uuid,
   p_snapshot_at timestamptz,
@@ -1909,13 +1946,34 @@ begin
 end;
 $$;
 
+create or replace function public.rotate_erp_target_epoch_v3(
+  p_target_id text,
+  p_dataset_epoch uuid,
+  p_snapshot_at timestamptz,
+  p_actor uuid default null
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  return private.rotate_erp_target_epoch_v3_impl(
+    p_target_id,
+    p_dataset_epoch,
+    p_snapshot_at,
+    p_actor
+  );
+end;
+$$;
+
 -- Runbook de activacion del target:
 --   1. rotate_erp_target_epoch_v3(...) deja siempre write_mode=disabled;
 --   2. validar snapshot/runtime y pasar a blocked con confirmacion explicita;
 --   3. superar todos los gates y pasar de blocked a management;
 --   4. rollback: volver a blocked o disabled (reduccion segura, sin borrar).
 -- Nunca habilitar management con un UPDATE directo sobre erp_targets.
-create or replace function public.set_erp_target_write_mode_v3(
+create or replace function private.set_erp_target_write_mode_v3_impl(
   p_target_id text,
   p_dataset_epoch uuid,
   p_write_mode text,
@@ -2037,6 +2095,31 @@ begin
 end;
 $$;
 
+create or replace function public.set_erp_target_write_mode_v3(
+  p_target_id text,
+  p_dataset_epoch uuid,
+  p_write_mode text,
+  p_confirmation text default null,
+  p_gates jsonb default '{}'::jsonb,
+  p_actor uuid default null
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  return private.set_erp_target_write_mode_v3_impl(
+    p_target_id,
+    p_dataset_epoch,
+    p_write_mode,
+    p_confirmation,
+    p_gates,
+    p_actor
+  );
+end;
+$$;
+
 revoke execute on function public.enforce_factura_received_state_v3()
   from public, anon, authenticated;
 revoke execute on function public.fill_factura_sync_attempt_operation_v3()
@@ -2065,10 +2148,20 @@ revoke execute on function public.set_erp_target_write_mode_v3(
   text, uuid, text, text, jsonb, uuid
 ) from public, anon, authenticated;
 
+revoke all on function private.finalize_factura_recibida_sync_v3_impl(
+  uuid, uuid, text, uuid, text, text, jsonb, jsonb, uuid
+) from public, anon, authenticated, service_role;
+revoke all on function private.rotate_erp_target_epoch_v3_impl(
+  text, uuid, timestamptz, uuid
+) from public, anon, authenticated, service_role;
+revoke all on function private.set_erp_target_write_mode_v3_impl(
+  text, uuid, text, text, jsonb, uuid
+) from public, anon, authenticated, service_role;
+
 -- Contract v2 queda cerrado incluso para codigo Edge antiguo que conserve la
 -- service role. finalize_v2 solo se reutiliza internamente desde el finalizador
--- v3 SECURITY DEFINER como comparador de readback; ningun consumidor puede
--- abrir, finalizar ni reparar una escritura v2 directamente.
+-- privado v3 como comparador de readback; ningun consumidor puede abrir,
+-- finalizar ni reparar una escritura v2 directamente.
 revoke execute on function public.begin_factura_recibida_sync_v2(
   uuid, bigint, uuid, jsonb, uuid
 ) from public, anon, authenticated, service_role;
@@ -2100,6 +2193,16 @@ grant execute on function public.rotate_erp_target_epoch_v3(
   text, uuid, timestamptz, uuid
 ) to service_role;
 grant execute on function public.set_erp_target_write_mode_v3(
+  text, uuid, text, text, jsonb, uuid
+) to service_role;
+
+grant execute on function private.finalize_factura_recibida_sync_v3_impl(
+  uuid, uuid, text, uuid, text, text, jsonb, jsonb, uuid
+) to service_role;
+grant execute on function private.rotate_erp_target_epoch_v3_impl(
+  text, uuid, timestamptz, uuid
+) to service_role;
+grant execute on function private.set_erp_target_write_mode_v3_impl(
   text, uuid, text, text, jsonb, uuid
 ) to service_role;
 

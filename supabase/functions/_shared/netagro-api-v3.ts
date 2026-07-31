@@ -104,7 +104,6 @@ export const buildFacturaWriteIdentity = async ({
   // Edge only uses this prediction to detect local drift before opening commit.
   const payloadHash = await sha256Text(canonicalJson({
     operation: "POST /facturasrecibidas",
-    schema: "netagrocomer",
     contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
     payload: {
       cabecera,

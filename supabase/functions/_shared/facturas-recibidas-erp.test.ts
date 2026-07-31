@@ -227,6 +227,22 @@ Deno.test("contrato ERP v3 no envia hash cliente y valida la identidad devuelta"
   );
 });
 
+Deno.test("hash v3 coincide con el vector canonico de FastAPI sin schema fisico", async () => {
+  const identity = await buildFacturaWriteIdentity({
+    cabecera: {
+      FRR_numerofactura: "TEST-1",
+      FRR_Idempresa: 1,
+    },
+    ctb: [],
+    punteos: [],
+  });
+
+  assertEquals(
+    identity.payloadHash,
+    "3f2a37e26f99062e186e2a49119cc0fc7ede6d922576764cee47a5a00031cc6a",
+  );
+});
+
 Deno.test("identidad runtime exige snapshot presente y el mismo instante", () => {
   assertEquals(
     timestampsReferToSameInstant(
