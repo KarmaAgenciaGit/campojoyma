@@ -266,6 +266,43 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(isERPReadOnlyFactura(factura)).toBe(true);
   });
 
+  it('presenta vacíos los huecos IVA a cero y conserva un 0 % realmente usado', () => {
+    const factura = mapRemoteFacturaToUi({
+      ...onduSpanHeader,
+      FRR_base2: 0,
+      FRR_iva2: 0,
+      FRR_cuota2: 0,
+      FRR_base3: 0,
+      FRR_iva3: 0,
+      FRR_cuota3: 0,
+      FRR_base4: 0,
+      FRR_iva4: 0,
+      FRR_cuota4: 0,
+      FRR_base5: 50,
+      FRR_iva5: 0,
+      FRR_cuota5: 0,
+    });
+
+    expect(factura.iva_tramos?.[1]).toEqual({
+      posicion: 2,
+      base: null,
+      porcentaje: null,
+      cuota: null,
+    });
+    expect(factura.iva_tramos?.[2]).toEqual({
+      posicion: 3,
+      base: null,
+      porcentaje: null,
+      cuota: null,
+    });
+    expect(factura.iva_tramos?.[4]).toEqual({
+      posicion: 5,
+      base: 50,
+      porcentaje: 0,
+      cuota: 0,
+    });
+  });
+
   it('usa la identidad canónica del agricultor y conserva la evidencia del albarán GE', () => {
     const factura = mapRemoteFacturaToUi(
       {

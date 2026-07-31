@@ -235,12 +235,21 @@ const asRecordArray = (value: unknown): Array<Record<string, unknown>> =>
     : [];
 
 const buildIvaTramos = (source: Record<string, unknown>): FacturaRecibidaIvaTramo[] =>
-  [1, 2, 3, 4, 5].map((posicion) => ({
-    posicion: posicion as FacturaRecibidaIvaTramo['posicion'],
-    base: readNumber(source, [`FRR_base${posicion}`, `base${posicion}`], null),
-    porcentaje: readNumber(source, [`FRR_iva${posicion}`, `iva${posicion}`], null),
-    cuota: readNumber(source, [`FRR_cuota${posicion}`, `cuota${posicion}`], null),
-  }));
+  [1, 2, 3, 4, 5].map((posicion) => {
+    const base = readNumber(source, [`FRR_base${posicion}`, `base${posicion}`], null);
+    const porcentaje = readNumber(source, [`FRR_iva${posicion}`, `iva${posicion}`], null);
+    const cuota = readNumber(source, [`FRR_cuota${posicion}`, `cuota${posicion}`], null);
+    const isUnusedZeroSlot = [base, porcentaje, cuota].every(
+      (value) => value === null || value === 0,
+    );
+
+    return {
+      posicion: posicion as FacturaRecibidaIvaTramo['posicion'],
+      base: isUnusedZeroSlot ? null : base,
+      porcentaje: isUnusedZeroSlot ? null : porcentaje,
+      cuota: isUnusedZeroSlot ? null : cuota,
+    };
+  });
 
 const buildVencimientos = (source: Record<string, unknown>): FacturaRecibidaVencimiento[] => [
   {
