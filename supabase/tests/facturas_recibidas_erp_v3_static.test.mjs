@@ -12,6 +12,22 @@ const migrationPath = join(
   "20260730145320_harden_facturas_recibidas_erp_v3.sql",
 );
 const migration = readFileSync(migrationPath, "utf8");
+const createCompatibilityMigration = readFileSync(
+  join(
+    supabaseRoot,
+    "migrations",
+    "20260731121047_fix_create_factura_recibida_v3_defaults.sql",
+  ),
+  "utf8",
+);
+const saveProtectionMigration = readFileSync(
+  join(
+    supabaseRoot,
+    "migrations",
+    "20260731121720_protect_factura_recibida_v3_identity_on_save.sql",
+  ),
+  "utf8",
+);
 
 const functionBody = (name, schema = "public") => {
   const marker = `create or replace function ${schema}.${name}(`;
@@ -23,6 +39,119 @@ const functionBody = (name, schema = "public") => {
   );
   return migration.slice(start, next === -1 ? migration.length : next);
 };
+
+test("create v2 inicializa la identidad ERP v3 sin aceptar campos de cliente", () => {
+  assert.match(
+    createCompatibilityMigration,
+    /create or replace function public\.create_factura_recibida_v2\(/i,
+  );
+  assert.match(
+    createCompatibilityMigration,
+    /security invoker[\s\S]*?set search_path = ''/i,
+  );
+
+  const sanitizedPayloadMatch = createCompatibilityMigration.match(
+    /p_factura\s*-\s*array\[([\s\S]*?)\]\s*\)\s*\|\|\s*jsonb_build_object\(/i,
+  );
+  assert.ok(sanitizedPayloadMatch, "No se encuentra el saneado de p_factura");
+  const sanitizedPayload = sanitizedPayloadMatch[1];
+  const serverDefaults = createCompatibilityMigration.slice(
+    createCompatibilityMigration.indexOf("|| jsonb_build_object("),
+    createCompatibilityMigration.indexOf("if v_source_kind <> 'erp_reference'"),
+  );
+
+  for (const field of [
+    "erp_target_id",
+    "erp_dataset_epoch",
+    "erp_payload_hash",
+    "erp_business_fingerprint",
+    "erp_verified_at",
+    "erp_reference_status",
+    "erp_validation_status",
+    "erp_validation_request_id",
+    "erp_validated_at",
+    "fecha_ctb_source",
+  ]) {
+    assert.match(
+      sanitizedPayload,
+      new RegExp(`'${field}'`),
+      `El RPC debe retirar ${field} del payload entrante`,
+    );
+  }
+
+  for (const field of [
+    "erp_target_id",
+    "erp_dataset_epoch",
+    "erp_payload_hash",
+    "erp_business_fingerprint",
+    "erp_verified_at",
+    "erp_validation_request_id",
+    "erp_validated_at",
+  ]) {
+    assert.match(
+      serverDefaults,
+      new RegExp(`'${field}',\\s*null`),
+      `El RPC debe inicializar ${field} a NULL`,
+    );
+  }
+
+  assert.match(
+    serverDefaults,
+    /'erp_reference_status',\s*case[\s\S]*?'legacy_unverified'[\s\S]*?'unverified'/i,
+  );
+  assert.match(
+    serverDefaults,
+    /'erp_validation_status',\s*'not_validated'/i,
+  );
+  assert.match(
+    serverDefaults,
+    /'fecha_ctb_source',\s*case[\s\S]*?p_factura->>'fecha_ctb_source' = 'manual'[\s\S]*?'invoice_date'/i,
+  );
+  assert.match(
+    createCompatibilityMigration,
+    /jsonb_populate_record\(null::public\.facturasrecibidas, v_payload\)/i,
+  );
+});
+
+test("save v2 conserva la identidad ERP v3 controlada por el servidor", () => {
+  assert.match(
+    saveProtectionMigration,
+    /create or replace function public\.save_factura_recibida_v2\(/i,
+  );
+  assert.match(
+    saveProtectionMigration,
+    /security invoker[\s\S]*?set search_path = ''/i,
+  );
+  assert.match(saveProtectionMigration, /v_payload :=\s*to_jsonb\(v_current\)/i);
+
+  const sanitizedPayloadMatch = saveProtectionMigration.match(
+    /p_factura\s*-\s*array\[([\s\S]*?)\]\s*\)\s*\|\|\s*jsonb_build_object\(/i,
+  );
+  assert.ok(sanitizedPayloadMatch, "No se encuentra el saneado de save");
+  for (const field of [
+    "erp_target_id",
+    "erp_dataset_epoch",
+    "erp_payload_hash",
+    "erp_business_fingerprint",
+    "erp_verified_at",
+    "erp_reference_status",
+    "erp_validation_status",
+    "erp_validation_request_id",
+    "erp_validated_at",
+    "fecha_ctb_source",
+  ]) {
+    assert.match(
+      sanitizedPayloadMatch[1],
+      new RegExp(`'${field}'`),
+      `save debe retirar ${field} del payload entrante`,
+    );
+  }
+
+  assert.match(
+    saveProtectionMigration,
+    /'fecha_ctb_source',\s*case[\s\S]*?not \(p_factura \? 'fecha_ctb_source'\)[\s\S]*?v_current\.fecha_ctb_source[\s\S]*?'manual'[\s\S]*?'invoice_date'/i,
+  );
+});
 
 test("validar ERP no abre sending; solo begin v3 puede abrir el envío", () => {
   const validate = functionBody("record_factura_recibida_validation_v3");
