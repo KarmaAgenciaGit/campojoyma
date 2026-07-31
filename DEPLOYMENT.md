@@ -18,6 +18,26 @@ La topología real, los dos saltos SSH, los túneles y los comandos de diagnóst
 están en
 [docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md](docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md).
 
+## Estado de producción: 2026-07-31
+
+El frontend actualizado está construido y comprobado localmente, pero todavía
+no está publicado en el dominio:
+
+- producción sirve `index-BMzeM2s7.js`;
+- el contenedor local probado sirve `index-BN9BAZcy.js`;
+- `217.154.101.108` rechaza la clave Hostinger disponible;
+- la cuenta Hostinger comprobada no muestra ese host;
+- el panel alternativo requiere una clave de entrada no disponible.
+
+No debe declararse desplegado el frontend v3 hasta que el bundle público
+coincida con el build aprobado y se complete una comprobación autenticada.
+Publicar requiere una credencial o ruta de administración confirmada por el
+propietario del host.
+
+El backend v3 y sus lecturas sí están desplegados, pero las acciones de validar,
+enviar y contabilizar permanecen deshabilitadas. Véase
+[docs/DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md](docs/DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md).
+
 ---
 
 ## Requisitos previos (1 vez)
@@ -145,12 +165,19 @@ docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 - [ ] App accesible en `https://campojoyma.multiplicaxfuego.com`
 - [ ] Las llamadas a `/agroiris-*` responden sin errores CORS
 - [ ] Login y bandeja de facturas recibidas cargan
+- [ ] El bundle servido coincide con el aprobado
+- [ ] El detalle autenticado de Facturas muestra la UI v3
+- [ ] Régimen, IVA, cuentas de gasto y CTB cargan sin errores ERP
+- [ ] `Validar con ERP`, envío y contabilidad permanecen deshabilitados mientras
+      `/meta/runtime` no anuncie sus capacidades
 
 ### En la consola del navegador
 
 1. DevTools (F12) → pestaña Network → filtrar por XHR.
 2. Comprobar que las llamadas a `/agroiris-api/` y `/agroiris-config/` devuelven `200`.
-3. No deben aparecer errores CORS.
+3. Abrir una factura y comprobar que las Edge Functions de runtime y lectura no
+   devuelven errores.
+4. No deben aparecer errores CORS.
 
 ---
 

@@ -14,38 +14,40 @@ Evidencia visual y transcripción saneada:
 
 ## Estado de ejecución: 31 de julio de 2026
 
-La implementación está cerrada y trazable en código, pero el despliegue
-operativo continúa deliberadamente incompleto:
+El circuito de lectura v3 ya está desplegado y probado. El detalle exacto,
+artefactos, checksums y rollback se conserva en
+[DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md).
 
-- La implementación de `campojoyma` quedó fijada en
-  `ffb98974365f5c7841082573553abd364739981c`.
-- La implementación de `api-campojoyma` quedó fijada en
-  `75b88dd97b5e6b2d30beecb8ef2ded481a52bbef`.
-- La migración `harden_facturas_recibidas_erp_v3` está aplicada en el proyecto
-  Supabase `CAMPOJOYMA`. El target `netagro-test-write` permanece activo solo
-  como registro, con `write_mode=disabled`, `dataset_epoch=NULL` y
-  `accounting_mode=unavailable`.
-- El watchdog se ejecuta cada minuto y su primera ejecución remota terminó
-  correctamente. Los RPC v2 de escritura ya no son ejecutables por
-  `service_role`.
-- La referencia `49305` se conserva como `legacy_unverified`; la referencia
-  `49681` está marcada como `stale`. Ninguna se ha religado automáticamente.
-- Verificación local superada: 135 pruebas de frontend, 97 pruebas Deno,
-  19 pruebas estáticas, seis Edge Functions comprobadas por Deno, build y
-  TypeScript correctos, y 159 pruebas FastAPI.
-- FastAPI v3 todavía no está desplegado. El runtime remoto sigue siendo la
-  versión anterior y no expone `/meta/runtime`. El acceso SSH directo al host
-  de la API estaba bloqueado en el momento de cerrar esta actualización.
-- Por ese motivo no se han desplegado todavía el gateway, los secretos ni las
-  Edge Functions v3. Tampoco se ha creado o migrado el almacén de idempotencia
-  remoto.
+- `api-campojoyma` `0.3.1`, commit de release
+  `95547bde4edd5dffcbffe3eb06e8906b893a1a43`, está activo en `karma-box`.
+- El gateway HTTPS autenticado está activo en
+  `https://netagro-api-v2.srv894901.hstgr.cloud`.
+- Los secretos requeridos están provisionados fuera de Git y las seis Edge
+  Functions v3 están activas. La lectura está en versión 19.
+- El runtime informa `write_mode=disabled`,
+  `accounting_mode=unavailable`, `target_id=NULL`,
+  `dataset_epoch=NULL` y `ready_for_commit=false`.
+- El runtime no considera preparado el almacén de idempotencia y devuelve
+  `schema_version=NULL` mientras falten target y epoch. El archivo heredado v1
+  se conserva sin migrar en el backup.
+- La migración `harden_facturas_recibidas_erp_v3` está aplicada en Supabase.
+  El watchdog está activo y los RPC v2 de escritura permanecen cerrados.
+- La referencia `49305` continúa como `legacy_unverified`; `49681` sigue
+  marcada como `stale`. Ninguna fue religada.
+- Verificación superada: 196 pruebas FastAPI, 98 pruebas Deno, 19 pruebas
+  estáticas, 135 pruebas frontend, TypeScript y builds correctos.
+- El frontend actualizado está construido, desplegado localmente y comprobado
+  con sesión autenticada en `http://localhost:8080`. IVA, gastos y CTB usan
+  catálogos reales y no se observaron respuestas HTTP fallidas.
+- El dominio público aún sirve el bundle anterior. La compatibilidad de lectura
+  evita su error de cuentas, pero la UI v3 no podrá publicarse hasta recuperar
+  acceso autorizado a `217.154.101.108`.
 
-El siguiente orden obligatorio es: recuperar acceso autorizado al host,
-desplegar el SHA de FastAPI con escrituras apagadas, provisionar
-idempotencia v2, configurar el mismo secreto en API y gateway, verificar HTTPS,
-configurar los secretos Edge y desplegar primero runtime/lecturas y finalmente
-el writer. El clon persistente, el epoch y cualquier alta quedan para una fase
-posterior con sus gates completos.
+El siguiente orden obligatorio es: publicar el build ya probado cuando exista
+acceso al host; provisionar después un clon persistente con identidad de
+dataset e idempotencia v2; ejecutar los gates de contadores, punteos, canario,
+concurrencia y fallos; y solo entonces considerar la habilitación gradual de
+gestión. La contabilidad permanece cerrada hasta disponer del mecanismo oficial.
 
 ## 1. Flujo objetivo
 
@@ -89,7 +91,9 @@ operación y nunca forma parte implícita del alta de gestión.
 
 - La API TEST está activa y expone una MariaDB clonada.
 - `DB_WRITES_ENABLED=false`.
-- El almacén externo de idempotencia está operativo con esquema 1.
+- El runtime anterior disponía de un archivo externo de idempotencia de
+  esquema 1. El runtime 0.3.1 no lo considera preparado sin una identidad
+  completa de target y dataset.
 - La copia se refresca y puede reutilizar los mismos IDs para facturas
   distintas. Una referencia ERP sin entorno y generación no es estable.
 - La referencia local que conservaba `remote_frr_id=49681` quedó obsoleta tras

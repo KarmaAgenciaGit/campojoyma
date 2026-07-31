@@ -2168,6 +2168,48 @@ export const isAllowedERPConsulta = (consulta: string) => {
   return [...parsed.searchParams.keys()].every((key) => rule.keys.has(key));
 };
 
+const CAMPOJOYMA_LEGACY_ERP_EMPRESA_ID = 1;
+
+/**
+ * Compatibilidad transitoria para clientes de Campojoyma anteriores al contrato
+ * que hizo obligatorio `empresa_id` en el catalogo contable.
+ *
+ * El fallback esta deliberadamente limitado a `cuentas-contables` y nunca
+ * reemplaza un valor enviado por el cliente, aunque sea invalido. FastAPI sigue
+ * siendo la autoridad para validar la empresa y derivar su esquema contable.
+ */
+export const applyCampojoymaLegacyERPReadScope = (consulta: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(consulta, "https://erp.invalid/");
+  } catch {
+    return consulta;
+  }
+  if (
+    parsed.origin !== "https://erp.invalid" ||
+    parsed.hash ||
+    parsed.username ||
+    parsed.password
+  ) {
+    return consulta;
+  }
+
+  const path = parsed.pathname.replace(/^\/+|\/+$/g, "");
+  if (
+    path !== "cuentas-contables" ||
+    parsed.searchParams.has("empresa_id")
+  ) {
+    return consulta;
+  }
+
+  parsed.searchParams.set(
+    "empresa_id",
+    String(CAMPOJOYMA_LEGACY_ERP_EMPRESA_ID),
+  );
+  const query = parsed.searchParams.toString();
+  return query ? `${path}?${query}` : path;
+};
+
 export type FacturaValidationIssue = {
   field: string;
   message: string;

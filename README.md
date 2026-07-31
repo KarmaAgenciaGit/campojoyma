@@ -7,6 +7,8 @@
 ## Documentación operativa
 
 - [Acceso a servidores e infraestructura](docs/ACCESO_SERVIDORES_E_INFRAESTRUCTURA.md)
+- [Plan maestro de facturas recibidas](docs/PLAN_MAESTRO_FACTURAS_RECIBIDAS_2026-07-30.md)
+- [Acta del despliegue seguro v3](docs/DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md)
 - [Documentación consolidada de facturas](docs/DOCUMENTACION_FACTURAS_CAMPOJOYMA_CONSOLIDADA.md)
 - [Contrato de la API de facturas recibidas](docs/FACTURAS_RECIBIDAS_API_CONTRACT.md)
 - [Despliegue](DEPLOYMENT.md)

@@ -1,6 +1,12 @@
 # Documentación consolidada: facturas Campojoyma
 
-Última actualización: 2026-07-30
+Última actualización: 2026-07-31
+
+> Para decisiones operativas use el
+> [plan maestro vigente](PLAN_MAESTRO_FACTURAS_RECIBIDAS_2026-07-30.md) y el
+> [acta de despliegue v3 del 31/07](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md).
+> El resto de este documento conserva la investigación y las evidencias
+> históricas; no sustituye el estado leído del runtime.
 
 La topología real, los dos saltos SSH, los túneles, las rutas de claves y los
 comandos de diagnóstico se mantienen en
@@ -12,10 +18,10 @@ La referencia canónica del contrato de escritura es
 [FACTURAS_RECIBIDAS_API_CONTRACT.md](FACTURAS_RECIBIDAS_API_CONTRACT.md). El
 estado de homologación y los límites de la API se documentan en
 [FACTURAS_RECIBIDAS_API_V2_STAGING.md](FACTURAS_RECIBIDAS_API_V2_STAGING.md);
-el OpenAPI verificable está en
-[openapi/netagro-test-api-v0.2.0.json](openapi/netagro-test-api-v0.2.0.json).
-El nombre del fichero se mantiene por compatibilidad; su contenido corresponde
-a la API v0.2.4 desplegada. La ampliación de líneas de albarán de entrada se
+el OpenAPI verificable actual está en
+[openapi/netagro-test-api-v0.3.1.json](openapi/netagro-test-api-v0.3.1.json).
+El OpenAPI v0.2.4 se conserva como evidencia histórica. La ampliación de líneas
+de albarán de entrada se
 verificó contra el caso real `25 / A26 / 8436` y la de material contra
 `AMA_idalb=23210` el 28/07/2026.
 

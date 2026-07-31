@@ -1,0 +1,5444 @@
+{
+  "components": {
+    "schemas": {
+      "AccountingState": {
+        "properties": {
+          "balanced": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Balanced"
+          },
+          "concept": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concept"
+          },
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "requested": {
+            "title": "Requested",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "not_requested",
+              "pending",
+              "created",
+              "reference_only",
+              "unavailable",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "technical_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technical Id"
+          },
+          "total_credit": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Credit"
+          },
+          "total_debit": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Debit"
+          },
+          "visible_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visible Number"
+          }
+        },
+        "required": [
+          "requested",
+          "created",
+          "status"
+        ],
+        "title": "AccountingState",
+        "type": "object"
+      },
+      "ERPErrorEnvelope": {
+        "properties": {
+          "category": {
+            "enum": [
+              "validation",
+              "environment",
+              "conflict",
+              "transport",
+              "accounting"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "dataset_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Epoch"
+          },
+          "reconciliation_required": {
+            "title": "Reconciliation Required",
+            "type": "boolean"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "technical_details": {
+            "additionalProperties": true,
+            "title": "Technical Details",
+            "type": "object"
+          },
+          "user_message": {
+            "title": "User Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "category",
+          "user_message",
+          "retryable",
+          "reconciliation_required"
+        ],
+        "title": "ERPErrorEnvelope",
+        "type": "object"
+      },
+      "FacturaRecibidaAccountingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": 3,
+            "default": 3,
+            "title": "Contract Version",
+            "type": "integer"
+          },
+          "dataset_epoch": {
+            "format": "uuid",
+            "title": "Dataset Epoch",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "target_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "target_id",
+          "dataset_epoch"
+        ],
+        "title": "FacturaRecibidaAccountingRequest",
+        "type": "object"
+      },
+      "FacturaRecibidaAsientoResponse": {
+        "properties": {
+          "accounting": {
+            "$ref": "#/components/schemas/AccountingState"
+          },
+          "entries": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "factura_id": {
+            "title": "Factura Id",
+            "type": "integer"
+          },
+          "source": {
+            "additionalProperties": true,
+            "title": "Source",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "factura_id",
+          "accounting",
+          "source"
+        ],
+        "title": "FacturaRecibidaAsientoResponse",
+        "type": "object"
+      },
+      "FacturaRecibidaCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accounting_mode": {
+            "default": "none",
+            "enum": [
+              "none",
+              "official"
+            ],
+            "title": "Accounting Mode",
+            "type": "string"
+          },
+          "cabecera": {
+            "additionalProperties": true,
+            "title": "Cabecera",
+            "type": "object"
+          },
+          "contract_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2,
+              3
+            ],
+            "title": "Contract Version",
+            "type": "integer"
+          },
+          "ctb": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Ctb",
+            "type": "array"
+          },
+          "dataset_epoch": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Epoch"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "validate",
+                  "commit"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "punteos": {
+            "items": {
+              "$ref": "#/components/schemas/PunteoSeleccionado"
+            },
+            "title": "Punteos",
+            "type": "array"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          }
+        },
+        "required": [
+          "cabecera"
+        ],
+        "title": "FacturaRecibidaCreateRequest",
+        "type": "object"
+      },
+      "FacturaRecibidaWriteResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "FRR_IdAsientoNet": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frr Idasientonet"
+          },
+          "FRR_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frr Id"
+          },
+          "FRR_numero": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frr Numero"
+          },
+          "accounting": {
+            "$ref": "#/components/schemas/AccountingState"
+          },
+          "capabilities": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "integer"
+          },
+          "ctb": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Ctb",
+            "type": "array"
+          },
+          "dataset_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Epoch"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate"
+          },
+          "erp_errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Erp Errors",
+            "type": "array"
+          },
+          "factura": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Factura"
+          },
+          "ids_punteos_enlazados": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Ids Punteos Enlazados",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "operation": {
+            "enum": [
+              "validate",
+              "commit"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "payload_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Hash"
+          },
+          "punteos": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Punteos",
+            "type": "array"
+          },
+          "punteos_requested": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Punteos Requested",
+            "type": "array"
+          },
+          "readback_confirmed": {
+            "default": false,
+            "title": "Readback Confirmed",
+            "type": "boolean"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "validation_errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Validation Errors",
+            "type": "array"
+          },
+          "validations": {
+            "$ref": "#/components/schemas/ValidationEnvelope"
+          },
+          "would_create": {
+            "title": "Would Create",
+            "type": "boolean"
+          },
+          "write_mode": {
+            "enum": [
+              "disabled",
+              "blocked",
+              "management"
+            ],
+            "title": "Write Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "contract_version",
+          "operation",
+          "request_id",
+          "write_mode",
+          "capabilities",
+          "dry_run",
+          "would_create",
+          "validations",
+          "accounting"
+        ],
+        "title": "FacturaRecibidaWriteResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "PunteoSeleccionado": {
+        "additionalProperties": false,
+        "properties": {
+          "importe_factura": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,16}|(?=[\\d.]{1,19}0*$)\\d{0,16}\\.\\d{0,2}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importe Factura"
+          },
+          "source_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Id",
+            "type": "integer"
+          },
+          "source_table": {
+            "enum": [
+              "albsalida_gastos",
+              "albentrada_hisgastos",
+              "albaranescompra_gastos",
+              "facturas_gastos",
+              "albarancoste",
+              "albmaterial"
+            ],
+            "title": "Source Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_table",
+          "source_id"
+        ],
+        "title": "PunteoSeleccionado",
+        "type": "object"
+      },
+      "RegimenIvaDominanceCriteria": {
+        "properties": {
+          "min_confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Min Confianza",
+            "type": "number"
+          },
+          "requiere_lider_unico": {
+            "title": "Requiere Lider Unico",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "min_confianza",
+          "requiere_lider_unico"
+        ],
+        "title": "RegimenIvaDominanceCriteria",
+        "type": "object"
+      },
+      "RegimenIvaProfile": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "porcentajes": {
+            "items": {
+              "anyOf": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Porcentajes",
+            "type": "array"
+          },
+          "tramos": {
+            "items": {
+              "$ref": "#/components/schemas/RegimenIvaProfileTramo"
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Tramos",
+            "type": "array"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "porcentajes",
+          "usos",
+          "confianza",
+          "tramos"
+        ],
+        "title": "RegimenIvaProfile",
+        "type": "object"
+      },
+      "RegimenIvaProfileFilters": {
+        "properties": {
+          "proveedor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proveedor Id"
+          },
+          "tipo_factura": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tipo Factura"
+          }
+        },
+        "title": "RegimenIvaProfileFilters",
+        "type": "object"
+      },
+      "RegimenIvaProfileTramo": {
+        "properties": {
+          "confianza_activa": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confianza Activa",
+            "type": "number"
+          },
+          "porcentaje": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Porcentaje"
+          },
+          "posicion": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Posicion",
+            "type": "integer"
+          },
+          "usos_activos": {
+            "minimum": 0.0,
+            "title": "Usos Activos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "posicion",
+          "porcentaje",
+          "usos_activos",
+          "confianza_activa"
+        ],
+        "title": "RegimenIvaProfileTramo",
+        "type": "object"
+      },
+      "RegimenIvaProfilesResponse": {
+        "properties": {
+          "ambiguo": {
+            "title": "Ambiguo",
+            "type": "boolean"
+          },
+          "criterio_dominancia": {
+            "$ref": "#/components/schemas/RegimenIvaDominanceCriteria"
+          },
+          "estado": {
+            "enum": [
+              "sin_historial",
+              "dominante",
+              "ambiguo"
+            ],
+            "title": "Estado",
+            "type": "string"
+          },
+          "filtros": {
+            "$ref": "#/components/schemas/RegimenIvaProfileFilters"
+          },
+          "perfiles": {
+            "items": {
+              "$ref": "#/components/schemas/RegimenIvaProfile"
+            },
+            "title": "Perfiles",
+            "type": "array"
+          },
+          "plantilla_sugerida": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegimenIvaSuggestedTemplate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "regimen_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Regimen Id",
+            "type": "integer"
+          },
+          "total_facturas": {
+            "minimum": 0.0,
+            "title": "Total Facturas",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "regimen_id",
+          "filtros",
+          "total_facturas",
+          "estado",
+          "ambiguo",
+          "criterio_dominancia"
+        ],
+        "title": "RegimenIvaProfilesResponse",
+        "type": "object"
+      },
+      "RegimenIvaSuggestedTemplate": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "criterio": {
+            "const": "perfil_historico_dominante",
+            "title": "Criterio",
+            "type": "string"
+          },
+          "porcentajes": {
+            "items": {
+              "anyOf": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Porcentajes",
+            "type": "array"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "porcentajes",
+          "usos",
+          "confianza",
+          "criterio"
+        ],
+        "title": "RegimenIvaSuggestedTemplate",
+        "type": "object"
+      },
+      "RegimenSuggestionCount": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "regimen_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Regimen Id",
+            "type": "integer"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "regimen_id",
+          "usos",
+          "confianza"
+        ],
+        "title": "RegimenSuggestionCount",
+        "type": "object"
+      },
+      "RegimenSuggestionCriteria": {
+        "properties": {
+          "circuito_erp": {
+            "enum": [
+              "GE",
+              "no_GE"
+            ],
+            "title": "Circuito Erp",
+            "type": "string"
+          },
+          "firma": {
+            "const": "tipos_iva_activos_ordenados_sin_duplicados",
+            "title": "Firma",
+            "type": "string"
+          },
+          "min_confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Min Confianza",
+            "type": "number"
+          },
+          "min_historicos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Min Historicos",
+            "type": "integer"
+          },
+          "requiere_ganador_unico": {
+            "title": "Requiere Ganador Unico",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "min_historicos",
+          "min_confianza",
+          "requiere_ganador_unico",
+          "circuito_erp",
+          "firma"
+        ],
+        "title": "RegimenSuggestionCriteria",
+        "type": "object"
+      },
+      "RegimenSuggestionFilters": {
+        "properties": {
+          "empresa_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Empresa Id",
+            "type": "integer"
+          },
+          "proveedor_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Proveedor Id",
+            "type": "integer"
+          },
+          "proveedor_tipo": {
+            "enum": [
+              "acreedor",
+              "agricultor"
+            ],
+            "title": "Proveedor Tipo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "empresa_id",
+          "proveedor_id",
+          "proveedor_tipo"
+        ],
+        "title": "RegimenSuggestionFilters",
+        "type": "object"
+      },
+      "RegimenSuggestionResponse": {
+        "properties": {
+          "criterio": {
+            "$ref": "#/components/schemas/RegimenSuggestionCriteria"
+          },
+          "estado": {
+            "enum": [
+              "sugerido",
+              "sin_firma_iva_activa",
+              "firma_iva_invalida",
+              "sin_historial_suficiente",
+              "ganador_no_unico",
+              "confianza_insuficiente"
+            ],
+            "title": "Estado",
+            "type": "string"
+          },
+          "filtros": {
+            "$ref": "#/components/schemas/RegimenSuggestionFilters"
+          },
+          "firma_iva": {
+            "items": {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            "title": "Firma Iva",
+            "type": "array"
+          },
+          "recuentos": {
+            "items": {
+              "$ref": "#/components/schemas/RegimenSuggestionCount"
+            },
+            "title": "Recuentos",
+            "type": "array"
+          },
+          "sugerencia": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegimenSuggestionValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_historicos_coincidentes": {
+            "minimum": 0.0,
+            "title": "Total Historicos Coincidentes",
+            "type": "integer"
+          },
+          "total_historicos_evaluados": {
+            "minimum": 0.0,
+            "title": "Total Historicos Evaluados",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filtros",
+          "total_historicos_evaluados",
+          "total_historicos_coincidentes",
+          "estado",
+          "criterio"
+        ],
+        "title": "RegimenSuggestionResponse",
+        "type": "object"
+      },
+      "RegimenSuggestionValue": {
+        "properties": {
+          "confianza": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Confianza",
+            "type": "number"
+          },
+          "criterio": {
+            "const": "historico_mismo_proveedor_empresa_circuito_y_firma_iva",
+            "title": "Criterio",
+            "type": "string"
+          },
+          "regimen_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Regimen Id",
+            "type": "integer"
+          },
+          "usos": {
+            "exclusiveMinimum": 0.0,
+            "title": "Usos",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "regimen_id",
+          "usos",
+          "confianza",
+          "criterio"
+        ],
+        "title": "RegimenSuggestionValue",
+        "type": "object"
+      },
+      "ValidationEnvelope": {
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "ValidationEnvelope",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "API interna de la copia de pruebas de Netagro. El contrato v3 separa validacion y commit, y liga cada referencia a un target y dataset_epoch. La contabilizacion queda bloqueada mientras no exista un mecanismo oficial.",
+    "title": "Netagro Test API",
+    "version": "0.3.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Root  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root"
+      }
+    },
+    "/acreedores": {
+      "get": {
+        "operationId": "list_acreedores_acreedores_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nombre",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nombre"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nif",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nif"
+            }
+          },
+          {
+            "in": "query",
+            "name": "codigo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Codigo"
+            }
+          },
+          {
+            "in": "query",
+            "name": "activo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Activo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Acreedores Acreedores Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Acreedores"
+      }
+    },
+    "/acreedores/{acreedor_id}": {
+      "get": {
+        "operationId": "get_acreedor_acreedores__acreedor_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "acreedor_id",
+            "required": true,
+            "schema": {
+              "title": "Acreedor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Acreedor Acreedores  Acreedor Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Acreedor"
+      }
+    },
+    "/acreedores/{acreedor_id}/gastos": {
+      "get": {
+        "operationId": "list_acreedor_gastos_acreedores__acreedor_id__gastos_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "acreedor_id",
+            "required": true,
+            "schema": {
+              "title": "Acreedor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Acreedor Gastos Acreedores  Acreedor Id  Gastos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Acreedor Gastos"
+      }
+    },
+    "/agricultores": {
+      "get": {
+        "operationId": "list_agricultores_agricultores_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nombre",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nombre"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nif",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nif"
+            }
+          },
+          {
+            "in": "query",
+            "name": "codigo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Codigo"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tipo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo"
+            }
+          },
+          {
+            "in": "query",
+            "name": "activo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Activo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agricultores Agricultores Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agricultores"
+      }
+    },
+    "/agricultores/{agricultor_id}": {
+      "get": {
+        "operationId": "get_agricultor_agricultores__agricultor_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agricultor_id",
+            "required": true,
+            "schema": {
+              "title": "Agricultor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Agricultor Agricultores  Agricultor Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agricultor"
+      }
+    },
+    "/agricultores/{agricultor_id}/gastos": {
+      "get": {
+        "operationId": "list_agricultor_gastos_agricultores__agricultor_id__gastos_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agricultor_id",
+            "required": true,
+            "schema": {
+              "title": "Agricultor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agricultor Gastos Agricultores  Agricultor Id  Gastos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agricultor Gastos"
+      }
+    },
+    "/albaranes-gastos/punteables": {
+      "get": {
+        "operationId": "list_albaranes_gastos_punteables_albaranes_gastos_punteables_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_table",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "albsalida_gastos",
+                    "albentrada_hisgastos",
+                    "albaranescompra_gastos",
+                    "facturas_gastos",
+                    "albarancoste",
+                    "albmaterial"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Table"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Proveedor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "empresa_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Empresa Id"
+            }
+          },
+          {
+            "description": "Referencia documental exacta devuelta en el campo Ref.",
+            "in": "query",
+            "name": "referencia",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Referencia documental exacta devuelta en el campo Ref.",
+              "title": "Referencia"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_desde",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Desde"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_hasta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Hasta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "solo_pendientes",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Solo Pendientes",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Albaranes Gastos Punteables Albaranes Gastos Punteables Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Albaranes Gastos Punteables"
+      }
+    },
+    "/albaranes/entrada": {
+      "get": {
+        "operationId": "list_albaranes_entrada_albaranes_entrada_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_desde",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Desde"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_hasta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Hasta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agricultor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agricultor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "serie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Serie"
+            }
+          },
+          {
+            "in": "query",
+            "name": "numero",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Numero"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Albaranes Entrada Albaranes Entrada Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Albaranes Entrada"
+      }
+    },
+    "/albaranes/entrada/{albaran_id}": {
+      "get": {
+        "operationId": "get_albaran_entrada_albaranes_entrada__albaran_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "albaran_id",
+            "required": true,
+            "schema": {
+              "title": "Albaran Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Albaran Entrada Albaranes Entrada  Albaran Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Albaran Entrada"
+      }
+    },
+    "/albaranes/entrada/{albaran_id}/lineas": {
+      "get": {
+        "operationId": "get_albaran_entrada_lineas_albaranes_entrada__albaran_id__lineas_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "albaran_id",
+            "required": true,
+            "schema": {
+              "title": "Albaran Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Albaran Entrada Lineas Albaranes Entrada  Albaran Id  Lineas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Albaran Entrada Lineas"
+      }
+    },
+    "/albaranes/material/{material_id}/lineas": {
+      "get": {
+        "operationId": "get_albaran_material_lineas_albaranes_material__material_id__lineas_get",
+        "parameters": [
+          {
+            "description": "Identificador tecnico AMA_idalb del albaran de material.",
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "description": "Identificador tecnico AMA_idalb del albaran de material.",
+              "exclusiveMinimum": 0,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Albaran Material Lineas Albaranes Material  Material Id  Lineas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Albaran Material Lineas"
+      }
+    },
+    "/albaranes/salida": {
+      "get": {
+        "operationId": "list_albaranes_salida_albaranes_salida_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_desde",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Desde"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_hasta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Hasta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cliente_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cliente Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "factura_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Factura Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "serie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Serie"
+            }
+          },
+          {
+            "in": "query",
+            "name": "numero",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Numero"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Albaranes Salida Albaranes Salida Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Albaranes Salida"
+      }
+    },
+    "/albaranes/salida/{albaran_id}": {
+      "get": {
+        "operationId": "get_albaran_salida_albaranes_salida__albaran_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "albaran_id",
+            "required": true,
+            "schema": {
+              "title": "Albaran Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Albaran Salida Albaranes Salida  Albaran Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Albaran Salida"
+      }
+    },
+    "/albaranes/salida/{albaran_id}/lineas": {
+      "get": {
+        "operationId": "get_albaran_salida_lineas_albaranes_salida__albaran_id__lineas_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "albaran_id",
+            "required": true,
+            "schema": {
+              "title": "Albaran Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Albaran Salida Lineas Albaranes Salida  Albaran Id  Lineas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Albaran Salida Lineas"
+      }
+    },
+    "/bancos": {
+      "get": {
+        "operationId": "list_bancos_bancos_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bancos Bancos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Bancos"
+      }
+    },
+    "/clientes": {
+      "get": {
+        "operationId": "list_clientes_clientes_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nombre",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nombre"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nif",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nif"
+            }
+          },
+          {
+            "in": "query",
+            "name": "codigo_edi",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Codigo Edi"
+            }
+          },
+          {
+            "in": "query",
+            "name": "activo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Activo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Clientes Clientes Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Clientes"
+      }
+    },
+    "/clientes/{cliente_id}": {
+      "get": {
+        "operationId": "get_cliente_clientes__cliente_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cliente_id",
+            "required": true,
+            "schema": {
+              "title": "Cliente Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Cliente Clientes  Cliente Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Cliente"
+      }
+    },
+    "/conceptos-factura": {
+      "get": {
+        "operationId": "list_conceptos_factura_conceptos_factura_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Conceptos Factura Conceptos Factura Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Conceptos Factura"
+      }
+    },
+    "/cuentas-contables": {
+      "get": {
+        "operationId": "list_cuentas_contables_cuentas_contables_get",
+        "parameters": [
+          {
+            "description": "Empresa Netagro usada para derivar el esquema contable.",
+            "in": "query",
+            "name": "empresa_id",
+            "required": true,
+            "schema": {
+              "description": "Empresa Netagro usada para derivar el esquema contable.",
+              "exclusiveMinimum": 0,
+              "title": "Empresa Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuenta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuenta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nif",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Nif"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Cuentas Contables Cuentas Contables Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Cuentas Contables"
+      }
+    },
+    "/empresas": {
+      "get": {
+        "operationId": "list_empresas_empresas_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Empresas Empresas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Empresas"
+      }
+    },
+    "/empresas/{empresa_id}": {
+      "get": {
+        "operationId": "get_empresa_empresas__empresa_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "empresa_id",
+            "required": true,
+            "schema": {
+              "title": "Empresa Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Empresa Empresas  Empresa Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Empresa"
+      }
+    },
+    "/facturas": {
+      "get": {
+        "operationId": "list_facturas_facturas_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_desde",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Desde"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_hasta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Hasta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cliente_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cliente Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "serie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Serie"
+            }
+          },
+          {
+            "in": "query",
+            "name": "numero",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Numero"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Facturas Facturas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Facturas"
+      }
+    },
+    "/facturas-agricultores": {
+      "get": {
+        "operationId": "list_facturas_agricultores_facturas_agricultores_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_desde",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Desde"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_hasta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Hasta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agricultor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agricultor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "serie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Serie"
+            }
+          },
+          {
+            "in": "query",
+            "name": "numero",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Numero"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Facturas Agricultores Facturas Agricultores Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Facturas Agricultores"
+      }
+    },
+    "/facturas/{factura_id}": {
+      "get": {
+        "operationId": "get_factura_facturas__factura_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Facturas  Factura Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura"
+      }
+    },
+    "/facturas/{factura_id}/albaranes": {
+      "get": {
+        "operationId": "get_factura_albaranes_facturas__factura_id__albaranes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Albaranes Facturas  Factura Id  Albaranes Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Albaranes"
+      }
+    },
+    "/facturas/{factura_id}/gastos": {
+      "get": {
+        "operationId": "get_factura_gastos_facturas__factura_id__gastos_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Gastos Facturas  Factura Id  Gastos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Gastos"
+      }
+    },
+    "/facturas/{factura_id}/lineas": {
+      "get": {
+        "operationId": "get_factura_lineas_facturas__factura_id__lineas_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Lineas Facturas  Factura Id  Lineas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Lineas"
+      }
+    },
+    "/facturasrecibidas": {
+      "get": {
+        "operationId": "list_facturas_recibidas_facturasrecibidas_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_desde",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Desde"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_hasta",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Hasta"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Proveedor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_nif",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Proveedor Nif"
+            }
+          },
+          {
+            "in": "query",
+            "name": "numero_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Numero Factura"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ejercicio",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ejercicio"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tipo_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo Factura"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Facturas Recibidas Facturasrecibidas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Facturas Recibidas"
+      },
+      "post": {
+        "operationId": "create_factura_recibida_facturasrecibidas_post",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "description": "Compatibilidad exclusiva con validaciones v1/v2. En v3 se usa operation.",
+            "in": "query",
+            "name": "dry_run",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Compatibilidad exclusiva con validaciones v1/v2. En v3 se usa operation.",
+              "title": "Dry Run"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Netagro-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Netagro-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FacturaRecibidaCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FacturaRecibidaWriteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          }
+        },
+        "summary": "Create Factura Recibida"
+      }
+    },
+    "/facturasrecibidas/buscar": {
+      "get": {
+        "operationId": "buscar_factura_recibida_existente_facturasrecibidas_buscar_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "empresa_id",
+            "required": true,
+            "schema": {
+              "title": "Empresa Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": true,
+            "schema": {
+              "title": "Proveedor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "numero_factura",
+            "required": true,
+            "schema": {
+              "title": "Numero Factura",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ejercicio",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ejercicio"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fecha_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fecha Factura"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tipo_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo Factura"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Buscar Factura Recibida Existente Facturasrecibidas Buscar Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Buscar Factura Recibida Existente"
+      }
+    },
+    "/facturasrecibidas/regimen-sugerido": {
+      "get": {
+        "description": "Suggest a regime only from strongly consistent, circuit-safe history.\n\nThe endpoint is read-only. It never maps an IVA percentage directly to a\nregime and never mixes equal numeric provider ids from the two ERP masters.",
+        "operationId": "get_factura_recibida_regimen_sugerido_facturasrecibidas_regimen_sugerido_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": true,
+            "schema": {
+              "exclusiveMinimum": 0,
+              "title": "Proveedor Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_tipo",
+            "required": true,
+            "schema": {
+              "enum": [
+                "acreedor",
+                "agricultor"
+              ],
+              "title": "Proveedor Tipo",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "empresa_id",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "exclusiveMinimum": 0,
+              "title": "Empresa Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva3",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva3"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva4",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva4"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iva5",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iva5"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base3",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base3"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base4",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base4"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base5",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base5"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota3",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota3"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota4",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota4"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuota5",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cuota5"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegimenSuggestionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Recibida Regimen Sugerido"
+      }
+    },
+    "/facturasrecibidas/tipos": {
+      "get": {
+        "operationId": "list_facturas_recibidas_tipos_facturasrecibidas_tipos_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Facturas Recibidas Tipos Facturasrecibidas Tipos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Facturas Recibidas Tipos"
+      }
+    },
+    "/facturasrecibidas/{factura_id}": {
+      "get": {
+        "operationId": "get_factura_recibida_facturasrecibidas__factura_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Recibida Facturasrecibidas  Factura Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Recibida"
+      }
+    },
+    "/facturasrecibidas/{factura_id}/asiento": {
+      "get": {
+        "operationId": "get_factura_recibida_asiento_facturasrecibidas__factura_id__asiento_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FacturaRecibidaAsientoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Recibida Asiento"
+      }
+    },
+    "/facturasrecibidas/{factura_id}/contabilizar": {
+      "post": {
+        "operationId": "contabilizar_factura_recibida_facturasrecibidas__factura_id__contabilizar_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "exclusiveMinimum": 0,
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Netagro-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Netagro-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FacturaRecibidaAccountingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          }
+        },
+        "summary": "Contabilizar Factura Recibida"
+      }
+    },
+    "/facturasrecibidas/{factura_id}/ctb": {
+      "get": {
+        "operationId": "get_factura_recibida_ctb_facturasrecibidas__factura_id__ctb_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Recibida Ctb Facturasrecibidas  Factura Id  Ctb Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Recibida Ctb"
+      }
+    },
+    "/facturasrecibidas/{factura_id}/punteos": {
+      "get": {
+        "operationId": "get_factura_recibida_punteos_facturasrecibidas__factura_id__punteos_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_lines",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Lines",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Factura Recibida Punteos Facturasrecibidas  Factura Id  Punteos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Factura Recibida Punteos"
+      }
+    },
+    "/facturasrecibidas_ctb": {
+      "get": {
+        "operationId": "list_facturas_recibidas_ctb_facturasrecibidas_ctb_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "factura_id",
+            "required": true,
+            "schema": {
+              "title": "Factura Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Facturas Recibidas Ctb Facturasrecibidas Ctb Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Facturas Recibidas Ctb"
+      }
+    },
+    "/formas-pago": {
+      "get": {
+        "operationId": "list_formas_pago_formas_pago_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Formas Pago Formas Pago Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Formas Pago"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/meta/runtime": {
+      "get": {
+        "operationId": "meta_runtime_meta_runtime_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Netagro-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Netagro-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Meta Runtime Meta Runtime Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ERPErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error ERP estructurado"
+          }
+        },
+        "summary": "Meta Runtime"
+      }
+    },
+    "/meta/tables": {
+      "get": {
+        "operationId": "meta_tables_meta_tables_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 2,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Optional accounting schema to inspect: contabilidad, contabilidad_10, contabilidad_11, contabilidad_12, contabilidad_13, contabilidad_14, contabilidad_15, contabilidad_2, contabilidad_6, contabilidad_7, contabilidad_99",
+            "in": "query",
+            "name": "account_schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional accounting schema to inspect: contabilidad, contabilidad_10, contabilidad_11, contabilidad_12, contabilidad_13, contabilidad_14, contabilidad_15, contabilidad_2, contabilidad_6, contabilidad_7, contabilidad_99",
+              "title": "Account Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Meta Tables Meta Tables Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Meta Tables"
+      }
+    },
+    "/regimenes": {
+      "get": {
+        "operationId": "list_regimenes_facturas_recibidas_regimenes_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Regimenes Facturas Recibidas Regimenes Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Regimenes Facturas Recibidas"
+      }
+    },
+    "/regimenes/{regimen_id}/perfiles-iva": {
+      "get": {
+        "operationId": "get_regimen_iva_profiles_regimenes__regimen_id__perfiles_iva_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "regimen_id",
+            "required": true,
+            "schema": {
+              "exclusiveMinimum": 0,
+              "title": "Regimen Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proveedor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Proveedor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tipo_factura",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo Factura"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegimenIvaProfilesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Regimen Iva Profiles"
+      }
+    },
+    "/series-factura": {
+      "get": {
+        "operationId": "list_series_factura_series_factura_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Series Factura Series Factura Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Series Factura"
+      }
+    },
+    "/tipos-iva": {
+      "get": {
+        "operationId": "list_tipos_iva_tipos_iva_get",
+        "parameters": [
+          {
+            "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Allowed schema: netagrocomer, netagrocomer_2 or netagrocomer_au",
+              "title": "Schema"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Tipos Iva Tipos Iva Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tipos Iva"
+      }
+    }
+  }
+}

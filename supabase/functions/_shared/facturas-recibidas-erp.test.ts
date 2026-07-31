@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@1";
 import {
+  applyCampojoymaLegacyERPReadScope,
   ERPAttemptMatchesIdentity,
   ERPWriterRelationsMatchSnapshot,
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
@@ -1641,6 +1642,39 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "albaranes/material/23210/lineas/extra",
   ];
   for (const consulta of denied) assert(!isAllowedERPConsulta(consulta), consulta);
+});
+
+Deno.test("compatibilidad Campojoyma completa solo empresa 1 en cuentas legacy", () => {
+  assertEquals(
+    applyCampojoymaLegacyERPReadScope("cuentas-contables?limit=100"),
+    "cuentas-contables?limit=100&empresa_id=1",
+  );
+  assertEquals(
+    applyCampojoymaLegacyERPReadScope("cuentas-contables"),
+    "cuentas-contables?empresa_id=1",
+  );
+  assertEquals(
+    applyCampojoymaLegacyERPReadScope(
+      "cuentas-contables?empresa_id=2&limit=100",
+    ),
+    "cuentas-contables?empresa_id=2&limit=100",
+  );
+  assertEquals(
+    applyCampojoymaLegacyERPReadScope(
+      "cuentas-contables?empresa_id=&limit=100",
+    ),
+    "cuentas-contables?empresa_id=&limit=100",
+  );
+  assertEquals(
+    applyCampojoymaLegacyERPReadScope("acreedores?limit=100"),
+    "acreedores?limit=100",
+  );
+  assertEquals(
+    applyCampojoymaLegacyERPReadScope(
+      "https://attacker.invalid/cuentas-contables?limit=100",
+    ),
+    "https://attacker.invalid/cuentas-contables?limit=100",
+  );
 });
 
 Deno.test("reconciliacion rechaza target, epoch, circuito, hash o huella cruzados", () => {

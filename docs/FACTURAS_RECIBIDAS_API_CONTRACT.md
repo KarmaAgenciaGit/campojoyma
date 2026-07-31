@@ -1,6 +1,9 @@
-# Contrato canónico API v2 de facturas recibidas
+# Contratos canónicos de facturas recibidas
 
-Versión del contrato: `2`.
+Versiones vigentes:
+
+- extracción e ingestión: `contract_version=2`;
+- validación y alta de gestión ERP: `contract_version=3`.
 
 Esta especificación define el intercambio entre frontend, Supabase/Edge Functions,
 n8n y la FastAPI de la copia de Netagro. Su objetivo es conservar la factura sin
@@ -9,15 +12,20 @@ verificarse en el diario oficial.
 
 Referencias:
 
-- [OpenAPI FastAPI v0.2.4](openapi/netagro-test-api-v0.2.0.json)
-- [Runbook de homologación y despliegue](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
+- [OpenAPI FastAPI v0.3.1](openapi/netagro-test-api-v0.3.1.json)
+- [OpenAPI FastAPI v0.3.0 histórico](openapi/netagro-test-api-v0.3.0.json)
+- [Plan maestro vigente](PLAN_MAESTRO_FACTURAS_RECIBIDAS_2026-07-30.md)
+- [Acta de despliegue v3](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md)
+- [Runbook v2 histórico](FACTURAS_RECIBIDAS_API_V2_STAGING.md)
+- [OpenAPI v0.2.4 histórico](openapi/netagro-test-api-v0.2.0.json)
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
 - [Agente de extracción v4 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
 
-El nombre del fichero OpenAPI se conserva por compatibilidad, pero su contenido
-corresponde a la API v0.2.4. La resolución canónica del proveedor, la lectura de
+El OpenAPI v0.3.1 es la fuente verificable del runtime actual. Los ficheros
+v0.3.0 y v0.2.0, junto con el runbook v2, se conservan como evidencia histórica
+y no deben usarse para activar escrituras. La resolución canónica del proveedor, la lectura de
 albaranes GE y la búsqueda exacta de facturas sin conocer previamente el
-ejercicio forman parte del contrato vigente.
+ejercicio continúan formando parte del contrato vigente.
 
 ## Principios del modelo
 

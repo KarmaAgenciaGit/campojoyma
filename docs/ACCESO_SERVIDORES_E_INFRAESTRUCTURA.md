@@ -1,6 +1,6 @@
 # Acceso a servidores e infraestructura de Campojoyma
 
-Última comprobación: **2026-07-28**.
+Última comprobación: **2026-07-31**.
 
 Este documento es la referencia operativa para localizar cada servicio, acceder a
 los servidores y evitar confundir el VPS de integración con el equipo que aloja la
@@ -43,6 +43,7 @@ salto desde allí.
 | Capa | Host o identificador | Acceso | Función |
 |---|---|---|---|
 | Frontend público | `217.154.101.108` | No confirmado con la clave Hostinger disponible | Publicación web; no confundir con el VPS de integración. |
+| Gateway HTTPS Netagro | `netagro-api-v2.srv894901.hstgr.cloud` | HTTPS con secreto fuera de Git | Entrada autenticada de Edge hacia FastAPI; no contiene lógica de negocio. |
 | Supabase | `CAMPOJOYMA` (`adbprpemmbspntbttziz`) | Conector Supabase o Dashboard | Backend de trabajo, Auth, Storage y Edge Functions. |
 | VPS de integración | `82.25.119.150` / `srv894901` | `root`, SSH 22 | n8n, PostgreSQL, documentación y túneles hacia `karma-box`. |
 | Servidor de pruebas | `88.30.71.235:2222` / `karma-box` | `karma`, preferiblemente desde el VPS | FastAPI y copia MariaDB de pruebas. |
@@ -140,22 +141,28 @@ repositorio y no debe descargarse salvo una decisión operativa explícita.
 n8n dentro de Docker
   -> http://172.19.0.1:18000
   -> túnel netagro-api-tunnel.service en el VPS
-  -> karma-box 127.0.0.1:8000
-  -> FastAPI v1
+  -> karma-box 127.0.0.1:8002
+  -> FastAPI v1 de solo lectura; writer retirado con HTTP 410
   -> MariaDB de pruebas
 
 n8n/VPS
   -> http://172.19.0.1:18001 o http://127.0.0.1:18001
   -> túnel netagro-api-v2-tunnel.service en el VPS
   -> karma-box 127.0.0.1:8001
-  -> FastAPI v2
+  -> FastAPI 0.3.1, contrato de escritura v3
   -> MariaDB de pruebas + almacén externo de idempotencia
+
+Supabase Edge
+  -> https://netagro-api-v2.srv894901.hstgr.cloud
+  -> Traefik + contenedor netagro-api-gateway en el VPS
+  -> http://172.19.0.1:18001
+  -> FastAPI 0.3.1 en karma-box
 ```
 
-| API | VPS | `karma-box` | Estado comprobado el 2026-07-28 |
+| API | VPS | `karma-box` | Estado comprobado el 2026-07-31 |
 |---|---|---|---|
-| v1 | `127.0.0.1:18000` y `172.19.0.1:18000` | `127.0.0.1:8000` | Sana; `netagro-api.service` activo. |
-| v2 | `127.0.0.1:18001` y `172.19.0.1:18001` | `127.0.0.1:8001` | Sana; writes desactivados e idempotencia preparada. |
+| v1 lectura | `127.0.0.1:18000` y `172.19.0.1:18000` | `127.0.0.1:8002` | `netagro-api-v1-reader.service` sano; 40 GET conservados y POST retirado con `410 writer_disabled`. |
+| v2/v3 | `127.0.0.1:18001` y `172.19.0.1:18001` | `127.0.0.1:8001` | FastAPI 0.3.1 sana; escrituras desactivadas, contabilidad no disponible e idempotencia no preparada (`schema_version=NULL`). |
 
 Comprobaciones desde el VPS:
 
@@ -169,8 +176,10 @@ curl -fsS http://127.0.0.1:18001/health
 Comprobaciones desde `karma-box`:
 
 ```bash
-systemctl is-active netagro-api.service
-ss -lntp | grep -E ':8000|:8001'
+systemctl --user is-active netagro-api-v2.service
+systemctl --user status netagro-api-v2.service --no-pager
+systemctl --user is-active netagro-api-v1-reader.service
+ss -lntp | grep -E ':8000|:8001|:8002'
 ps -eo pid,lstart,cmd | grep -E '[u]vicorn|[f]astapi-netagro'
 ```
 
@@ -178,13 +187,80 @@ Rutas desplegadas comprobadas:
 
 ```text
 /home/karma/fastapi-netagro
+/home/karma/releases/api-campojoyma-v01-readeronly-20260731T092612Z
 /home/karma/fastapi-netagro-v02-20260720
+/home/karma/releases/api-campojoyma-current
+/home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd
+```
+
+El servicio de sistema histórico continúa en `127.0.0.1:8000`, sin exposición
+desde el VPS. Sus credenciales `DB_WRITE_*` se retiraron, conserva
+`DB_WRITES_ENABLED=false` y las fuentes en disco ya contienen el writer
+neutralizado. Su proceso actual no debe volver a exponerse; el reinicio o
+retirada definitiva requiere un operador con privilegios en `karma-box`. La
+clave del túnel solo admite ahora `permitopen` hacia `8001` y `8002`.
+
+La release `0.3.1` se activa mediante el symlink estable:
+
+```text
+/home/karma/releases/api-campojoyma-current
+  -> /home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd
+```
+
+La unidad consume el entorno externo
+`/home/karma/.config/netagro-api-v2/runtime.env`; el antiguo drop-in
+`20-v030.conf` ya no forma parte de la configuración activa.
+
+Backup reversible previo y rollback inmediato:
+
+```text
+/home/karma/backups/api-campojoyma/service-layout-pre-v031-20260731T101112Z
+/home/karma/releases/api-campojoyma-v0.3.0-20260731T103855-1c9a343c6fb2
 ```
 
 La fuente de trabajo prevista de FastAPI es el repositorio local
 `KarmaAgenciaGit/api-campojoyma`. Si contiene cambios sin commit o push, su
 working tree es la autoridad concreta; este repositorio conserva contrato,
 OpenAPI, workflows y una copia sincronizada del parche.
+
+## Gateway HTTPS de la API
+
+El gateway desplegado está en:
+
+```text
+/root/netagro-api-gateway
+```
+
+Comprobaciones desde el VPS:
+
+```bash
+cd /root/netagro-api-gateway
+docker compose --env-file .env ps
+curl -fsS https://netagro-api-v2.srv894901.hstgr.cloud/gateway-health
+```
+
+El contenedor esperado es `netagro-api-gateway` con imagen
+`nginx:1.28.3-alpine`. `/gateway-health` solo acredita el proxy; la comprobación
+completa requiere consultar `/meta/runtime` con la cabecera autenticada sin
+imprimir su valor.
+
+## Bloqueo del frontend público
+
+El DNS de `campojoyma.multiplicaxfuego.com` apunta a `217.154.101.108`. Ese host
+no es el VPS de integración y tampoco es `karma-box`.
+
+Comprobación del 31/07:
+
+- la clave Hostinger disponible es rechazada por `217.154.101.108`;
+- la cuenta Hostinger visible solo contiene `82.25.119.113` y
+  `82.25.119.150`;
+- `gestionvps.multiplicaxfuego.com` exige una clave de entrada propia;
+- producción sirve `index-BMzeM2s7.js`, mientras el build local probado sirve
+  `index-BN9BAZcy.js`.
+
+Esto bloquea únicamente la publicación del frontend. No indica una caída de
+FastAPI, del gateway o de MariaDB. El build nuevo está disponible y probado en
+`http://localhost:8080`.
 
 ## MariaDB de pruebas
 

@@ -277,6 +277,7 @@ test("n8n queda limitado a extracción; lectura y escritura ERP llaman FastAPI",
   );
   assert.match(send, /callNetagroWriteV3/);
   assert.match(read, /callNetagroRead/);
+  assert.match(read, /applyCampojoymaLegacyERPReadScope\(consulta\)/);
   assert.doesNotMatch(send, /missing_configuration/);
   assert.doesNotMatch(read, /jsonResponse\(\{\s*error:\s*message\s*\}/);
 });

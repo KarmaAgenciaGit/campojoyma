@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
+  applyCampojoymaLegacyERPReadScope,
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   corsHeaders,
   getERPReadAuthorizedRoutes,
@@ -101,7 +102,8 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { response: upstream, payload } = await callNetagroRead(consulta);
+    const scopedConsulta = applyCampojoymaLegacyERPReadScope(consulta);
+    const { response: upstream, payload } = await callNetagroRead(scopedConsulta);
     const result = upstreamResult(upstream, payload);
     const responseStatus = upstream.ok && !result.ok ? 502 : upstream.status;
     if (!result.ok) {
