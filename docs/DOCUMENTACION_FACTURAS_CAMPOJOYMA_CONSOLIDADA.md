@@ -19,8 +19,8 @@ La referencia canónica del contrato de escritura es
 estado de homologación y los límites de la API se documentan en
 [FACTURAS_RECIBIDAS_API_V2_STAGING.md](FACTURAS_RECIBIDAS_API_V2_STAGING.md);
 el OpenAPI verificable actual está en
-[openapi/netagro-test-api-v0.3.1.json](openapi/netagro-test-api-v0.3.1.json).
-El OpenAPI v0.2.4 se conserva como evidencia histórica. La ampliación de líneas
+[openapi/netagro-test-api-v0.3.2.json](openapi/netagro-test-api-v0.3.2.json).
+Los OpenAPI v0.3.1 y v0.2.4 se conservan como evidencia histórica. La ampliación de líneas
 de albarán de entrada se
 verificó contra el caso real `25 / A26 / 8436` y la de material contra
 `AMA_idalb=23210` el 28/07/2026.

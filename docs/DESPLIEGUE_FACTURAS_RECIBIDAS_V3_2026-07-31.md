@@ -14,7 +14,7 @@ Frontend local actualizado
   -> Supabase
   -> Edge Functions
   -> HTTPS autenticado
-  -> FastAPI 0.3.1
+  -> FastAPI 0.3.2
   -> MariaDB TEST en solo lectura
 ```
 
@@ -26,24 +26,36 @@ contable.
 
 - Repositorio: `KarmaAgenciaGit/api-campojoyma`.
 - Commit funcional:
-  `ba96ba9ee34bd16840e5494585b8ffa107c2897a`.
+  `060484b`.
 - Commit de release:
-  `95547bde4edd5dffcbffe3eb06e8906b893a1a43`.
-- Versión FastAPI: `0.3.1`.
+  `29effcccaccf`.
+- Versión FastAPI: `0.3.2`.
 - Contrato de escritura: `3`.
 - Artefacto:
-  `api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd.tar.gz`.
+  `api-campojoyma-v0.3.2-20260731T105738Z-29effcccaccf.tar.gz`.
 - SHA-256 del artefacto:
-  `f830d58194de0a13653c3186b03c51c470720a81a091a3f666e99c7e990298d6`.
+  `d8d1c52cbb2bb0e0f4be282e5fb5300ac7848e59695f82ada7db5d7f44da687b`.
 - OpenAPI sincronizado:
-  [`openapi/netagro-test-api-v0.3.1.json`](openapi/netagro-test-api-v0.3.1.json).
+  [`openapi/netagro-test-api-v0.3.2.json`](openapi/netagro-test-api-v0.3.2.json).
 - SHA-256 del OpenAPI:
-  `e48bf0bfd6c2359a6d19a1fc7de1918b1476540f4532647f582545228ce2f61a`.
+  `832a75d72c6ae029f6c3453d39e00bf0a59b2111cdb9bbc8c6a01aabd089bb3d`.
 
 El paquete se verificó en un entorno virtual limpio antes de activarlo: 196
-pruebas correctas, `pip check`, `compileall` y OpenAPI 0.3.1 con 46 rutas y
-47 operaciones. El JSON vivo y el candidato tienen el mismo SHA-256 canónico:
-`99e5cf01bb23fdc40d9755fb76626f4e3b4598eec9ab893d82fa98887f57527b`.
+pruebas correctas y OpenAPI 0.3.2 con 46 rutas y 47 operaciones. La copia
+versionada en este repositorio y el candidato del repositorio API son
+idénticos byte a byte y comparten el SHA-256 indicado arriba.
+
+### Release anterior 0.3.1
+
+La versión `0.3.1` se conserva como rollback inmediato y evidencia histórica:
+commit funcional `ba96ba9ee34bd16840e5494585b8ffa107c2897a`, commit de release
+`95547bde4edd5dffcbffe3eb06e8906b893a1a43`, artefacto
+`api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd.tar.gz` con SHA-256
+`f830d58194de0a13653c3186b03c51c470720a81a091a3f666e99c7e990298d6` y
+[OpenAPI v0.3.1](openapi/netagro-test-api-v0.3.1.json) con SHA-256
+`e48bf0bfd6c2359a6d19a1fc7de1918b1476540f4532647f582545228ce2f61a`.
+Su comparación canónica entre JSON vivo y candidato quedó registrada con
+SHA-256 `99e5cf01bb23fdc40d9755fb76626f4e3b4598eec9ab893d82fa98887f57527b`.
 
 ## FastAPI en `karma-box`
 
@@ -51,7 +63,7 @@ pruebas correctas, `pip check`, `compileall` y OpenAPI 0.3.1 con 46 rutas y
 - Ruta estable:
   `/home/karma/releases/api-campojoyma-current/staging/v0.2.0`.
 - Release activa:
-  `/home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd`.
+  `/home/karma/releases/api-campojoyma-v0.3.2-20260731T105738Z-29effcccaccf`.
 - Entorno externo:
   `/home/karma/.config/netagro-api-v2/runtime.env`, modo `0600`.
 - Lock compartido por cron y despliegues:
@@ -59,7 +71,7 @@ pruebas correctas, `pip check`, `compileall` y OpenAPI 0.3.1 con 46 rutas y
 - Backup previo de la disposición del servicio:
   `/home/karma/backups/api-campojoyma/service-layout-pre-v031-20260731T101112Z`.
 - Rollback inmediato:
-  `/home/karma/releases/api-campojoyma-v0.3.0-20260731T103855-1c9a343c6fb2`.
+  `/home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd`.
 
 La unidad dejó de depender del antiguo drop-in `20-v030.conf` y ahora usa el
 symlink estable y un único entorno externo. La activación no alteró ni migró el
@@ -88,6 +100,15 @@ Estado leído de `/meta/runtime`:
 Las credenciales heredadas de escritura se retiraron del entorno de esta
 release. El lector superó el gate real de grants y la empresa 1 se resuelve de
 forma explícita al esquema contable autorizado. No se ejecutó DDL en Netagro.
+
+### Búsqueda de cuentas contables en 0.3.2
+
+`GET /cuentas-contables` separa desde 0.3.2 las búsquedas de catálogo de las
+búsquedas de tercero: `q` solo compara número de cuenta y descripción; el NIF
+solo se consulta mediante el parámetro explícito `nif`. En el smoke de la
+release, `cuenta=603` devolvió `total=0`, `q=603` devolvió 10 resultados y no
+incluyó a CANALEX. Así se evita que un NIF que contenga el texto buscado
+contamine el combobox de cuentas.
 
 ## Writer histórico v0.1 retirado del camino operativo
 
@@ -131,7 +152,7 @@ Se comprobó:
 - certificado TLS confiable;
 - `/gateway-health` con respuesta `200`;
 - ausencia o error de credencial con respuesta `401`;
-- credencial correcta alcanzando FastAPI 0.3.1;
+- credencial correcta alcanzando FastAPI 0.3.2;
 - `/meta/runtime` conservando escrituras y contabilidad apagadas.
 
 El valor del secreto no se registra en Git ni en esta documentación.
@@ -170,10 +191,10 @@ El frontend actualizado quedó construido y servido en
 
 - contenedor: `campojoyma`;
 - imagen:
-  `sha256:eafc1442a2de36638b49df541a7f326dacf7180e4a5da4e8a230dc75996b39b0`;
-- bundle JavaScript: `index-BN9BAZcy.js`;
+  `sha256:9c8ba700250c54724220548bd4f59e20ffb9a49b19a4ed1e615fbfb3cfffd305`;
+- bundle JavaScript: `index-BzUrwCU_.js`;
 - TypeScript correcto;
-- 135/135 pruebas Vitest correctas;
+- 138/138 pruebas Vitest correctas;
 - build de producción correcto.
 
 En una sesión autenticada se comprobó:
@@ -197,7 +218,7 @@ anterior:
 
 - DNS: `217.154.101.108`;
 - bundle publicado: `index-BMzeM2s7.js`;
-- bundle local nuevo: `index-BN9BAZcy.js`.
+- bundle local nuevo: `index-BzUrwCU_.js`.
 
 La compatibilidad Edge v19 elimina el error de catálogo del frontend antiguo,
 pero no convierte ese bundle en la interfaz v3. La factura de prueba sigue
@@ -218,14 +239,17 @@ de acceso autorizado al host del dominio.
 
 ## Gates superados
 
-- API: 196 pruebas, OpenAPI 0.3.1 y smoke real de lectura.
+- API: 196 pruebas, OpenAPI 0.3.2 con 46 rutas/47 operaciones y smoke real de
+  lectura.
 - Edge: 98 pruebas Deno, 19 pruebas estáticas y descarga posterior de v19
   idéntica a las tres fuentes locales desplegadas.
-- Frontend: TypeScript, 135 pruebas y build correctos.
+- Frontend: TypeScript, 138 pruebas y build correctos.
 - Gateway: TLS, health, rechazo sin credencial y lectura autenticada.
 - Producción histórica: el catálogo contable vuelve a cargar sin el 422
   observado antes de Edge v19; FastAPI registró
   `GET /cuentas-contables?limit=100&empresa_id=1` con `200`.
+- Catálogo 0.3.2: `cuenta=603` devolvió `total=0`; `q=603` devolvió 10
+  resultados sin CANALEX.
 
 No se ejecutó `verify:facturas-api` con el `.env` local porque no contiene las
 dos variables privadas del gateway. La misma ruta se verificó directamente
@@ -271,7 +295,8 @@ solo.
 
 4. En `karma-box`, bajo el lock de mantenimiento y con escrituras confirmadas
    como apagadas, cambiar atómicamente
-   `/home/karma/releases/api-campojoyma-current` al release de rollback y
+   `/home/karma/releases/api-campojoyma-current` al rollback
+   `/home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd` y
    reiniciar `netagro-api-v2.service`.
 5. Verificar `/health`, la versión restaurada y escrituras apagadas.
 

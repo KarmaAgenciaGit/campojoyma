@@ -1,6 +1,6 @@
 ﻿# Facturas recibidas API v2 — homologación en pruebas
 
-> **Documento histórico.** El runtime vigente es FastAPI 0.3.1 con contrato de
+> **Documento histórico.** El runtime vigente es FastAPI 0.3.2 con contrato de
 > escritura v3. Consulte el
 > [plan maestro](PLAN_MAESTRO_FACTURAS_RECIBIDAS_2026-07-30.md) y el
 > [acta de despliegue del 31/07](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md).

@@ -12,7 +12,8 @@ verificarse en el diario oficial.
 
 Referencias:
 
-- [OpenAPI FastAPI v0.3.1](openapi/netagro-test-api-v0.3.1.json)
+- [OpenAPI FastAPI v0.3.2](openapi/netagro-test-api-v0.3.2.json)
+- [OpenAPI FastAPI v0.3.1 histórico y rollback](openapi/netagro-test-api-v0.3.1.json)
 - [OpenAPI FastAPI v0.3.0 histórico](openapi/netagro-test-api-v0.3.0.json)
 - [Plan maestro vigente](PLAN_MAESTRO_FACTURAS_RECIBIDAS_2026-07-30.md)
 - [Acta de despliegue v3](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md)
@@ -21,8 +22,8 @@ Referencias:
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
 - [Agente de extracción v4 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
 
-El OpenAPI v0.3.1 es la fuente verificable del runtime actual. Los ficheros
-v0.3.0 y v0.2.0, junto con el runbook v2, se conservan como evidencia histórica
+El OpenAPI v0.3.2 es la fuente verificable del runtime actual. Los ficheros
+v0.3.1, v0.3.0 y v0.2.0, junto con el runbook v2, se conservan como evidencia histórica
 y no deben usarse para activar escrituras. La resolución canónica del proveedor, la lectura de
 albaranes GE y la búsqueda exacta de facturas sin conocer previamente el
 ejercicio continúan formando parte del contrato vigente.
@@ -642,13 +643,18 @@ Operaciones principales:
 | `GET /agricultores/{id}` | Detalle autoritativo del agricultor. |
 | `GET /agricultores/{id}/gastos` | Gastos configurados para agricultor. |
 | `GET /empresas` | Empresas disponibles. |
-| `GET /cuentas-contables` | Cuenta, descripción, NIF, contrapartida, IVA, IRPF, pago y banco. |
+| `GET /cuentas-contables` | Cuenta, descripción, NIF, contrapartida, IVA, IRPF, pago y banco. `q` busca solo por cuenta/descripción; `nif` exige parámetro explícito. |
 | `GET /tipos-iva` | Tipos de IVA observados en las tablas maestras. |
 | `GET /regimenes` | Regímenes observados en facturas recibidas. |
 | `GET /formas-pago` | Formas de pago. |
 | `GET /bancos` | Bancos. |
 | `GET /series-factura` | Series auxiliares; no mapear automáticamente a tipo de factura. |
 | `GET /conceptos-factura` | Conceptos auxiliares; no sustituir automáticamente `FRR_Concepto`. |
+
+Desde FastAPI 0.3.2, el texto libre `q` de `/cuentas-contables` no busca en el
+NIF. Para localizar un tercero por NIF hay que enviar `nif` de forma explícita.
+La comprobación de release obtuvo `total=0` con `cuenta=603` y 10 resultados
+con `q=603`, sin CANALEX entre ellos.
 
 La búsqueda exacta requiere siempre `empresa_id`, `proveedor_id` y
 `numero_factura`. `ejercicio` es opcional desde v0.2.4:
@@ -725,12 +731,15 @@ esté activa.
 
 ## Estado operativo trazado
 
-- API v2 vigente: v0.2.4 en `karma-box:8001`, expuesta al VPS por `18001`, con
-  proveedor canónico, lectura GE histórica y búsqueda exacta por fecha cuando
-  aún no se conoce el ejercicio.
-- El working tree autoritativo de `api-campojoyma` pasa 104 pruebas locales y el
-  gate de grants. Contiene cambios sin commit posteriores al último release;
-  por eso el resultado local no demuestra por sí solo el estado vivo.
+- API v3 vigente: FastAPI 0.3.2 en `karma-box:8001`, expuesta al VPS por
+  `18001` y por el gateway HTTPS autenticado. El runtime mantiene
+  `write_mode=disabled` y `accounting_mode=unavailable`.
+- Release activa: `29effcccaccf` sobre el cambio funcional `060484b`, verificada
+  con 196 pruebas y OpenAPI de 46 rutas/47 operaciones. La release 0.3.1 se
+  conserva como rollback inmediato.
+- La búsqueda contable 0.3.2 limita `q` a cuenta/descripción y reserva `nif`
+  para el parámetro explícito; el smoke `q=603` devolvió 10 resultados sin
+  CANALEX.
 - Extractor n8n v4.2: declarado activo en remoto el 29/07/2026 con 32 nodos,
   cinco `httpRequestTool` GET y el webhook
   `campojoyma-factura-extraer` registrado. El validador local supera 18
@@ -747,8 +756,9 @@ esté activa.
   del asiento. El diario sí permite readback de asientos históricos.
 - Producción no se ha modificado.
 
-Estos estados externos fueron verificados o declarados en las tareas del
-29/07/2026; no se revalidaron en vivo durante la consolidación del 30/07/2026.
+El estado de la API 0.3.2 fue verificado el 31/07/2026. Los estados de n8n y la
+evidencia de altas de prueba de los puntos siguientes proceden de las tareas
+del 29/07/2026 y se conservan como historia, no como habilitación del writer.
 
 El lote final de diez facturas superó la extracción e ingesta sin errores
 bloqueantes. Todas quedaron con fecha CTB igual a la fecha de factura,
@@ -760,5 +770,5 @@ El backup previo al reemplazo remoto está en
 `/root/campojoyma-pre-full-replace-20260729T143008.json`, modo `600`, SHA-256
 `bcd1686288bac99f0241d8d4e85e3477a6195134e31d9f9eaec25048004de102`.
 
-La recuperación, futuras promociones y rollback están detallados en el
-[runbook](FACTURAS_RECIBIDAS_API_V2_STAGING.md).
+La recuperación, futuras promociones y rollback vigentes están detallados en
+el [acta de despliegue v3](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md).

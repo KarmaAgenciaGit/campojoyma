@@ -18,8 +18,8 @@ El circuito de lectura v3 ya está desplegado y probado. El detalle exacto,
 artefactos, checksums y rollback se conserva en
 [DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md](DESPLIEGUE_FACTURAS_RECIBIDAS_V3_2026-07-31.md).
 
-- `api-campojoyma` `0.3.1`, commit de release
-  `95547bde4edd5dffcbffe3eb06e8906b893a1a43`, está activo en `karma-box`.
+- `api-campojoyma` `0.3.2`, commit de release `29effcccaccf` sobre el cambio
+  funcional `060484b`, está activo en `karma-box`.
 - El gateway HTTPS autenticado está activo en
   `https://netagro-api-v2.srv894901.hstgr.cloud`.
 - Los secretos requeridos están provisionados fuera de Git y las seis Edge
@@ -34,8 +34,11 @@ artefactos, checksums y rollback se conserva en
   El watchdog está activo y los RPC v2 de escritura permanecen cerrados.
 - La referencia `49305` continúa como `legacy_unverified`; `49681` sigue
   marcada como `stale`. Ninguna fue religada.
-- Verificación superada: 196 pruebas FastAPI, 98 pruebas Deno, 19 pruebas
-  estáticas, 135 pruebas frontend, TypeScript y builds correctos.
+- Verificación superada: 196 pruebas FastAPI y OpenAPI con 46 rutas/47
+  operaciones, 98 pruebas Deno, 19 pruebas
+  estáticas, 138 pruebas frontend, TypeScript y builds correctos.
+- Desde 0.3.2, `q` en `/cuentas-contables` busca únicamente por número y
+  descripción; una búsqueda por NIF requiere el parámetro explícito `nif`.
 - El frontend actualizado está construido, desplegado localmente y comprobado
   con sesión autenticada en `http://localhost:8080`. IVA, gastos y CTB usan
   catálogos reales y no se observaron respuestas HTTP fallidas.
@@ -92,7 +95,7 @@ operación y nunca forma parte implícita del alta de gestión.
 - La API TEST está activa y expone una MariaDB clonada.
 - `DB_WRITES_ENABLED=false`.
 - El runtime anterior disponía de un archivo externo de idempotencia de
-  esquema 1. El runtime 0.3.1 no lo considera preparado sin una identidad
+  esquema 1. El runtime 0.3.2 no lo considera preparado sin una identidad
   completa de target y dataset.
 - La copia se refresca y puede reutilizar los mismos IDs para facturas
   distintas. Una referencia ERP sin entorno y generación no es estable.

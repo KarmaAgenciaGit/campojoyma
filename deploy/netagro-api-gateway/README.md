@@ -15,7 +15,7 @@ El modo de escritura sigue gobernado por `DB_WRITES_ENABLED` en FastAPI.
 - Imagen: `nginx:1.28.3-alpine`.
 - URL: `https://netagro-api-v2.srv894901.hstgr.cloud`.
 - Destino: túnel `172.19.0.1:18001`.
-- FastAPI: `0.3.1`, contrato de escritura `3`.
+- FastAPI: `0.3.2`, contrato de escritura `3`.
 - Escrituras: `write_mode=disabled`.
 - Contabilidad: `accounting_mode=unavailable`.
 

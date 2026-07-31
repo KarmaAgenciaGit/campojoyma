@@ -149,20 +149,20 @@ n8n/VPS
   -> http://172.19.0.1:18001 o http://127.0.0.1:18001
   -> túnel netagro-api-v2-tunnel.service en el VPS
   -> karma-box 127.0.0.1:8001
-  -> FastAPI 0.3.1, contrato de escritura v3
+  -> FastAPI 0.3.2, contrato de escritura v3
   -> MariaDB de pruebas + almacén externo de idempotencia
 
 Supabase Edge
   -> https://netagro-api-v2.srv894901.hstgr.cloud
   -> Traefik + contenedor netagro-api-gateway en el VPS
   -> http://172.19.0.1:18001
-  -> FastAPI 0.3.1 en karma-box
+  -> FastAPI 0.3.2 en karma-box
 ```
 
 | API | VPS | `karma-box` | Estado comprobado el 2026-07-31 |
 |---|---|---|---|
 | v1 lectura | `127.0.0.1:18000` y `172.19.0.1:18000` | `127.0.0.1:8002` | `netagro-api-v1-reader.service` sano; 40 GET conservados y POST retirado con `410 writer_disabled`. |
-| v2/v3 | `127.0.0.1:18001` y `172.19.0.1:18001` | `127.0.0.1:8001` | FastAPI 0.3.1 sana; escrituras desactivadas, contabilidad no disponible e idempotencia no preparada (`schema_version=NULL`). |
+| v2/v3 | `127.0.0.1:18001` y `172.19.0.1:18001` | `127.0.0.1:8001` | FastAPI 0.3.2 sana; escrituras desactivadas, contabilidad no disponible e idempotencia no preparada (`schema_version=NULL`). |
 
 Comprobaciones desde el VPS:
 
@@ -190,6 +190,7 @@ Rutas desplegadas comprobadas:
 /home/karma/releases/api-campojoyma-v01-readeronly-20260731T092612Z
 /home/karma/fastapi-netagro-v02-20260720
 /home/karma/releases/api-campojoyma-current
+/home/karma/releases/api-campojoyma-v0.3.2-20260731T105738Z-29effcccaccf
 /home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd
 ```
 
@@ -200,21 +201,27 @@ neutralizado. Su proceso actual no debe volver a exponerse; el reinicio o
 retirada definitiva requiere un operador con privilegios en `karma-box`. La
 clave del túnel solo admite ahora `permitopen` hacia `8001` y `8002`.
 
-La release `0.3.1` se activa mediante el symlink estable:
+La release `0.3.2` se activa mediante el symlink estable:
 
 ```text
 /home/karma/releases/api-campojoyma-current
-  -> /home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd
+  -> /home/karma/releases/api-campojoyma-v0.3.2-20260731T105738Z-29effcccaccf
 ```
+
+Corresponde al commit de release `29effcccaccf` y al cambio funcional
+`060484b`. El artefacto
+`api-campojoyma-v0.3.2-20260731T105738Z-29effcccaccf.tar.gz` tiene SHA-256
+`d8d1c52cbb2bb0e0f4be282e5fb5300ac7848e59695f82ada7db5d7f44da687b`.
 
 La unidad consume el entorno externo
 `/home/karma/.config/netagro-api-v2/runtime.env`; el antiguo drop-in
 `20-v030.conf` ya no forma parte de la configuración activa.
 
-Backup reversible previo y rollback inmediato:
+Backup reversible previo y releases de rollback:
 
 ```text
 /home/karma/backups/api-campojoyma/service-layout-pre-v031-20260731T101112Z
+/home/karma/releases/api-campojoyma-v0.3.1-20260731T100912Z-95547bde4edd  # rollback inmediato de 0.3.2
 /home/karma/releases/api-campojoyma-v0.3.0-20260731T103855-1c9a343c6fb2
 ```
 
@@ -256,7 +263,7 @@ Comprobación del 31/07:
   `82.25.119.150`;
 - `gestionvps.multiplicaxfuego.com` exige una clave de entrada propia;
 - producción sirve `index-BMzeM2s7.js`, mientras el build local probado sirve
-  `index-BN9BAZcy.js`.
+  `index-BzUrwCU_.js`.
 
 Esto bloquea únicamente la publicación del frontend. No indica una caída de
 FastAPI, del gateway o de MariaDB. El build nuevo está disponible y probado en
