@@ -32,6 +32,11 @@ const normalizeSearch = (value: string) =>
     .toLocaleLowerCase('es-ES')
     .trim();
 
+const isAccountPrefixSearch = (value: string) => /^\d+$/.test(value);
+
+const remoteSearchParams = (value: string) =>
+  isAccountPrefixSearch(value) ? { cuenta: value } : { search: value };
+
 const historicalOption = (value: string): FacturaCuentaOption => ({
   value,
   label: value,
@@ -159,19 +164,14 @@ export function CuentaContableCombobox({
     const timeoutId = window.setTimeout(() => {
       fetchFacturaCuentas({
         empresaId: normalizedEmpresaId,
-        search: cleaned,
+        ...remoteSearchParams(cleaned),
         limit: effectiveLimit,
       })
         .then((found) => {
           if (!active || requestId !== searchRequestRef.current) return;
-          const selected = selectedOptionRef.current;
           setNextOffset(found.length);
           setHasMore(found.length === effectiveLimit);
-          setOptions(
-            selected && !found.some((option) => option.value === selected.value)
-              ? [selected, ...found]
-              : found,
-          );
+          setOptions(found);
         })
         .catch((error) => {
           if (!active || requestId !== searchRequestRef.current) return;
@@ -218,7 +218,7 @@ export function CuentaContableCombobox({
     setErrorMessage(null);
     void fetchFacturaCuentas({
       empresaId: normalizedEmpresaId,
-      search: cleaned,
+      ...remoteSearchParams(cleaned),
       limit: effectiveLimit,
       offset: nextOffset,
     })
@@ -252,10 +252,15 @@ export function CuentaContableCombobox({
   const filteredOptions = React.useMemo(() => {
     const query = normalizeSearch(search);
     if (!query || !editingSearch) return options;
+    if (isAccountPrefixSearch(query)) {
+      return options.filter((option) =>
+        normalizeSearch(option.value).startsWith(query),
+      );
+    }
     return options.filter((option) =>
-      normalizeSearch(
-        `${option.value} ${option.description ?? ''} ${option.nif ?? ''}`,
-      ).includes(query),
+      normalizeSearch(`${option.value} ${option.description ?? ''}`).includes(
+        query,
+      ),
     );
   }, [editingSearch, options, search]);
 
