@@ -16,6 +16,7 @@ export type FacturaERPRegistrationState =
 export type FacturaERPStatusSource = {
   estado?: string | null;
   sync_status?: string | null;
+  erp_error?: string | null;
   erp_validation_status?: string | null;
   erp_reference_status?: string | null;
   erp_target_id?: string | null;
@@ -42,6 +43,33 @@ const hasRemoteIdentity = (factura: FacturaERPStatusSource) => {
     factura.remote_frr_id ?? cleanText(factura.erp_factura_id),
   );
   return Number.isInteger(remoteId) && remoteId > 0;
+};
+
+/**
+ * Identifica errores heredados de integraciones anteriores que nunca llegaron
+ * a quedar ligados a un entorno ERP ni produjeron una identidad remota. Se
+ * conserva el dato para auditoría, pero no representa el estado operativo
+ * actual de la factura.
+ */
+export const isFacturaERPLegacyUnscopedError = (
+  factura: FacturaERPStatusSource | null | undefined,
+): boolean => {
+  if (!factura || !cleanText(factura.erp_error)) return false;
+  const syncStatus = normalizeToken(factura.sync_status);
+  const hasErrorState =
+    normalizeToken(factura.estado) === 'error_erp' ||
+    ['error', 'failed', 'failure'].includes(syncStatus);
+  const hasAnyEnvironmentIdentity =
+    Boolean(cleanText(factura.erp_target_id)) ||
+    Boolean(cleanText(factura.erp_dataset_epoch));
+
+  return (
+    hasErrorState &&
+    !hasAnyEnvironmentIdentity &&
+    !hasRemoteIdentity(factura) &&
+    !cleanText(factura.erp_verified_at) &&
+    !cleanText(factura.erp_sent_at)
+  );
 };
 
 export const normalizeFacturaERPReferenceStatus = (
@@ -100,6 +128,7 @@ export const getFacturaERPRegistrationState = (
     normalizeToken(factura.estado) === 'error_erp' ||
     ['error', 'failed', 'failure'].includes(syncStatus)
   ) {
+    if (isFacturaERPLegacyUnscopedError(factura)) return 'not_validated';
     return 'error';
   }
 

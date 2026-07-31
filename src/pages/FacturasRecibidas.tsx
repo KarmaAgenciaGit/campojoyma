@@ -44,6 +44,7 @@ import {
   facturaERPRegistrationLabels,
   getFacturaERPRegistrationState,
   invalidateFacturaERPValidation,
+  isFacturaERPLegacyUnscopedError,
   type FacturaERPRegistrationState,
 } from '../lib/facturasErpStatus';
 import { sanitizeUserFacingErrorMessage } from '../lib/userFacingErrors';
@@ -701,7 +702,10 @@ function FacturaListItem({
               ? 'bg-slate-400'
               : 'bg-amber-500';
   const validation = partitionFacturaValidationIssues(factura.validation_errors);
-  const hasErrors = Boolean(validation.errors.length || factura.erp_error);
+  const hasErrors = Boolean(
+    validation.errors.length ||
+    (factura.erp_error && !isFacturaERPLegacyUnscopedError(factura)),
+  );
   const hasWarnings = validation.warnings.length > 0;
   const isBusy = loadingFacturaId === factura.id;
 
@@ -2725,11 +2729,17 @@ const Facturas = () => {
   };
 
   const detailERPState = getFacturaERPRegistrationState(draft);
+  const hasLegacyUnscopedERPError = isFacturaERPLegacyUnscopedError(draft);
+  const visibleERPError = hasLegacyUnscopedERPError ? null : draft?.erp_error;
   const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
   const detailERPStatus = erpStatusMeta(detailERPState);
   const isReadOnlyDetail = isERPReadOnlyFactura(draft);
   const providerLabel = providerKind === 'agricultor' ? 'Proveedor' : 'Acreedor';
-  const detailStatusText = draft?.estado ? estadoLabels[draft.estado] : detailERPStatus.text;
+  const detailStatusText = hasLegacyUnscopedERPError
+    ? 'Pendiente de revisión'
+    : draft?.estado
+      ? estadoLabels[draft.estado]
+      : detailERPStatus.text;
   const detailReadOnlyStatusText = isERPReferenceFactura(draft)
     ? 'Referencia ERP'
     : draft?.estado === 'enviada_erp' || detailERPState === 'confirmed'
@@ -3273,13 +3283,13 @@ const Facturas = () => {
         ) : null}
       </header>
 
-      {draft.erp_error || visibleErrors.length > 0 || visibleWarnings.length > 0 || catalogError ? (
+      {visibleERPError || visibleErrors.length > 0 || visibleWarnings.length > 0 || catalogError ? (
         <div className="mx-2 mt-4 space-y-3">
-          {draft.erp_error ? (
+          {visibleERPError ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
               <p className="font-bold">Error ERP</p>
               <p className="mt-1">
-                {sanitizeUserFacingErrorMessage(draft.erp_error)}
+                {sanitizeUserFacingErrorMessage(visibleERPError)}
               </p>
             </div>
           ) : null}

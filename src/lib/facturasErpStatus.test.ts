@@ -5,6 +5,7 @@ import {
   getFacturaERPRegistrationState,
   invalidateFacturaERPValidation,
   isFacturaERPConfirmed,
+  isFacturaERPLegacyUnscopedError,
   normalizeFacturaERPReferenceStatus,
 } from '@/lib/facturasErpStatus';
 
@@ -84,6 +85,35 @@ describe('estado independiente del registro ERP', () => {
     [{ estado: 'error_erp' }, 'error'],
   ] as const)('distingue %o como %s', (factura, expected) => {
     expect(getFacturaERPRegistrationState(factura)).toBe(expected);
+  });
+
+  it('no presenta como fallo actual un intento legacy sin entorno ni alta ERP', () => {
+    const factura = {
+      estado: 'error_erp',
+      sync_status: 'error',
+      erp_error: 'El webhook antiguo no está registrado.',
+      erp_target_id: null,
+      erp_dataset_epoch: null,
+      erp_verified_at: null,
+      remote_frr_id: null,
+      erp_sent_at: null,
+    };
+
+    expect(isFacturaERPLegacyUnscopedError(factura)).toBe(true);
+    expect(getFacturaERPRegistrationState(factura)).toBe('not_validated');
+  });
+
+  it('mantiene visible un error ligado al entorno ERP actual', () => {
+    const factura = {
+      estado: 'error_erp',
+      sync_status: 'error',
+      erp_error: 'Netagro rechazó la validación.',
+      erp_target_id: 'netagro-test-write',
+      erp_dataset_epoch: 'epoch-actual',
+    };
+
+    expect(isFacturaERPLegacyUnscopedError(factura)).toBe(false);
+    expect(getFacturaERPRegistrationState(factura)).toBe('error');
   });
 
   it('degrada valid sin entorno y solo infiere valid en un readback actual completo', () => {
