@@ -333,9 +333,17 @@ export const obtenerPerfilesIvaRegimen = async ({
   );
 };
 
+const IVA_TRAMO_ACTIVE_EPSILON = 0.005;
+
+const isIvaTramoActive = (tramo: FacturaRecibidaIvaTramo): boolean =>
+  Math.abs(tramo.base ?? 0) >= IVA_TRAMO_ACTIVE_EPSILON ||
+  Math.abs(tramo.cuota ?? 0) >= IVA_TRAMO_ACTIVE_EPSILON;
+
 /**
- * Aplica exclusivamente los cinco porcentajes de una plantilla dominante.
- * Bases, cuotas, posición y cualquier otro dato del tramo se conservan literalmente.
+ * Aplica los porcentajes de una plantilla dominante solo a los tramos con importe.
+ * Los cinco huecos siguen visibles, pero una fila vacía no se convierte en un
+ * tramo incompleto por el mero hecho de cambiar el régimen. Bases, cuotas,
+ * posición y cualquier otro dato se conservan literalmente.
  */
 export const aplicarPlantillaIvaHistorica = (
   tramos: FacturaRecibidaIvaTramo[],
@@ -357,10 +365,14 @@ export const aplicarPlantillaIvaHistorica = (
   return {
     aplicada: true,
     motivo: 'aplicada',
-    tramos: tramos.map((tramo) => ({
-      ...tramo,
-      porcentaje: porcentajes[tramo.posicion - 1],
-    })),
+    tramos: tramos.map((tramo) =>
+      isIvaTramoActive(tramo)
+        ? {
+            ...tramo,
+            porcentaje: porcentajes[tramo.posicion - 1],
+          }
+        : tramo,
+    ),
   };
 };
 

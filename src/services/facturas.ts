@@ -364,6 +364,26 @@ const erpIdFromUiId = (id?: string | null) => {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
 };
 
+export class FacturaERPReadError extends Error {
+  readonly code: string | null;
+  readonly retryable: boolean;
+  readonly requestId: string | null;
+
+  constructor(
+    message: string,
+    details: { code?: string | null; retryable?: boolean; requestId?: string | null } = {},
+  ) {
+    super(message);
+    this.name = 'FacturaERPReadError';
+    this.code = details.code ?? null;
+    this.retryable = details.retryable === true;
+    this.requestId = details.requestId ?? null;
+  }
+}
+
+export const isRetryableFacturaERPReadError = (error: unknown): boolean =>
+  error instanceof FacturaERPReadError && error.retryable;
+
 export const isERPReadOnlyFactura = (factura: Partial<UiFacturaRecibida> | null | undefined) =>
   factura?.erp_payload?.source === ERP_READ_SOURCE ||
   factura?.is_readonly_reference === true ||
@@ -390,9 +410,16 @@ const erpRead = async <T>(consulta: string): Promise<T> => {
     },
   });
   if (error) {
-    throw new Error(
-      (await getFunctionInvokeErrorMessage(error, data)) ??
+    const payload = await getFunctionInvokeResponsePayload(error, data);
+    throw new FacturaERPReadError(
+      getFunctionErrorMessage(payload) ??
+        (await getFunctionInvokeErrorMessage(error, data)) ??
         'No se pudo consultar la informacion de facturas en el ERP.',
+      {
+        code: cleanText(payload.code),
+        retryable: payload.retryable === true,
+        requestId: cleanText(payload.request_id),
+      },
     );
   }
   const message = getFunctionErrorMessage(data);
@@ -1226,7 +1253,7 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
 const getFunctionErrorMessage = (data: unknown): string | null => {
   if (!data || typeof data !== 'object') return null;
   const source = data as Record<string, unknown>;
-  for (const value of [source.error, source.message, source.detail]) {
+  for (const value of [source.user_message, source.error, source.message, source.detail]) {
     if (typeof value === 'string' && value.trim()) {
       return sanitizeUserFacingErrorMessage(value);
     }

@@ -238,17 +238,20 @@ describe('perfil histórico de IVA por régimen', () => {
     expect(result.tramos).toEqual(tramosIva());
   });
 
-  it('aplica la plantilla por posición aunque base1 sea cero y exista un tramo posterior', () => {
+  it('aplica la plantilla por posición solo al tramo posterior que tiene importe', () => {
     const originales = tramosIva({
-      1: { base: 0, cuota: 0 },
+      1: { base: 0, cuota: 0, porcentaje: null },
       2: { base: 423.41, cuota: 42.34 },
+      3: { base: null, cuota: null, porcentaje: null },
+      4: { base: null, cuota: null, porcentaje: null },
+      5: { base: null, cuota: null, porcentaje: null },
     });
 
     const result = aplicarPlantillaIvaHistorica(originales, perfilesDominantes());
 
     expect(result.aplicada).toBe(true);
-    expect(result.tramos.map((tramo) => tramo.porcentaje)).toEqual([21, 10, 4, 5, 0]);
-    expect(result.tramos[0]).toMatchObject({ base: 0, cuota: 0 });
+    expect(result.tramos.map((tramo) => tramo.porcentaje)).toEqual([null, 10, null, null, null]);
+    expect(result.tramos[0]).toBe(originales[0]);
     expect(result.tramos[1]).toMatchObject({ base: 423.41, cuota: 42.34 });
   });
 
@@ -256,8 +259,8 @@ describe('perfil histórico de IVA por régimen', () => {
     const originales = tramosIva({
       1: { base: 42_341.52, cuota: 8_891.72 },
       2: { base: -12.34, cuota: -1.23 },
-      3: { base: null, cuota: null },
-      4: { base: 0, cuota: 0 },
+      3: { base: null, cuota: null, porcentaje: null },
+      4: { base: 0, cuota: 0, porcentaje: null },
       5: { base: 99.99, cuota: 7.77 },
     });
     const importesOriginales = originales.map(({ base, cuota }) => ({ base, cuota }));
@@ -265,6 +268,29 @@ describe('perfil histórico de IVA por régimen', () => {
     const result = aplicarPlantillaIvaHistorica(originales, perfilesDominantes());
 
     expect(result.tramos.map(({ base, cuota }) => ({ base, cuota }))).toEqual(importesOriginales);
-    expect(result.tramos.map((tramo) => tramo.porcentaje)).toEqual([21, 10, 4, 5, 0]);
+    expect(result.tramos.map((tramo) => tramo.porcentaje)).toEqual([21, 10, null, null, 0]);
+  });
+
+  it('considera activo un abono y aplica su porcentaje histórico', () => {
+    const originales = tramosIva({
+      1: { base: -100, cuota: -21, porcentaje: null },
+      2: { base: null, cuota: null, porcentaje: null },
+    });
+
+    const result = aplicarPlantillaIvaHistorica(originales, perfilesDominantes());
+
+    expect(result.tramos[0]).toMatchObject({ base: -100, cuota: -21, porcentaje: 21 });
+    expect(result.tramos[1]).toBe(originales[1]);
+  });
+
+  it('no altera un porcentaje manual de una fila sin importe', () => {
+    const originales = tramosIva({
+      1: { base: 0.004, cuota: -0.004, porcentaje: 7 },
+    });
+
+    const result = aplicarPlantillaIvaHistorica(originales, perfilesDominantes());
+
+    expect(result.tramos[0]).toBe(originales[0]);
+    expect(result.tramos[0].porcentaje).toBe(7);
   });
 });

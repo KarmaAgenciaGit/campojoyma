@@ -22,6 +22,7 @@ import {
   fetchAlbaranMaterialLineas,
   fetchFacturaPunteables,
   fetchFacturaPunteosLive,
+  fetchFacturaTiposIva,
   fetchFacturasRecibidasERPRuntime,
   facturaProveedorERPKind,
   getFacturaERPSendConfirmation,
@@ -30,6 +31,7 @@ import {
   mapProveedorERPDetail,
   getFunctionInvokeErrorMessage,
   isERPReferenceFactura,
+  isRetryableFacturaERPReadError,
   labelTipoFactura,
   isERPReadOnlyFactura,
   localizarProveedorERP,
@@ -143,6 +145,32 @@ describe('errores de Edge Functions', () => {
     await expect(getFunctionInvokeErrorMessage(error)).resolves.toBe(
       'xFuego no pudo extraer la factura',
     );
+  });
+
+  it('conserva la indicación retryable de una lectura ERP estructurada', async () => {
+    const error = new FunctionsHttpError(
+      new Response(JSON.stringify({
+        code: 'upstream_unavailable',
+        user_message: 'La consulta a Netagro ha tardado demasiado. Puede volver a intentarlo.',
+        retryable: true,
+        request_id: '6d310312-0a50-46af-b705-c90b52aeb4ef',
+      }), {
+        status: 504,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    invokeMock.mockResolvedValueOnce({ data: null, error } as never);
+
+    const result = await fetchFacturaTiposIva().catch((caught) => caught);
+
+    expect(result).toMatchObject({
+      name: 'FacturaERPReadError',
+      code: 'upstream_unavailable',
+      retryable: true,
+      requestId: '6d310312-0a50-46af-b705-c90b52aeb4ef',
+      message: 'La consulta a Netagro ha tardado demasiado. Puede volver a intentarlo.',
+    });
+    expect(isRetryableFacturaERPReadError(result)).toBe(true);
   });
 });
 

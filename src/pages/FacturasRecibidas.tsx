@@ -71,6 +71,7 @@ import {
   extractFacturaFromPdf,
   isERPReferenceFactura,
   isERPReadOnlyFactura,
+  isRetryableFacturaERPReadError,
   localizarProveedorERP,
   normalizeFacturaValidationIssues,
   partitionFacturaValidationIssues,
@@ -129,10 +130,18 @@ type RegimenIvaFeedback = {
   estado: 'consultando' | 'aplicada' | 'ambigua' | 'sin_historial' | 'error';
   mensaje: string;
 };
+type FacturaCatalogKey = 'regimenes' | 'tipos_iva';
+type FacturaCatalogErrors = Partial<Record<FacturaCatalogKey, string>>;
 
 const PAGE_SIZE_OPTIONS = ['25', '50', '100'];
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_FACTURA_PDF_BYTES = 20 * 1024 * 1024;
+const FACTURA_CATALOG_KEYS: FacturaCatalogKey[] = ['regimenes', 'tipos_iva'];
+const FACTURA_CATALOG_LABELS: Record<FacturaCatalogKey, string> = {
+  regimenes: 'Regímenes de IVA',
+  tipos_iva: 'Tipos de IVA',
+};
+const FACTURA_CATALOG_RETRY_DELAY_MS = 350;
 const PDF_UPLOAD_ANIMATION_MS = 1850;
 
 const sortOptions: { value: FacturaSortOrder; label: string }[] = [
@@ -1064,7 +1073,21 @@ const Facturas = () => {
   const [regimenIvaFeedback, setRegimenIvaFeedback] = useState<RegimenIvaFeedback | null>(null);
   const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
   const { toast } = useToast();
-  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogErrors, setCatalogErrors] = useState<FacturaCatalogErrors>({});
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const catalogLoadRunRef = useRef(0);
+  const failedCatalogKeys = useMemo(
+    () => FACTURA_CATALOG_KEYS.filter((key) => Boolean(catalogErrors[key])),
+    [catalogErrors],
+  );
+  const catalogError = useMemo(
+    () => failedCatalogKeys.map((key) => catalogErrors[key]).filter(Boolean).join(' '),
+    [catalogErrors, failedCatalogKeys],
+  );
+  const catalogErrorTitle =
+    failedCatalogKeys.length === FACTURA_CATALOG_KEYS.length
+      ? 'Catálogos ERP no disponibles'
+      : 'Catálogos ERP incompletos';
   const [punteoDifferencePolicy, setPunteoDifferencePolicy] =
     useState<FacturaPunteoDifferencePolicy>('warning');
   const [punteosLoading, setPunteosLoading] = useState(false);
@@ -1310,29 +1333,59 @@ const Facturas = () => {
     };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    setCatalogError(null);
+  const loadCatalogs = useCallback(async (
+    requestedCatalogs: FacturaCatalogKey[] = FACTURA_CATALOG_KEYS,
+  ) => {
+    if (requestedCatalogs.length === 0) return;
+    const runId = ++catalogLoadRunRef.current;
+    setCatalogLoading(true);
+    setCatalogErrors((current) => {
+      const next = { ...current };
+      requestedCatalogs.forEach((key) => delete next[key]);
+      return next;
+    });
 
-    void Promise.allSettled([
-      fetchFacturaRegimenes(),
-      fetchFacturaTiposIva(),
-    ])
-      .then(([loadedRegimenes, loadedTiposIva]) => {
-        if (!active) return;
-        if (loadedRegimenes.status === 'fulfilled') setRegimenes(loadedRegimenes.value);
-        if (loadedTiposIva.status === 'fulfilled') setTiposIva(loadedTiposIva.value);
+    const results = await Promise.allSettled(
+      requestedCatalogs.map(async (key) => {
+        const request = () =>
+          key === 'regimenes' ? fetchFacturaRegimenes() : fetchFacturaTiposIva();
+        try {
+          return await request();
+        } catch (error) {
+          if (!isRetryableFacturaERPReadError(error)) throw error;
+          await new Promise((resolve) => window.setTimeout(resolve, FACTURA_CATALOG_RETRY_DELAY_MS));
+          return request();
+        }
+      }),
+    );
+    if (catalogLoadRunRef.current !== runId) return;
 
-        const failures = [loadedRegimenes, loadedTiposIva]
-          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-          .map((result) => getErrorMessage(result.reason, 'Catálogo ERP no disponible.'));
-        if (failures.length > 0) setCatalogError(Array.from(new Set(failures)).join(' '));
-      });
-
-    return () => {
-      active = false;
-    };
+    const failures: FacturaCatalogErrors = {};
+    results.forEach((result, index) => {
+      const key = requestedCatalogs[index];
+      if (result.status === 'rejected') {
+        failures[key] = `${FACTURA_CATALOG_LABELS[key]}: ${getErrorMessage(
+          result.reason,
+          'catálogo no disponible.',
+        )}`;
+        return;
+      }
+      if (key === 'regimenes') {
+        setRegimenes(result.value as FacturaRegimenOption[]);
+      } else {
+        setTiposIva(result.value as FacturaTipoIvaOption[]);
+      }
+    });
+    setCatalogErrors((current) => ({ ...current, ...failures }));
+    setCatalogLoading(false);
   }, []);
+
+  useEffect(() => {
+    void loadCatalogs();
+    return () => {
+      catalogLoadRunRef.current += 1;
+    };
+  }, [loadCatalogs]);
 
   useEffect(() => {
     let active = true;
@@ -2957,7 +3010,20 @@ const Facturas = () => {
 
       {catalogError ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
-          {catalogError} Los valores guardados se conservan, pero no se ofrecen sustitutos inventados.
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span>
+              {catalogError} Los valores guardados se conservan, pero no se ofrecen sustitutos inventados.
+            </span>
+            <button
+              type="button"
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-xs font-bold text-amber-900 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
+              disabled={catalogLoading}
+              onClick={() => void loadCatalogs(failedCatalogKeys)}
+            >
+              {catalogLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {catalogLoading ? 'Reintentando...' : 'Reintentar'}
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -3253,8 +3319,21 @@ const Facturas = () => {
           ) : null}
           {catalogError ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
-              <p className="font-bold">Catálogos ERP no disponibles</p>
-              <p className="mt-1">{catalogError}</p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-bold">{catalogErrorTitle}</p>
+                  <p className="mt-1">{catalogError}</p>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-xs font-bold text-amber-900 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
+                  disabled={catalogLoading}
+                  onClick={() => void loadCatalogs(failedCatalogKeys)}
+                >
+                  {catalogLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {catalogLoading ? 'Reintentando...' : 'Reintentar'}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
