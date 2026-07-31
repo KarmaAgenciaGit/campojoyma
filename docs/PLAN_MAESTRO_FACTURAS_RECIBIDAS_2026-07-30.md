@@ -12,6 +12,41 @@ comportamiento actual sin contrastarlos con este documento.
 Evidencia visual y transcripción saneada:
 [`reunion-erp-2026-07-30`](evidencias/facturas-recibidas/reunion-erp-2026-07-30/README.md).
 
+## Estado de ejecución: 31 de julio de 2026
+
+La implementación está cerrada y trazable en código, pero el despliegue
+operativo continúa deliberadamente incompleto:
+
+- La implementación de `campojoyma` quedó fijada en
+  `ffb98974365f5c7841082573553abd364739981c`.
+- La implementación de `api-campojoyma` quedó fijada en
+  `75b88dd97b5e6b2d30beecb8ef2ded481a52bbef`.
+- La migración `harden_facturas_recibidas_erp_v3` está aplicada en el proyecto
+  Supabase `CAMPOJOYMA`. El target `netagro-test-write` permanece activo solo
+  como registro, con `write_mode=disabled`, `dataset_epoch=NULL` y
+  `accounting_mode=unavailable`.
+- El watchdog se ejecuta cada minuto y su primera ejecución remota terminó
+  correctamente. Los RPC v2 de escritura ya no son ejecutables por
+  `service_role`.
+- La referencia `49305` se conserva como `legacy_unverified`; la referencia
+  `49681` está marcada como `stale`. Ninguna se ha religado automáticamente.
+- Verificación local superada: 135 pruebas de frontend, 97 pruebas Deno,
+  19 pruebas estáticas, seis Edge Functions comprobadas por Deno, build y
+  TypeScript correctos, y 159 pruebas FastAPI.
+- FastAPI v3 todavía no está desplegado. El runtime remoto sigue siendo la
+  versión anterior y no expone `/meta/runtime`. El acceso SSH directo al host
+  de la API estaba bloqueado en el momento de cerrar esta actualización.
+- Por ese motivo no se han desplegado todavía el gateway, los secretos ni las
+  Edge Functions v3. Tampoco se ha creado o migrado el almacén de idempotencia
+  remoto.
+
+El siguiente orden obligatorio es: recuperar acceso autorizado al host,
+desplegar el SHA de FastAPI con escrituras apagadas, provisionar
+idempotencia v2, configurar el mismo secreto en API y gateway, verificar HTTPS,
+configurar los secretos Edge y desplegar primero runtime/lecturas y finalmente
+el writer. El clon persistente, el epoch y cualquier alta quedan para una fase
+posterior con sus gates completos.
+
 ## 1. Flujo objetivo
 
 ```text
