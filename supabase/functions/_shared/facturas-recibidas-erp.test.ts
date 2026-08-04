@@ -5,6 +5,7 @@ import {
   applyGastosToFrr,
   buildERPContractV2,
   buildERPDuplicateConsulta,
+  buildFacturaERPExpenseHistoryConsulta,
   buildFacturaERPExactMAPunteoConsulta,
   buildFacturaERPExerciseLookupConsulta,
   buildFacturaERPRegimenSuggestionConsulta,
@@ -43,6 +44,7 @@ import {
   requestHasServiceRoleCredential,
   requireAgentToken,
   resolveFacturaERPAccountingRules,
+  resolveFacturaERPExpenseAccountFromHistory,
   resolveFacturaERPExerciseFromExactInvoice,
   resolveFacturaERPExistingPunteoLinks,
   resolveFacturaERPRegimenFromHistory,
@@ -67,6 +69,7 @@ import {
 } from "./facturas-recibidas-erp.ts";
 import {
   assertFacturaExtractionResponseContract,
+  classifyFacturaExtractionUpstreamFailure,
   normalizeFacturaExtractionPayload,
 } from "./factura-recibida-extraction.ts";
 import {
@@ -205,6 +208,45 @@ Deno.test("extraccion rechaza version implicita o request_id cruzado", () => {
         },
         requestId,
       ),
+    Error,
+    "EXTRACTION_REQUEST_MISMATCH",
+  );
+});
+
+Deno.test("extraccion distingue rechazo documental 422 de una caida upstream", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  assertEquals(
+    classifyFacturaExtractionUpstreamFailure(422, {
+      contract_version: 2,
+      request_id: requestId,
+      ok: false,
+      error: "Documento no procesable",
+    }, requestId),
+    {
+      status: 422,
+      code: "invalid_invoice",
+      category: "validation",
+      userMessage: "El PDF no contiene una factura procesable.",
+      retryable: false,
+    },
+  );
+  assertEquals(
+    classifyFacturaExtractionUpstreamFailure(500, {}, requestId),
+    {
+      status: 502,
+      code: "upstream_unavailable",
+      category: "transport",
+      userMessage: "El servicio de analisis no pudo extraer la factura.",
+      retryable: true,
+    },
+  );
+  assertThrows(
+    () =>
+      classifyFacturaExtractionUpstreamFailure(422, {
+        contract_version: 2,
+        request_id: "22222222-2222-4222-8222-222222222222",
+        ok: false,
+      }, requestId),
     Error,
     "EXTRACTION_REQUEST_MISMATCH",
   );
@@ -738,7 +780,7 @@ Deno.test("el writer fuerza las facturas nuevas a no contabilizar", () => {
   );
 });
 
-Deno.test("defaults Edge materializan gasto, concepto y ceros solo desde regla aprobada", () => {
+Deno.test("defaults Edge materializan gasto desde regla aprobada del acreedor", () => {
   const sanitized = sanitizeUntrustedFacturaAccountingFields({
     FRR_Idempresa: 1,
     FRR_idproveedor: 17,
@@ -766,7 +808,7 @@ Deno.test("defaults Edge materializan gasto, concepto y ceros solo desde regla a
     sanitized,
     [{
       empresa_id: 1,
-      proveedor_id: null,
+      proveedor_id: 17,
       cuenta_gasto_default: "60200000001",
       concepto_template: "FRA. {proveedor}",
       contabilizar_default: "S",
@@ -797,6 +839,29 @@ Deno.test("defaults Edge materializan gasto, concepto y ceros solo desde regla a
   assertEquals(resolution.factura.FRR_base4, 0);
   assertEquals(resolution.factura.FRR_iva4, 0);
   assertEquals(resolution.factura.FRR_cuota4, 0);
+});
+
+Deno.test("una cuenta de gasto general de empresa no se aplica a todos los acreedores", () => {
+  const resolution = applyFacturaERPDeterministicDefaults({
+    FRR_Idempresa: 1,
+    FRR_idproveedor: 17,
+    FRR_base1: 100,
+    FRR_iva1: 21,
+    FRR_cuota1: 21,
+  }, [{
+    empresa_id: 1,
+    proveedor_id: null,
+    cuenta_gasto_default: "60200000001",
+    concepto_template: "FRA. {proveedor}",
+    activo: true,
+  }], {
+    providerType: "acreedor",
+    providerName: "ONDUSPAN, S.A.",
+  });
+
+  assertEquals(resolution.factura.FRR_ctagasto1, undefined);
+  assertEquals(resolution.factura.FRR_igasto1, undefined);
+  assertEquals(resolution.factura.FRR_Concepto, "FRA. ONDUSPAN, S.A.");
 });
 
 Deno.test("un tramo IVA activo incompleto queda para revision y no inventa ceros", () => {
@@ -2172,6 +2237,80 @@ Deno.test("validacion estructural no consulta cache y fusiona avisos por campo s
   );
 });
 
+Deno.test("validacion estructural bloquea gasto ausente, parcial o descuadrado", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_idcuenta: "41000000017",
+    FRR_numerofactura: "TEST-GASTO-1",
+    FRR_fechafactura: "2026-08-04",
+    FRR_fechactb: "2026-08-04",
+    FRR_idregimen: 2110,
+    FRR_tipofactura: "OT",
+    FRR_base1: 100,
+    FRR_cuota1: 21,
+    FRR_base2: 0,
+    FRR_cuota2: 0,
+    FRR_base3: 0,
+    FRR_cuota3: 0,
+    FRR_base4: 0,
+    FRR_cuota4: 0,
+    FRR_base5: 0,
+    FRR_cuota5: 0,
+    FRR_totalfac: 121,
+  };
+
+  const missing = await getValidationErrorsForFactura({
+    ...factura,
+    FRR_igasto1: 0,
+    FRR_igasto2: 0,
+    FRR_igasto3: 0,
+    FRR_igasto4: 0,
+  });
+  assert(
+    missing.some((issue) =>
+      issue.field === "FRR_ctagasto1" && issue.severity === "error"
+    ),
+  );
+
+  const partial = await getValidationErrorsForFactura({
+    ...factura,
+    FRR_ctagasto1: "60200000001",
+    FRR_igasto1: 0,
+  });
+  assert(
+    partial.some((issue) =>
+      issue.field === "FRR_igasto1" && issue.severity === "error"
+    ),
+  );
+
+  const mismatched = await getValidationErrorsForFactura({
+    ...factura,
+    FRR_ctagasto1: "60200000001",
+    FRR_igasto1: 99,
+  });
+  assert(
+    mismatched.some((issue) =>
+      issue.field === "FRR_igasto1" && issue.message.includes("no coincide")
+    ),
+  );
+
+  const valid = await getValidationErrorsForFactura({
+    ...factura,
+    FRR_ctagasto1: "60200000001",
+    FRR_igasto1: 100,
+  });
+  assertEquals(
+    valid.filter((issue) => issue.field.startsWith("FRR_ctagasto")),
+    [],
+  );
+  assertEquals(
+    valid.filter((issue) => issue.field.startsWith("FRR_igasto")),
+    [],
+  );
+});
+
 Deno.test("la fusion conserva codigo y detalle estructurado del error", () => {
   assertEquals(
     mergeValidationIssues([{
@@ -2591,7 +2730,12 @@ Deno.test("el circuito sugerido solo se confirma con detalle ERP del mismo prove
     },
   );
 
-  assertEquals(consultas, ["acreedores/17"]);
+  assertEquals(consultas[0], "acreedores/17");
+  assert(
+    consultas.every((consulta) =>
+      !consulta.startsWith("facturasrecibidas/cuentas-gasto-historicas?")
+    ),
+  );
   assertEquals(confirmation.providerType, "acreedor");
   assertEquals(confirmation.providerName, "ONDUSPAN, S.A.");
   assertEquals(confirmation.issues, []);
@@ -3326,7 +3470,7 @@ Deno.test("una politica CTB nula de proveedor hereda la regla general", () => {
 Deno.test("carga de reglas aplica defaults solo tras confirmar el acreedor ERP", async () => {
   const ruleRows = [{
     empresa_id: 1,
-    proveedor_id: null,
+    proveedor_id: 17,
     ejercicio_erp: 25,
     tipo_factura: null,
     regimen_id: 2110,
@@ -3381,7 +3525,12 @@ Deno.test("carga de reglas aplica defaults solo tras confirmar el acreedor ERP",
     },
   );
 
-  assertEquals(consultas, ["acreedores/17"]);
+  assertEquals(consultas[0], "acreedores/17");
+  assert(
+    consultas.every((consulta) =>
+      !consulta.startsWith("facturasrecibidas/cuentas-gasto-historicas?")
+    ),
+  );
   assertEquals(resolution.issues, []);
   assertEquals(resolution.factura.FRR_ejercicio, 25);
   assertEquals(resolution.factura.FRR_tipofactura, "OT");
@@ -3395,6 +3544,184 @@ Deno.test("carga de reglas aplica defaults solo tras confirmar el acreedor ERP",
     "FRA. ONDUSPAN, S.A.",
   );
   assertEquals(resolution.factura.FRR_Contabilizar, "S");
+});
+
+Deno.test("carga de reglas resuelve el gasto historico despues de confirmar acreedor", async () => {
+  const query = {
+    data: [{
+      empresa_id: 1,
+      proveedor_id: null,
+      ejercicio_erp: 25,
+      tipo_factura: "OT",
+      regimen_id: 2110,
+      fecha_ctb_policy: "invoice_date",
+      cuenta_gasto_default: null,
+      concepto_template: "FRA. {proveedor}",
+      contabilizar_default: "N",
+      activo: true,
+    }],
+    error: null,
+    select() {
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    or() {
+      return this;
+    },
+    is() {
+      return this;
+    },
+  };
+  const consultas: string[] = [];
+  const resolution = await loadAndResolveFacturaERPAccountingRules(
+    { from: () => query } as never,
+    {
+      FRR_Idempresa: 1,
+      FRR_idproveedor: 17,
+      FRR_idcuenta: "41000000017",
+      FRR_fechafactura: "2026-06-30",
+      FRR_base1: 100,
+      FRR_iva1: 21,
+      FRR_cuota1: 21,
+      FRR_totalfac: 121,
+    },
+    "acreedor",
+    {
+      readERP: (consulta) => {
+        consultas.push(consulta);
+        if (consulta === "acreedores/17") {
+          return Promise.resolve({
+            id: 17,
+            nombre: "ONDUSPAN, S.A.",
+            cuenta_id: "41000000017",
+            activo: true,
+            bloqueado: false,
+            inactivo_rgpd: false,
+          });
+        }
+        return Promise.resolve({
+          filtros: {
+            empresa_id: 1,
+            proveedor_id: 17,
+            proveedor_tipo: "acreedor",
+            fecha_desde: null,
+            fecha_hasta: null,
+          },
+          total_facturas_con_gasto: 100,
+          items: [{
+            cuenta: "60200000001",
+            descripcion: "COMPRAS ENVASES Y EMBALAJES",
+            usos_facturas: 100,
+            usos_lineas: 100,
+            porcentaje_facturas: 1,
+            importe_neto_total: "10000.00",
+            importe_absoluto_total: "10000.00",
+            primera_fecha_uso: "2025-01-01",
+            ultima_fecha_uso: "2026-06-01",
+            existe_en_catalogo: true,
+            bloqueo_facturas: "N",
+          }],
+        });
+      },
+    },
+  );
+
+  assertEquals(consultas[0], "acreedores/17");
+  assert(consultas[1].startsWith("facturasrecibidas/cuentas-gasto-historicas?"));
+  assertEquals(resolution.factura.FRR_ctagasto1, "60200000001");
+  assertEquals(resolution.factura.FRR_igasto1, 100);
+  assertEquals(resolution.evidence?.cuenta_gasto, {
+    source: "erp_history",
+    criterio:
+      "misma_empresa_proveedor_y_circuito_con_lider_unico_activo_y_dominante",
+    min_facturas: 3,
+    min_confianza: 0.98,
+    status: "applied",
+    filtros: {
+      empresa_id: 1,
+      proveedor_id: 17,
+      proveedor_tipo: "acreedor",
+    },
+    total_facturas_con_gasto: 100,
+    ranking: [{
+      rank: 1,
+      cuenta: "60200000001",
+      descripcion: "COMPRAS ENVASES Y EMBALAJES",
+      usos_facturas: 100,
+      porcentaje_facturas: 1,
+      existe_en_catalogo: true,
+      bloqueo_facturas: "N",
+    }],
+    resolved: true,
+    selected_account: "60200000001",
+    selected_rank: 1,
+    confianza: 1,
+  });
+});
+
+Deno.test("sin confirmacion exacta del proveedor no aplica regla ni historico de gasto", async () => {
+  const query = {
+    data: [{
+      empresa_id: 1,
+      proveedor_id: 17,
+      cuenta_gasto_default: "60200000001",
+      activo: true,
+    }],
+    error: null,
+    select() {
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    or() {
+      return this;
+    },
+    is() {
+      return this;
+    },
+  };
+  const consultas: string[] = [];
+  const resolution = await loadAndResolveFacturaERPAccountingRules(
+    { from: () => query } as never,
+    {
+      FRR_Idempresa: 1,
+      FRR_idproveedor: 17,
+      FRR_idcuenta: "41000000017",
+      FRR_tipofactura: "OT",
+      FRR_base1: 100,
+      FRR_iva1: 21,
+      FRR_cuota1: 21,
+    },
+    null,
+    {
+      readERP: (consulta) => {
+        consultas.push(consulta);
+        return Promise.resolve({
+          id: 17,
+          nombre: "ONDUSPAN, S.A.",
+          cuenta_id: "41000000999",
+          activo: true,
+          bloqueado: false,
+          inactivo_rgpd: false,
+        });
+      },
+    },
+  );
+
+  assertEquals(consultas[0], "acreedores/17");
+  assert(
+    consultas.every((consulta) =>
+      !consulta.startsWith("facturasrecibidas/cuentas-gasto-historicas?")
+    ),
+  );
+  assertEquals(resolution.factura.FRR_ctagasto1, undefined);
+  assertEquals(resolution.factura.FRR_igasto1, undefined);
+  assert(
+    resolution.issues.some((issue) => issue.severity === "error"),
+  );
 });
 
 Deno.test("reglas contables nunca sobrescriben valores explicitos y exponen conflictos bloqueantes", () => {
@@ -3793,6 +4120,232 @@ Deno.test("respuesta historica de otro proveedor se rechaza y un regimen existen
   assertEquals(existing.evidence?.status, "skipped_existing_value");
 });
 
+const facturaExpenseHistoryTest = {
+  FRR_Idempresa: 1,
+  FRR_idproveedor: 17,
+  FRR_base1: 100,
+  FRR_iva1: 21,
+  FRR_cuota1: 21,
+  FRR_base2: 0,
+  FRR_iva2: 0,
+  FRR_cuota2: 0,
+  FRR_base3: 0,
+  FRR_iva3: 0,
+  FRR_cuota3: 0,
+  FRR_base4: 0,
+  FRR_iva4: 0,
+  FRR_cuota4: 0,
+  FRR_base5: 0,
+  FRR_iva5: 0,
+  FRR_cuota5: 0,
+};
+
+const expenseHistoryPayload = ({
+  topUses,
+  alternativeUses = 0,
+  empresaId = 1,
+  proveedorId = 17,
+  proveedorTipo = "acreedor",
+  existsInCatalog = true,
+  invoiceBlock = "N",
+}: {
+  topUses: number;
+  alternativeUses?: number;
+  empresaId?: number;
+  proveedorId?: number;
+  proveedorTipo?: string;
+  existsInCatalog?: boolean;
+  invoiceBlock?: string | null;
+}) => {
+  const total = topUses + alternativeUses;
+  return {
+    filtros: {
+      empresa_id: empresaId,
+      proveedor_id: proveedorId,
+      proveedor_tipo: proveedorTipo,
+      fecha_desde: null,
+      fecha_hasta: null,
+    },
+    total_facturas_con_gasto: total,
+    items: [
+      {
+        cuenta: "60200000001",
+        descripcion: "COMPRAS ENVASES Y EMBALAJES",
+        usos_facturas: topUses,
+        usos_lineas: topUses,
+        porcentaje_facturas: topUses / total,
+        importe_neto_total: "1000.00",
+        importe_absoluto_total: "1000.00",
+        primera_fecha_uso: "2025-01-01",
+        ultima_fecha_uso: "2026-07-01",
+        existe_en_catalogo: existsInCatalog,
+        bloqueo_facturas: invoiceBlock,
+      },
+      ...(alternativeUses > 0
+        ? [{
+          cuenta: "62900000001",
+          descripcion: "OTROS SERVICIOS",
+          usos_facturas: alternativeUses,
+          usos_lineas: alternativeUses,
+          porcentaje_facturas: alternativeUses / total,
+          importe_neto_total: "10.00",
+          importe_absoluto_total: "10.00",
+          primera_fecha_uso: "2026-01-01",
+          ultima_fecha_uso: "2026-06-01",
+          existe_en_catalogo: true,
+          bloqueo_facturas: "N",
+        }]
+        : []),
+    ],
+  };
+};
+
+Deno.test("consulta de gasto historico queda acotada al proveedor confirmado", () => {
+  const consulta = buildFacturaERPExpenseHistoryConsulta(
+    facturaExpenseHistoryTest,
+    "acreedor",
+  );
+
+  assert(consulta);
+  assert(consulta.includes("empresa_id=1"));
+  assert(consulta.includes("proveedor_id=17"));
+  assert(consulta.includes("proveedor_tipo=acreedor"));
+  assert(consulta.includes("limit=10"));
+  assertEquals(isAllowedERPConsulta(consulta), true);
+});
+
+Deno.test("cuatro importes cero sin cuentas no ocultan el historico de gasto", () => {
+  const factura = {
+    ...facturaExpenseHistoryTest,
+    FRR_ctagasto1: null,
+    FRR_igasto1: 0,
+    FRR_ctagasto2: null,
+    FRR_igasto2: 0,
+    FRR_ctagasto3: null,
+    FRR_igasto3: 0,
+    FRR_ctagasto4: null,
+    FRR_igasto4: 0,
+  };
+  assert(
+    buildFacturaERPExpenseHistoryConsulta(factura, "acreedor")?.startsWith(
+      "facturasrecibidas/cuentas-gasto-historicas?",
+    ),
+  );
+  const resolution = resolveFacturaERPExpenseAccountFromHistory(
+    factura,
+    "acreedor",
+    expenseHistoryPayload({ topUses: 100 }),
+  );
+  assertEquals(resolution.factura.FRR_ctagasto1, "60200000001");
+  assertEquals(resolution.factura.FRR_igasto1, 100);
+});
+
+Deno.test("historico dominante aplica cuenta de gasto y suma de bases", () => {
+  const resolution = resolveFacturaERPExpenseAccountFromHistory(
+    facturaExpenseHistoryTest,
+    "acreedor",
+    expenseHistoryPayload({ topUses: 99, alternativeUses: 1 }),
+  );
+
+  assertEquals(resolution.factura.FRR_ctagasto1, "60200000001");
+  assertEquals(resolution.factura.FRR_igasto1, 100);
+  assertEquals(resolution.applied, {
+    FRR_ctagasto1: "60200000001",
+    FRR_igasto1: 100,
+  });
+  assertEquals(resolution.issues, []);
+  assertEquals(resolution.evidence?.status, "applied");
+  assertEquals(resolution.evidence?.confianza, 0.99);
+});
+
+Deno.test("historico ambiguo, bloqueado o de otro proveedor nunca asigna gasto", () => {
+  const lowConfidence = resolveFacturaERPExpenseAccountFromHistory(
+    facturaExpenseHistoryTest,
+    "acreedor",
+    expenseHistoryPayload({ topUses: 97, alternativeUses: 3 }),
+  );
+  assertEquals(lowConfidence.applied, {});
+  assertEquals(lowConfidence.evidence?.status, "insufficient_confidence");
+
+  const blocked = resolveFacturaERPExpenseAccountFromHistory(
+    facturaExpenseHistoryTest,
+    "acreedor",
+    expenseHistoryPayload({ topUses: 100, invoiceBlock: "S" }),
+  );
+  assertEquals(blocked.applied, {});
+  assertEquals(blocked.evidence?.status, "unavailable_account");
+
+  const otherProvider = resolveFacturaERPExpenseAccountFromHistory(
+    facturaExpenseHistoryTest,
+    "acreedor",
+    expenseHistoryPayload({ topUses: 100, proveedorId: 18 }),
+  );
+  assertEquals(otherProvider.applied, {});
+  assertEquals(
+    otherProvider.evidence?.status,
+    "rejected_inconsistent_response",
+  );
+  assertEquals(otherProvider.issues[0]?.severity, "warning");
+});
+
+Deno.test("historico de gasto rechaza cuentas cortas, lineas imposibles y filtros temporales", () => {
+  const shortAccount = expenseHistoryPayload({ topUses: 100 });
+  shortAccount.items[0].cuenta = "602";
+  assertEquals(
+    resolveFacturaERPExpenseAccountFromHistory(
+      facturaExpenseHistoryTest,
+      "acreedor",
+      shortAccount,
+    ).evidence?.status,
+    "rejected_inconsistent_response",
+  );
+
+  const impossibleLines = expenseHistoryPayload({ topUses: 100 });
+  impossibleLines.items[0].usos_lineas = 99;
+  assertEquals(
+    resolveFacturaERPExpenseAccountFromHistory(
+      facturaExpenseHistoryTest,
+      "acreedor",
+      impossibleLines,
+    ).evidence?.status,
+    "rejected_inconsistent_response",
+  );
+
+  const datedBase = expenseHistoryPayload({ topUses: 100 });
+  const dated = {
+    ...datedBase,
+    filtros: { ...datedBase.filtros, fecha_desde: "2026-01-01" },
+  };
+  assertEquals(
+    resolveFacturaERPExpenseAccountFromHistory(
+      facturaExpenseHistoryTest,
+      "acreedor",
+      dated,
+    ).evidence?.status,
+    "rejected_inconsistent_response",
+  );
+});
+
+Deno.test("una distribucion de gasto ya revisada no se consulta ni se sobrescribe", () => {
+  const factura = {
+    ...facturaExpenseHistoryTest,
+    FRR_ctagasto1: "62900000001",
+    FRR_igasto1: 100,
+  };
+  assertEquals(
+    buildFacturaERPExpenseHistoryConsulta(factura, "acreedor"),
+    null,
+  );
+  const resolution = resolveFacturaERPExpenseAccountFromHistory(
+    factura,
+    "acreedor",
+    expenseHistoryPayload({ topUses: 100 }),
+  );
+  assertEquals(resolution.factura.FRR_ctagasto1, "62900000001");
+  assertEquals(resolution.applied, {});
+  assertEquals(resolution.evidence?.status, "skipped_existing_value");
+});
+
 Deno.test("la evidencia contable refleja la cabecera resuelta sin perder la auditoria original", () => {
   const originalEvidence = {
     api: { attempts: [{ path: "/acreedores", ok: true }] },
@@ -3828,6 +4381,13 @@ Deno.test("la evidencia contable refleja la cabecera resuelta sin perder la audi
       FRR_ejercicio: 25,
       FRR_tipofactura: "OT",
       FRR_idregimen: 2110,
+      FRR_ctagasto1: "60200000001",
+      FRR_igasto1: 100,
+      FRR_base1: 100,
+      FRR_base2: 0,
+      FRR_base3: 0,
+      FRR_base4: 0,
+      FRR_base5: 0,
     },
     applied: {
       FRR_fechactb: "2026-05-15",
@@ -3883,6 +4443,65 @@ Deno.test("la evidencia contable refleja la cabecera resuelta sin perder la audi
   });
   assertEquals(synchronized.erp_accounting, resolution.evidence);
   assertEquals(originalEvidence, originalSnapshot);
+});
+
+Deno.test("Edge sustituye la evidencia n8n de gasto por su propia verificacion", () => {
+  const synchronized = syncFacturaERPAccountingMatchEvidence({
+    cuenta_gasto: {
+      source: "erp_history",
+      resolved: true,
+      selected_account: "60200000001",
+      selected_rank: 1,
+      ranking: [{ cuenta: "60200000001", usos_facturas: 1 }],
+    },
+  }, {
+    factura: {
+      FRR_ejercicio: 25,
+      FRR_tipofactura: "OT",
+      FRR_idregimen: 2110,
+      FRR_fechafactura: "2026-06-30",
+      FRR_fechactb: "2026-06-30",
+    },
+    applied: {},
+    issues: [],
+    evidence: {
+      cuenta_gasto: {
+        source: "erp_history",
+        status: "ambiguous",
+        filtros: {
+          empresa_id: 1,
+          proveedor_id: 17,
+          proveedor_tipo: "acreedor",
+        },
+        ranking: [
+          { cuenta: "60200000001", usos_facturas: 50 },
+          { cuenta: "62900000001", usos_facturas: 50 },
+        ],
+      },
+    },
+  });
+
+  assertEquals(synchronized.cuenta_gasto, {
+    source: "erp_history",
+    resolved: false,
+    selected_account: null,
+    ranking: [
+      { cuenta: "60200000001", usos_facturas: 50 },
+      { cuenta: "62900000001", usos_facturas: 50 },
+    ],
+    status: "ambiguous",
+    filtros: {
+      empresa_id: 1,
+      proveedor_id: 17,
+      proveedor_tipo: "acreedor",
+    },
+    value: null,
+  });
+  assertEquals(synchronized.erp_rules, {
+    source: "supabase_edge",
+    resolved: false,
+    pending_fields: ["FRR_ctagasto1", "FRR_igasto1"],
+  });
 });
 
 Deno.test("la sincronizacion conserva erp_accounting previo y enumera solo campos pendientes", () => {

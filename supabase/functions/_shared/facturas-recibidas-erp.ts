@@ -2996,6 +2996,9 @@ export const verifyFacturaERPExactMAPunteos = async (
 
 const REGIMEN_HISTORY_MIN_INVOICES = 3;
 const REGIMEN_HISTORY_MIN_CONFIDENCE = 0.98;
+const EXPENSE_HISTORY_MIN_INVOICES = 3;
+const EXPENSE_HISTORY_MIN_CONFIDENCE = 0.98;
+const EXPENSE_HISTORY_LIMIT = 10;
 const IVA_ACTIVE_AMOUNT_EPSILON = 0.005;
 
 const normalizedIvaRate = (value: unknown): number | null => {
@@ -3187,6 +3190,346 @@ export const resolveFacturaERPRegimenFromHistory = (
   applied.FRR_idregimen = suggestedRegimen;
   evidence.status = "applied";
   evidence.regimen_id = suggestedRegimen;
+  return { factura: resolved, applied, issues, evidence };
+};
+
+type FacturaERPExpenseHistoryCandidate = {
+  account: string;
+  description: string | null;
+  invoiceUses: number;
+  lineUses: number;
+  share: number;
+  existsInCatalog: boolean;
+  invoiceBlock: string | null;
+  lastUsedAt: string | null;
+};
+
+const hasFacturaERPExpenseDistribution = (factura: JsonObject) =>
+  [1, 2, 3, 4].some((position) => {
+    const account = text(factura[`FRR_ctagasto${position}`], null);
+    const amount = numberValue(factura[`FRR_igasto${position}`], null);
+    // El frontend serializa slots vacios como importe 0. Eso no puede impedir
+    // que Edge consulte el historico ni puede considerarse una distribucion.
+    return account !== null || (amount !== null && Math.abs(amount) > 0.005);
+  });
+
+/**
+ * Consulta de historico de gasto siempre acotada por empresa, proveedor y
+ * circuito ya confirmado. La cuenta que pueda haber enviado n8n no participa:
+ * en ingestiones no confiables se elimina antes de llegar a este punto.
+ */
+export const buildFacturaERPExpenseHistoryConsulta = (
+  factura: JsonObject,
+  providerType: FacturaProveedorTipo | null,
+): string | null => {
+  if (hasFacturaERPExpenseDistribution(factura)) return null;
+  const empresaId = positiveRuleInteger(factura.FRR_Idempresa);
+  const proveedorId = positiveRuleInteger(factura.FRR_idproveedor);
+  if (!empresaId || !proveedorId || !providerType) return null;
+
+  const params = new URLSearchParams({
+    empresa_id: String(empresaId),
+    proveedor_id: String(proveedorId),
+    proveedor_tipo: providerType,
+    limit: String(EXPENSE_HISTORY_LIMIT),
+  });
+  return `facturasrecibidas/cuentas-gasto-historicas?${params.toString()}`;
+};
+
+const normalizeExpenseHistoryCandidate = (
+  value: unknown,
+  totalInvoices: number,
+): FacturaERPExpenseHistoryCandidate | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as JsonObject;
+  const account = text(row.cuenta, null);
+  const invoiceUses = positiveRuleInteger(row.usos_facturas);
+  const lineUses = positiveRuleInteger(row.usos_lineas);
+  const share = numberValue(row.porcentaje_facturas, null);
+  if (
+    !account ||
+    !/^\d{11}$/.test(account) ||
+    !invoiceUses ||
+    !lineUses ||
+    lineUses < invoiceUses ||
+    invoiceUses > totalInvoices ||
+    share === null ||
+    share <= 0 ||
+    share > 1 ||
+    Math.abs(share - invoiceUses / totalInvoices) > 0.000001 ||
+    typeof row.existe_en_catalogo !== "boolean"
+  ) {
+    return null;
+  }
+  const rawBlock = text(row.bloqueo_facturas, null);
+  const invoiceBlock = rawBlock?.toUpperCase() ?? null;
+  if (invoiceBlock !== null && invoiceBlock !== "S" && invoiceBlock !== "N") {
+    return null;
+  }
+  const rawLastUsedAt = text(row.ultima_fecha_uso, null);
+  const lastUsedAt = rawLastUsedAt === null
+    ? null
+    : dateValue(rawLastUsedAt, null);
+  if (rawLastUsedAt !== null && lastUsedAt === null) return null;
+
+  return {
+    account,
+    description: text(row.descripcion, null),
+    invoiceUses,
+    lineUses,
+    share,
+    existsInCatalog: row.existe_en_catalogo,
+    invoiceBlock,
+    lastUsedAt,
+  };
+};
+
+const facturaERPExpenseBaseTotal = (factura: JsonObject): number | null => {
+  const bases = [1, 2, 3, 4, 5].map((position) =>
+    numberValue(factura[`FRR_base${position}`], null)
+  );
+  if (bases.some((base) => base === null)) return null;
+  return Number(
+    (bases as number[]).reduce((sum, base) => sum + base, 0).toFixed(2),
+  );
+};
+
+type FacturaERPExpenseDistributionState = {
+  issues: FacturaValidationIssue[];
+  pendingFields: string[];
+};
+
+const facturaERPExpenseDistributionState = (
+  factura: JsonObject,
+): FacturaERPExpenseDistributionState => {
+  if (resolveFacturaProveedorTipo(factura) !== "acreedor") {
+    return { issues: [], pendingFields: [] };
+  }
+
+  const issues: FacturaValidationIssue[] = [];
+  const pendingFields = new Set<string>();
+  let materialSlotCount = 0;
+  let expenseTotal = 0;
+  for (let position = 1; position <= 4; position += 1) {
+    const accountField = `FRR_ctagasto${position}`;
+    const amountField = `FRR_igasto${position}`;
+    const account = text(factura[accountField], null);
+    const amount = numberValue(factura[amountField], null);
+    const hasAccount = account !== null;
+    const hasMaterialAmount = amount !== null && Math.abs(amount) > 0.005;
+    if (!hasAccount && !hasMaterialAmount) continue;
+
+    materialSlotCount += 1;
+    if (!account || !/^\d{11}$/.test(account)) {
+      pendingFields.add(accountField);
+      issues.push({
+        field: accountField,
+        message: `La cuenta de gasto ${position} debe tener exactamente 11 digitos.`,
+        severity: "error",
+      });
+    }
+    if (!hasMaterialAmount) {
+      pendingFields.add(amountField);
+      issues.push({
+        field: amountField,
+        message: `Falta un importe valido para la cuenta de gasto ${position}.`,
+        severity: "error",
+      });
+    } else {
+      expenseTotal += amount;
+    }
+  }
+
+  if (materialSlotCount === 0) {
+    pendingFields.add("FRR_ctagasto1");
+    pendingFields.add("FRR_igasto1");
+    issues.push({
+      field: "FRR_ctagasto1",
+      message:
+        "Falta asignar una cuenta de gasto y su importe para esta factura.",
+      severity: "error",
+    });
+    return { issues, pendingFields: [...pendingFields] };
+  }
+
+  const baseTotal = facturaERPExpenseBaseTotal(factura);
+  if (
+    baseTotal !== null &&
+    !issues.some((issue) => issue.severity === "error") &&
+    Math.abs(expenseTotal - baseTotal) > 0.01
+  ) {
+    pendingFields.add("FRR_igasto1");
+    issues.push({
+      field: "FRR_igasto1",
+      message:
+        `La suma de gastos (${expenseTotal.toFixed(2)}) no coincide con la base de IVA (${baseTotal.toFixed(2)}).`,
+      severity: "error",
+    });
+  }
+
+  return { issues, pendingFields: [...pendingFields] };
+};
+
+/**
+ * Acepta una cuenta historica solo si la respuesta conserva el contexto exacto,
+ * el lider es unico, sigue disponible en el catalogo y domina al menos el 98 %
+ * de un minimo de tres facturas. En cualquier otro caso no inventa una cuenta.
+ */
+export const resolveFacturaERPExpenseAccountFromHistory = (
+  factura: JsonObject,
+  providerType: FacturaProveedorTipo | null,
+  payload: unknown,
+): FacturaERPAccountingRuleResolution => {
+  const resolved = { ...factura };
+  const applied: JsonObject = {};
+  const issues: FacturaValidationIssue[] = [];
+  const query = buildFacturaERPExpenseHistoryConsulta(resolved, providerType);
+  const baseEvidence: JsonObject = {
+    source: "erp_history",
+    criterio:
+      "misma_empresa_proveedor_y_circuito_con_lider_unico_activo_y_dominante",
+    min_facturas: EXPENSE_HISTORY_MIN_INVOICES,
+    min_confianza: EXPENSE_HISTORY_MIN_CONFIDENCE,
+  };
+  if (!query) {
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: {
+        ...baseEvidence,
+        status: hasFacturaERPExpenseDistribution(resolved)
+          ? "skipped_existing_value"
+          : "skipped_missing_context",
+      },
+    };
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    issues.push({
+      field: "FRR_ctagasto1",
+      message:
+        "El historico ERP no devolvio una respuesta valida para resolver la cuenta de gasto.",
+      severity: "warning",
+    });
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: { ...baseEvidence, status: "invalid_response" },
+    };
+  }
+
+  const response = payload as JsonObject;
+  const filters = response.filtros && typeof response.filtros === "object" &&
+      !Array.isArray(response.filtros)
+    ? response.filtros as JsonObject
+    : {};
+  const empresaId = positiveRuleInteger(resolved.FRR_Idempresa);
+  const proveedorId = positiveRuleInteger(resolved.FRR_idproveedor);
+  const responseProviderType = text(filters.proveedor_tipo, null)?.toLowerCase() ?? null;
+  const totalInvoices = integerValue(response.total_facturas_con_gasto, null);
+  const contextMatches =
+    positiveRuleInteger(filters.empresa_id) === empresaId &&
+    positiveRuleInteger(filters.proveedor_id) === proveedorId &&
+    responseProviderType === providerType &&
+    text(filters.fecha_desde, null) === null &&
+    text(filters.fecha_hasta, null) === null;
+  const rawItems = Array.isArray(response.items) ? response.items : null;
+  const candidates = totalInvoices !== null && totalInvoices > 0 && rawItems
+    ? rawItems.map((item) => normalizeExpenseHistoryCandidate(item, totalInvoices))
+    : [];
+  const hasDuplicateAccounts = candidates.some((candidate, index) =>
+    candidate !== null &&
+    candidates.findIndex((other) => other?.account === candidate.account) !== index
+  );
+  const responseIsValid =
+    contextMatches &&
+    totalInvoices !== null &&
+    totalInvoices >= 0 &&
+    rawItems !== null &&
+    rawItems.length <= EXPENSE_HISTORY_LIMIT &&
+    candidates.every((candidate) => candidate !== null) &&
+    !hasDuplicateAccounts &&
+    (totalInvoices > 0 || rawItems.length === 0);
+  if (!responseIsValid) {
+    issues.push({
+      field: "FRR_ctagasto1",
+      message:
+        "La respuesta historica de cuentas de gasto no supera las comprobaciones de seguridad.",
+      severity: "warning",
+    });
+    return {
+      factura: resolved,
+      applied,
+      issues,
+      evidence: { ...baseEvidence, status: "rejected_inconsistent_response" },
+    };
+  }
+
+  const ranking = (candidates as FacturaERPExpenseHistoryCandidate[])
+    .sort((left, right) =>
+      right.invoiceUses - left.invoiceUses ||
+      String(right.lastUsedAt ?? "").localeCompare(String(left.lastUsedAt ?? "")) ||
+      left.account.localeCompare(right.account)
+    );
+  const winner = ranking[0] ?? null;
+  const evidence: JsonObject = {
+    ...baseEvidence,
+    status: totalInvoices === 0 ? "not_found" : "pending_review",
+    filtros: {
+      empresa_id: empresaId,
+      proveedor_id: proveedorId,
+      proveedor_tipo: providerType,
+    },
+    total_facturas_con_gasto: totalInvoices,
+    ranking: ranking.map((candidate, index) => ({
+      rank: index + 1,
+      cuenta: candidate.account,
+      descripcion: candidate.description,
+      usos_facturas: candidate.invoiceUses,
+      porcentaje_facturas: Number(candidate.share.toFixed(6)),
+      existe_en_catalogo: candidate.existsInCatalog,
+      bloqueo_facturas: candidate.invoiceBlock,
+    })),
+  };
+  if (!winner || totalInvoices < EXPENSE_HISTORY_MIN_INVOICES) {
+    evidence.status = winner ? "insufficient_history" : "not_found";
+    return { factura: resolved, applied, issues, evidence };
+  }
+  const uniqueWinner = ranking.length === 1 ||
+    winner.invoiceUses > ranking[1].invoiceUses;
+  if (!uniqueWinner || winner.share < EXPENSE_HISTORY_MIN_CONFIDENCE) {
+    evidence.status = uniqueWinner ? "insufficient_confidence" : "ambiguous";
+    return { factura: resolved, applied, issues, evidence };
+  }
+  if (!winner.existsInCatalog || winner.invoiceBlock === "S") {
+    evidence.status = "unavailable_account";
+    return { factura: resolved, applied, issues, evidence };
+  }
+
+  const parsedExistingAmount = numberValue(resolved.FRR_igasto1, null);
+  const existingAmount = parsedExistingAmount !== null &&
+      Math.abs(parsedExistingAmount) > 0.005
+    ? parsedExistingAmount
+    : null;
+  const expenseAmount = existingAmount ?? facturaERPExpenseBaseTotal(resolved);
+  if (expenseAmount === null) {
+    evidence.status = "incomplete_iva_bases";
+    return { factura: resolved, applied, issues, evidence };
+  }
+
+  resolved.FRR_ctagasto1 = winner.account;
+  applied.FRR_ctagasto1 = winner.account;
+  if (existingAmount === null) {
+    resolved.FRR_igasto1 = expenseAmount;
+    applied.FRR_igasto1 = expenseAmount;
+  }
+  evidence.status = "applied";
+  evidence.resolved = true;
+  evidence.selected_account = winner.account;
+  evidence.selected_rank = 1;
+  evidence.confianza = Number(winner.share.toFixed(6));
   return { factura: resolved, applied, issues, evidence };
 };
 
@@ -3733,6 +4076,7 @@ export const resolveFacturaERPAccountingRules = (
 export type FacturaERPDeterministicDefaultsContext = {
   providerType?: unknown;
   providerName?: unknown;
+  providerConfirmed?: boolean;
 };
 
 const deterministicDefaultRuleFields = {
@@ -3769,10 +4113,9 @@ export const applyFacturaERPDeterministicDefaults = (
   const issues: FacturaValidationIssue[] = [];
   const empresaId = positiveRuleInteger(resolved.FRR_Idempresa);
   const proveedorId = positiveRuleInteger(resolved.FRR_idproveedor);
-  const providerType = resolveFacturaProveedorTipo(
-    resolved,
-    context.providerType,
-  );
+  const providerType = context.providerConfirmed === false
+    ? null
+    : resolveFacturaProveedorTipo(resolved, context.providerType);
   const providerName = text(context.providerName, null);
   let hasMissingActiveBase = false;
 
@@ -3889,8 +4232,13 @@ export const applyFacturaERPDeterministicDefaults = (
   // Estos defaults se han confirmado para el circuito de acreedores. No se
   // trasladan a agricultores: sus cuentas y apuntes siguen otra semantica.
   if (providerType === "acreedor") {
-    const expenseAccount = effectiveRule(
+    // Una cuenta general de empresa no describe el gasto de todos los
+    // proveedores. Solo una regla explicita del acreedor puede adelantarse al
+    // historico ERP; concepto y contabilizacion si conservan la herencia general.
+    const expenseAccount = ruleScopeValue(
+      providerRows,
       deterministicDefaultRuleFields.expenseAccount,
+      `proveedor ${proveedorId}`,
     );
     if (expenseAccount.issue) {
       issues.push(expenseAccount.issue);
@@ -3996,6 +4344,7 @@ export const loadAndResolveFacturaERPAccountingRules = async (
   const explicitProviderType = resolveFacturaProveedorTipo(factura);
   const hintedOnlyProviderType = resolveFacturaProveedorTipo({}, hintedProviderType);
   let confirmedHintedProviderType: FacturaProveedorTipo | null = null;
+  let confirmedERPProviderType: FacturaProveedorTipo | null = null;
   let confirmedProviderName: string | null = null;
   let providerConfirmationEvidence: JsonObject | undefined;
   let providerConfirmationIssues: FacturaValidationIssue[] = [];
@@ -4010,6 +4359,7 @@ export const loadAndResolveFacturaERPAccountingRules = async (
       providerTypeToConfirm,
       readERP,
     );
+    confirmedERPProviderType = confirmation.providerType;
     if (hintedOnlyProviderType) {
       confirmedHintedProviderType = confirmation.providerType;
     }
@@ -4054,30 +4404,78 @@ export const loadAndResolveFacturaERPAccountingRules = async (
       : {}),
   };
   const providerType = resolveFacturaProveedorTipo(accountingResolution.factura);
+  const providerTypeConfirmedByERP = confirmedERPProviderType === providerType
+    ? providerType
+    : null;
   const hasProviderTypeConflict = accountingResolution.issues.some((issue) =>
     issue.severity === "error" && issue.field === "FRR_tipofactura"
   );
-  const finalizeAccountingResolution = (
+  const finalizeAccountingResolution = async (
     resolution: FacturaERPAccountingRuleResolution,
-  ): FacturaERPAccountingRuleResolution => {
+  ): Promise<FacturaERPAccountingRuleResolution> => {
     const defaults = applyFacturaERPDeterministicDefaults(
       resolution.factura,
       ruleRows,
       {
-        providerType,
+        providerType: providerTypeConfirmedByERP,
         providerName: confirmedProviderName,
+        providerConfirmed: providerTypeConfirmedByERP !== null,
       },
     );
+    const expenseQuery = buildFacturaERPExpenseHistoryConsulta(
+      defaults.factura,
+      providerTypeConfirmedByERP,
+    );
+    let expenseResolution: FacturaERPAccountingRuleResolution;
+    if (!expenseQuery) {
+      expenseResolution = resolveFacturaERPExpenseAccountFromHistory(
+        defaults.factura,
+        providerTypeConfirmedByERP,
+        null,
+      );
+    } else {
+      try {
+        expenseResolution = resolveFacturaERPExpenseAccountFromHistory(
+          defaults.factura,
+          providerTypeConfirmedByERP,
+          await readERP(expenseQuery),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Error desconocido";
+        expenseResolution = {
+          factura: defaults.factura,
+          applied: {},
+          issues: [{
+            field: "FRR_ctagasto1",
+            message:
+              `No se pudo consultar el historico ERP para resolver la cuenta de gasto (${message}).`,
+            severity: "warning",
+          }],
+          evidence: {
+            source: "erp_history",
+            status: "unavailable",
+            criterio:
+              "misma_empresa_proveedor_y_circuito_con_lider_unico_activo_y_dominante",
+          },
+        };
+      }
+    }
     return {
-      factura: defaults.factura,
+      factura: expenseResolution.factura,
       applied: {
         ...resolution.applied,
         ...defaults.applied,
+        ...expenseResolution.applied,
       },
-      issues: [...resolution.issues, ...defaults.issues],
+      issues: [
+        ...resolution.issues,
+        ...defaults.issues,
+        ...expenseResolution.issues,
+      ],
       evidence: {
         ...(resolution.evidence ?? {}),
         defaults: defaults.evidence ?? {},
+        cuenta_gasto: expenseResolution.evidence ?? {},
       },
     };
   };
@@ -4234,6 +4632,7 @@ export const syncFacturaERPAccountingMatchEvidence = (
   const regimen = positiveRuleInteger(factura.FRR_idregimen);
   const fechaCtb = dateValue(factura.FRR_fechactb, null);
   const invoiceDate = dateValue(factura.FRR_fechafactura, null);
+  const expenseAccount = text(factura.FRR_ctagasto1, null);
 
   const syncField = (
     evidenceKey: string,
@@ -4256,6 +4655,10 @@ export const syncFacturaERPAccountingMatchEvidence = (
   const regimenAppliedFromHistory =
     accountingEvidence.source === "erp_history" &&
     accountingEvidence.status === "applied";
+  const expenseHistoryEvidence = objectValue(accountingEvidence.cuenta_gasto);
+  const expenseAppliedFromHistory =
+    expenseHistoryEvidence.source === "erp_history" &&
+    expenseHistoryEvidence.status === "applied";
   const directExerciseEvidence =
     accountingEvidence.source === "erp_exact_invoice"
       ? accountingEvidence
@@ -4277,7 +4680,7 @@ export const syncFacturaERPAccountingMatchEvidence = (
     fechaEvidence.policy = "invoice_date";
   }
 
-  const pendingFields = [
+  const accountingPendingFields = [
     ["FRR_ejercicio", ejercicio],
     ["FRR_tipofactura", tipoFactura],
     ["FRR_idregimen", regimen],
@@ -4285,7 +4688,32 @@ export const syncFacturaERPAccountingMatchEvidence = (
   ]
     .filter(([, value]) => value === null)
     .map(([field]) => field);
+  const expenseDistribution = facturaERPExpenseDistributionState(factura);
+  const pendingFields = [
+    ...new Set([
+      ...accountingPendingFields,
+      ...expenseDistribution.pendingFields,
+    ]),
+  ];
   const previousErpRules = objectValue(current.erp_rules);
+  const previousExpenseAccount = objectValue(current.cuenta_gasto);
+  const synchronizedExpenseAccount: JsonObject = {
+    ...previousExpenseAccount,
+    ...expenseHistoryEvidence,
+    source: expenseHistoryEvidence.source === "erp_history"
+      ? "erp_history"
+      : hasUsableValue(applied.FRR_ctagasto1)
+      ? "supabase_edge_rule"
+      : expenseAccount
+      ? "existing_value"
+      : "supabase_edge",
+    resolved: expenseAccount !== null,
+    value: expenseAccount,
+    selected_account: expenseAccount,
+  };
+  if (!expenseAppliedFromHistory) {
+    delete synchronizedExpenseAccount.selected_rank;
+  }
 
   const synchronized: JsonObject = {
     ...current,
@@ -4310,6 +4738,7 @@ export const syncFacturaERPAccountingMatchEvidence = (
       regimenAppliedFromHistory ? "erp_history" : "supabase_edge_rule",
     ),
     fecha_ctb: fechaEvidence,
+    cuenta_gasto: synchronizedExpenseAccount,
     erp_rules: {
       ...previousErpRules,
       source: text(previousErpRules.source, "supabase_edge"),
@@ -4345,6 +4774,8 @@ export const getValidationErrors = (factura: JsonObject) => {
       errors.push({ field, message, severity: "error" });
     }
   }
+
+  errors.push(...facturaERPExpenseDistributionState(factura).issues);
 
   const bases = [1, 2, 3, 4, 5].reduce((acc, index) => acc + (numberValue(factura[`FRR_base${index}`], 0) ?? 0), 0);
   const cuotas = [1, 2, 3, 4, 5].reduce((acc, index) => acc + (numberValue(factura[`FRR_cuota${index}`], 0) ?? 0), 0);

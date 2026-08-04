@@ -87,6 +87,55 @@ export const assertFacturaExtractionResponseContract = (
   return response;
 };
 
+export type FacturaExtractionUpstreamFailure = {
+  status: number;
+  code: string;
+  category: "validation" | "transport";
+  userMessage: string;
+  retryable: boolean;
+};
+
+/**
+ * Mantiene separados un rechazo documental valido de n8n y una caida real del
+ * servicio. El 422 solo se acepta si conserva contrato y request_id exactos;
+ * un envelope alterado falla cerrado como transporte.
+ */
+export const classifyFacturaExtractionUpstreamFailure = (
+  status: number,
+  raw: unknown,
+  expectedRequestId: string,
+): FacturaExtractionUpstreamFailure => {
+  if (status === 422) {
+    const response = assertFacturaExtractionResponseContract(
+      raw,
+      expectedRequestId,
+    );
+    if (response.ok !== false) {
+      throw new Error(
+        "EXTRACTION_CONTRACT_MISMATCH: un rechazo 422 debe declarar ok=false",
+      );
+    }
+    return {
+      status: 422,
+      code: "invalid_invoice",
+      category: "validation",
+      userMessage: "El PDF no contiene una factura procesable.",
+      retryable: false,
+    };
+  }
+
+  const timeout = status === 504;
+  return {
+    status: timeout ? 504 : 502,
+    code: timeout ? "upstream_timeout" : "upstream_unavailable",
+    category: "transport",
+    userMessage: timeout
+      ? "El servicio de analisis ha tardado demasiado."
+      : "El servicio de analisis no pudo extraer la factura.",
+    retryable: status >= 429,
+  };
+};
+
 /**
  * One normalizer for both the interactive extraction response and authenticated
  * n8n ingest. It deliberately accepts the historical envelope aliases while

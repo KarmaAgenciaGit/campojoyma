@@ -33,6 +33,7 @@ import {
 } from "../_shared/facturas-recibidas-erp.ts";
 import {
   assertFacturaExtractionResponseContract,
+  classifyFacturaExtractionUpstreamFailure,
   normalizeFacturaExtractionPayload,
 } from "../_shared/factura-recibida-extraction.ts";
 
@@ -308,22 +309,19 @@ Deno.serve(async (req) => {
 
     const webhookJson = await readResponseJson(webhookResponse);
     if (!webhookResponse.ok) {
-      return jsonResponse(
-        {
-          contract_version: FACTURAS_RECIBIDAS_CONTRACT_VERSION,
-          request_id: requestId,
-          code: "upstream_unavailable",
-          category: "transport",
-          user_message: "El servicio de análisis no pudo extraer la factura.",
-          error: "El servicio de análisis no pudo extraer la factura.",
-          technical_details: {},
-          retryable: webhookResponse.status >= 500,
-          reconciliation_required: false,
-          target_id: null,
-          dataset_epoch: null,
-        },
-        502,
+      const failure = classifyFacturaExtractionUpstreamFailure(
+        webhookResponse.status,
+        webhookJson,
+        requestId,
       );
+      return extractionError({
+        status: failure.status,
+        code: failure.code,
+        category: failure.category,
+        userMessage: failure.userMessage,
+        requestId,
+        retryable: failure.retryable,
+      });
     }
 
     assertFacturaExtractionResponseContract(webhookJson, requestId);

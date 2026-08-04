@@ -7,7 +7,7 @@ const workflowPath = path.join(
   root,
   'docs',
   'n8n',
-  'CAMPOJOYMA - Entrada segura de facturas recibidas v4.2 (webhook v2).json',
+  'CAMPOJOYMA - Entrada segura de facturas recibidas v4.3 (webhook v2).json',
 );
 const workflow = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
 const systemPrompt = workflow.nodes.find(
@@ -18,18 +18,18 @@ const userPrompt = workflow.nodes.find(
 )?.parameters?.text ?? '';
 assert.equal(
   workflow.name,
-  'CAMPOJOYMA - Entrada segura de facturas recibidas v4.2 (webhook v2)',
-  'El workflow debe identificar la revision con tools de lectura.',
+  'CAMPOJOYMA - Entrada segura de facturas recibidas v4.3 (webhook v2)',
+  'El workflow debe identificar la revision documental sin tools ERP.',
 );
 assert.match(
   workflow.versionId ?? '',
-  /agente-v4\.2-2026-07-29-read-tools$/,
-  'La exportacion debe conservar un identificador verificable de prompt v4.2.',
+  /agente-v4\.3-2026-08-04-expense-history$/,
+  'La exportacion debe conservar un identificador verificable de prompt v4.3.',
 );
 assert.match(
   systemPrompt,
-  /^PROMPT_VERSION: 4\.2\n/,
-  'El mensaje de sistema debe declarar la revision v4.2.',
+  /^PROMPT_VERSION: 4\.3\n/,
+  'El mensaje de sistema debe declarar la revision v4.3.',
 );
 assert.doesNotMatch(
   systemPrompt,
@@ -38,8 +38,8 @@ assert.doesNotMatch(
 );
 assert.match(
   userPrompt,
-  /^=Analiza las \{\{ \$json\.pagesConverted \}\} imagenes adjuntas/,
-  'La tarea debe recibir el numero de imagenes y ordenar las consultas GET.',
+  /^=Analiza exclusivamente las \{\{ \$json\.pagesConverted \}\} imagenes adjuntas/,
+  'La tarea debe recibir solo las imagenes y mantener el lookup ERP fuera del modelo.',
 );
 assert.doesNotMatch(
   userPrompt,
@@ -49,8 +49,8 @@ assert.doesNotMatch(
 assert.equal(
   workflow.nodes.find((node) => node.name === '5.6 LUNA')?.parameters?.options
     ?.timeout,
-  120000,
-  'Las facturas multipagina deben disponer de tiempo para una segunda inspeccion.',
+  55000,
+  'El modelo debe respetar el presupuesto global del webhook Edge.',
 );
 assert.equal(
   workflow.nodes.find((node) => node.name === '5.6 LUNA')?.parameters
@@ -72,12 +72,18 @@ assert.equal(
 );
 const agentNode = workflow.nodes.find((node) => node.name === 'AI Agent');
 assert.equal(agentNode?.retryOnFail, true);
-assert.equal(agentNode?.maxTries, 2);
+assert.equal(agentNode?.maxTries, 1);
 assert.equal(agentNode?.waitBetweenTries, 1000);
+const emailIngestNode = workflow.nodes.find(
+  (node) => node.name === 'Enviar email a Edge ingest',
+);
+assert.equal(emailIngestNode?.retryOnFail, true);
+assert.equal(emailIngestNode?.maxTries, 3);
+assert.equal(emailIngestNode?.waitBetweenTries, 2000);
 assert.equal(
   agentNode?.onError,
   'continueErrorOutput',
-  'Tras agotar el unico reintento, el error debe seguir por la rama fail-closed.',
+  'El unico intento debe seguir por la rama fail-closed si falla.',
 );
 assert.match(
   systemPrompt,
@@ -131,19 +137,29 @@ assert.match(
 );
 assert.match(
   systemPrompt,
-  /POLITICA DE TOOLS[\s\S]*Buscar acreedores por NIF[\s\S]*Consultar detalle de acreedor/,
-  'El agente debe resolver y confirmar el acreedor con tools GET.',
+  /POLITICA SIN TOOLS[\s\S]*No resuelvas proveedor, regimen, gasto ni albaranes/,
+  'Toda consulta ERP debe quedar fuera del modelo documental.',
 );
-assert.match(
+assert.doesNotMatch(
   systemPrompt,
   /Sugerir regimen IVA historico/,
-  'El regimen debe proceder del historico ERP y no de concatenar tipos de IVA.',
+  'El modelo no puede controlar la consulta historica de regimen.',
 );
 assert.match(systemPrompt, /Nunca concatenes porcentajes/);
+assert.doesNotMatch(
+  systemPrompt,
+  /Buscar albaran MA por referencia/,
+  'El PDF no puede inducir consultas de albaranes a traves de la IA.',
+);
 assert.match(
   systemPrompt,
-  /Buscar albaran MA por referencia[\s\S]*Code posterior repite las consultas/,
-  'La IA puede orquestar, pero el Code posterior debe ser la autoridad.',
+  /observaciones read-only[\s\S]*Supabase\/Edge es la unica autoridad/,
+  'Las decisiones ERP deben quedar fuera del modelo y de n8n.',
+);
+assert.doesNotMatch(
+  systemPrompt,
+  /gasto 60200000001/,
+  'El prompt no puede conservar una cuenta de gasto global fija.',
 );
 const parserNode = workflow.nodes.find(
   (node) => node.name === 'Structured Output Parser',
@@ -174,60 +190,40 @@ assert.deepEqual(
 const toolNodes = workflow.nodes.filter(
   (node) => node.type === 'n8n-nodes-base.httpRequestTool',
 );
-assert.equal(toolNodes.length, 5, 'El agente debe tener cinco tools GET acotadas.');
-assert.deepEqual(
-  new Set(toolNodes.map((node) => node.name)),
-  new Set([
-    'Buscar acreedores por NIF',
-    'Buscar acreedores por nombre',
-    'Consultar detalle de acreedor',
-    'Sugerir regimen IVA historico',
-    'Buscar albaran MA por referencia',
-  ]),
-);
-for (const tool of toolNodes) {
-  assert.equal(tool.parameters.method, 'GET', `${tool.name}: solo se permite GET`);
-  assert.match(
-    JSON.stringify(tool.parameters),
-    /\$fromAI/,
-    `${tool.name}: debe recibir parametros declarados del agente`,
-  );
-  assert.deepEqual(
-    workflow.connections?.[tool.name]?.ai_tool?.[0],
-    [{ node: 'AI Agent', type: 'ai_tool', index: 0 }],
-    `${tool.name}: debe estar conectada por ai_tool`,
-  );
-}
-assert.equal(
-  toolNodes.find((node) => node.name === 'Sugerir regimen IVA historico')
-    ?.parameters?.url,
-  'http://172.19.0.1:18001/facturasrecibidas/regimen-sugerido',
-);
-const maTool = toolNodes.find(
-  (node) => node.name === 'Buscar albaran MA por referencia',
-);
-assert.equal(
-  maTool?.parameters?.url,
-  'http://172.19.0.1:18001/albaranes-gastos/punteables',
-);
-const maToolParams = Object.fromEntries(
-  (maTool?.parameters?.queryParameters?.parameters ?? []).map((item) => [
-    item.name,
-    item.value,
-  ]),
-);
-assert.equal(maToolParams.source_table, 'albmaterial');
-assert.equal(maToolParams.empresa_id, '1');
-assert.equal(maToolParams.solo_pendientes, 'true');
-assert.match(maToolParams.referencia ?? '', /\$fromAI/);
+assert.equal(toolNodes.length, 0, 'El agente documental no puede tener tools ERP.');
 const pdfRenderNode = workflow.nodes.find((node) => node.name === 'PDF a imagenes');
 assert.equal(pdfRenderNode?.parameters?.authentication, 'genericCredentialType');
 assert.equal(pdfRenderNode?.parameters?.genericAuthType, 'httpHeaderAuth');
 assert.equal(pdfRenderNode?.parameters?.headerParameters, undefined);
+assert.equal(pdfRenderNode?.parameters?.options?.timeout, 25000);
 assert.equal(
   pdfRenderNode?.credentials?.httpHeaderAuth?.name,
   'Campojoyma PDF renderer token',
   'La autorizacion del renderizador debe vivir en el almacen de credenciales de n8n.',
+);
+const inputNormalizerCode = workflow.nodes.find(
+  (node) => node.name === 'Normalizar entrada',
+)?.parameters?.jsCode ?? '';
+assert.match(
+  inputNormalizerCode,
+  /CAMPOJOYMA_PDF_PREDECODE_LIMIT_V1[\s\S]*maxEncodedPdfLength[\s\S]*Buffer\.from/,
+  'El PDF debe limitarse antes de reservar el Buffer.',
+);
+const emailPdfCode = workflow.nodes.find(
+  (node) => node.name === 'Extraer PDF del email',
+)?.parameters?.jsCode ?? '';
+assert.match(
+  emailPdfCode,
+  /CAMPOJOYMA_EMAIL_PDF_LIMIT_V1[\s\S]*declaredBinarySize[\s\S]*getBinaryDataBuffer[\s\S]*buffer\.length > maxPdfBytes/,
+  'Los adjuntos de correo deben limitarse antes y despues de leer el binario.',
+);
+const renderedImagesCode = workflow.nodes.find(
+  (node) => node.name === 'Reconstruir imagenes binarias',
+)?.parameters?.jsCode ?? '';
+assert.match(
+  renderedImagesCode,
+  /CAMPOJOYMA_IMAGE_MAGIC_V1[\s\S]*contract_version\) !== 2[\s\S]*maxImageBytes[\s\S]*maxTotalImageBytes[\s\S]*identifyImage[\s\S]*image\/webp/,
+  'Las paginas renderizadas deben limitar tamano total y validar su firma real.',
 );
 assert.deepEqual(
   parserSchema.properties?.lineas?.items?.required,
@@ -241,6 +237,16 @@ assert(
 const normalizerCode = workflow.nodes.find(
   (node) => node.name === 'Normalizar salida IA literal',
 )?.parameters?.jsCode ?? '';
+assert.match(
+  normalizerCode,
+  /const extractionOk = isV4 && declaredOk/,
+  'Un schema anterior nunca puede autorizar la extraccion aunque declare ok=true.',
+);
+assert.match(
+  normalizerCode,
+  /const lookupSource = \{[\s\S]*status: 'not_consulted'/,
+  'Cualquier lookup ERP inventado por el modelo debe ignorarse.',
+);
 assert.match(
   normalizerCode,
   /descripcion: readString\(linea\?\.descripcion \?\? linea\?\.articulo\)/,
@@ -280,6 +286,21 @@ const enrichmentCode = workflow.nodes.find(
   (node) => node.name === 'Enriquecer por API Campojoyma',
 )?.parameters?.jsCode;
 assert.equal(typeof enrichmentCode, 'string');
+assert.match(
+  enrichmentCode,
+  /const shouldIngest = ai\.ok === true/,
+  'Solo un ok=true explicito y normalizado puede llegar a ingesta.',
+);
+assert.match(
+  enrichmentCode,
+  /erpReadDeadlineAt[\s\S]*remainingBudgetMs[\s\S]*Math\.min\([\s\S]*remainingBudgetMs/,
+  'Todas las lecturas ERP deben compartir un deadline global.',
+);
+assert.match(
+  enrichmentCode,
+  /referenceLookupConcurrency = 5[\s\S]*Promise\.all/,
+  'Las referencias MA deben resolverse con concurrencia acotada.',
+);
 assert.match(
   enrichmentCode,
   /const documentedReferenceRows =[\s\S]*albaranes_referenciados[\s\S]*lineas\.referencia_albaran/,
@@ -322,18 +343,52 @@ assert.match(
 );
 assert.match(
   enrichmentCode,
-  /const ejercicio = 25;/,
-  'El borrador del circuito acreedor debe usar el ejercicio ERP 25.',
+  /const ejercicio = null;/,
+  'n8n no debe fijar el ejercicio ERP.',
 );
 assert.match(
   enrichmentCode,
   /\/facturasrecibidas\/regimen-sugerido[\s\S]*responseConsistent[\s\S]*regimenId = suggestedRegimen/,
-  'El regimen solo puede aplicarse tras revalidar una sugerencia historica consistente.',
+  'n8n solo puede observar una sugerencia historica consistente.',
 );
 assert.match(
   enrichmentCode,
-  /ACCOUNTING_DRAFT_POLICY[\s\S]*GASTO_ACCOUNT = '60200000001'[\s\S]*FRR_Contabilizar: 'S'/,
-  'El borrador debe fijar la cuenta de gasto y contabilizar segun la politica aprobada.',
+  /ACCOUNTING_DRAFT_POLICY = 'edge_authoritative_v3'[\s\S]*EXPENSE_HISTORY_MIN_INVOICES = 3[\s\S]*EXPENSE_HISTORY_MIN_CONFIDENCE = 0\.98[\s\S]*\/facturasrecibidas\/cuentas-gasto-historicas[\s\S]*source: 'n8n_erp_history_observation'[\s\S]*authoritative: false[\s\S]*proposed_account: leaderSafe \? leader\.cuenta : null/,
+  'n8n debe observar el historico con el mismo criterio sin convertirse en autoridad contable.',
+);
+assert.doesNotMatch(
+  enrichmentCode,
+  /GASTO_ACCOUNT|FRR_ctagasto1:\s*expenseBase === null \? null : ['"]60200000001['"]/,
+  'La cuenta de gasto no puede quedar hardcodeada en n8n.',
+);
+assert.match(
+  enrichmentCode,
+  /FRR_fechactb: null,[\s\S]*FRR_ejercicio: null,[\s\S]*FRR_idregimen: null,[\s\S]*FRR_tipofactura: null,[\s\S]*FRR_igasto1: null,[\s\S]*FRR_ctagasto1: null,[\s\S]*FRR_Contabilizar: null[\s\S]*evidence\.cuenta_gasto_proposal = expenseHistoryProposal/,
+  'La propuesta n8n debe quedar fuera de la cabecera y en un namespace informativo.',
+);
+assert.doesNotMatch(
+  enrichmentCode,
+  /expenseHistoryEvidence\.resolved|evidence\.cuenta_gasto\s*=/,
+  'La observacion de n8n no puede suplantar la evidencia autoritativa de Edge.',
+);
+assert.match(
+  enrichmentCode,
+  /numero_factura: numeroFactura,[\s\S]*tipo_factura: tipoFactura,[\s\S]*fecha_factura: readString\(literal\.fecha_factura\)/,
+  'La comprobacion de duplicados debe quedar acotada por circuito y fecha.',
+);
+assert.doesNotMatch(
+  enrichmentCode,
+  /empresa_id: empresaId,\s*ejercicio,/,
+  'La consulta exacta debe usar fecha y circuito sin depender de un ejercicio fijo.',
+);
+assert.match(
+  enrichmentCode,
+  /const isStrictIsoDate =[\s\S]*Array\.isArray\(response\.items\)[\s\S]*bloqueoFacturas === 'N'[\s\S]*bloqueoFacturas === 'S'/,
+  'La observacion de gasto debe validar envelope, fechas y estado de bloqueo.',
+);
+assert(
+  enrichmentCode.includes('/^\\d{11}$/.test(cuenta)'),
+  'La cuenta propuesta debe tener exactamente 11 digitos.',
 );
 assert.match(
   enrichmentCode,
@@ -486,14 +541,15 @@ assert.match(
   grossLineNormalizerResult.json.ai.metadata.warnings.join(' '),
   /bases de linea no impresas/i,
 );
-assert.match(
+assert.doesNotMatch(
   grossLineNormalizerResult.json.ai.metadata.warnings.join(' '),
   /No se encontro un acreedor por el NIF visible/i,
+  'Los avisos de un lookup ERP inventado por el modelo deben descartarse.',
 );
 assert.deepEqual(
   grossLineNormalizerResult.json.ai.metadata.erp_lookup,
   {
-    status: 'not_found',
+    status: 'not_consulted',
     entity_type: null,
     matched_by: null,
     entity_id: null,
@@ -502,9 +558,55 @@ assert.deepEqual(
     nif: null,
     candidate_count: 0,
     candidates: [],
-    warnings: ['No se encontro un acreedor por el NIF visible.'],
+    warnings: [],
   },
-  'El normalizador debe conservar el resultado ERP real sin promoverlo a autoridad.',
+  'El normalizador debe descartar cualquier lookup ERP atribuido al modelo.',
+);
+const legacySchemaNormalizerResult = await new AsyncFunction(
+  '$json',
+  '$',
+  normalizerCode,
+)(
+  {
+    output: JSON.stringify({
+      schema_version: 3,
+      ok: true,
+      document_kind: 'factura',
+      receptor: { es_campojoyma: true },
+      proveedor: { nombre: 'PROVEEDOR LEGACY', nif: 'B12345678' },
+      factura: {
+        numero: 'LEGACY-1',
+        fecha: '2026-08-04',
+        moneda: 'EUR',
+        base_total: 100,
+        total: 121,
+      },
+      tramos_iva: [{ base: 100, porcentaje: 21, cuota: 21 }],
+      retencion: { base: null, porcentaje: null, cuota: null },
+      lineas: [],
+      albaranes_referenciados: [],
+      referencias: [],
+      vencimientos: [],
+      evidencias: [],
+      erp_lookup: { status: 'unique', entity_id: 17 },
+      quality: {
+        confidence: 1,
+        requires_review: false,
+        pages_analyzed: 1,
+        warnings: [],
+      },
+    }),
+  },
+  () => ({ item: { json: { security_warnings: [] } } }),
+);
+assert.equal(
+  legacySchemaNormalizerResult.json.ai.ok,
+  false,
+  'Un payload schema_version 3 debe fallar cerrado aunque declare ok=true.',
+);
+assert.equal(
+  legacySchemaNormalizerResult.json.ai.metadata.erp_lookup.status,
+  'not_consulted',
 );
 const discountedInvoiceNormalizerResult = await new AsyncFunction(
   '$json',
@@ -651,26 +753,18 @@ const uniqueLookupNormalizerResult = await new AsyncFunction(
 assert.deepEqual(
   uniqueLookupNormalizerResult.json.ai.metadata.erp_lookup,
   {
-    status: 'unique',
-    entity_type: 'acreedor',
-    matched_by: 'nif',
-    entity_id: 17,
-    codigo: 17,
-    nombre: 'ONDUSPAN, S.A',
-    nif: 'A04119293',
-    candidate_count: 1,
-    candidates: [
-      {
-        entity_type: 'acreedor',
-        id: 17,
-        codigo: 17,
-        nombre: 'ONDUSPAN, S.A',
-        nif: 'A04119293',
-      },
-    ],
+    status: 'not_consulted',
+    entity_type: null,
+    matched_by: null,
+    entity_id: null,
+    codigo: null,
+    nombre: null,
+    nif: null,
+    candidate_count: 0,
+    candidates: [],
     warnings: [],
   },
-  'El normalizador debe conservar un lookup unico internamente coherente.',
+  'El normalizador debe ignorar incluso un lookup unico inventado por el modelo.',
 );
 
 const incoherentLookupInput = {
@@ -722,7 +816,7 @@ const incoherentLookupResult = await new AsyncFunction(
   incoherentLookupInput,
   () => ({ item: { json: { security_warnings: [] } } }),
 );
-assert.equal(incoherentLookupResult.json.ai.metadata.erp_lookup.status, 'ambiguous');
+assert.equal(incoherentLookupResult.json.ai.metadata.erp_lookup.status, 'not_consulted');
 assert.equal(incoherentLookupResult.json.ai.metadata.erp_lookup.entity_id, null);
 
 const acreedorV42 = {
@@ -759,6 +853,31 @@ const regimenSuggestion2110 = {
   },
   total_historicos_coincidentes: 50,
   total_historicos_evaluados: 50,
+};
+const expenseHistory602 = {
+  filtros: {
+    empresa_id: 1,
+    proveedor_id: 17,
+    proveedor_tipo: 'acreedor',
+    fecha_desde: null,
+    fecha_hasta: null,
+  },
+  total_facturas_con_gasto: 130,
+  items: [
+    {
+      cuenta: '60200000001',
+      descripcion: 'COMPRAS ENVASES Y EMBALAJES',
+      usos_facturas: 130,
+      usos_lineas: 130,
+      porcentaje_facturas: 1,
+      importe_neto_total: '100000.00',
+      importe_absoluto_total: '100000.00',
+      primera_fecha_uso: '2025-01-01',
+      ultima_fecha_uso: '2026-06-30',
+      existe_en_catalogo: true,
+      bloqueo_facturas: 'N',
+    },
+  ],
 };
 const exactMaCandidate = {
   source_table: 'albmaterial',
@@ -818,6 +937,7 @@ const runV42Enrichment = async ({
   duplicateResponse = { items: [], total: 0 },
   linkedPunteosResponse = null,
   regimenResponse = regimenSuggestion2110,
+  expenseHistoryResponse = expenseHistory602,
   maResponse = { items: [exactMaCandidate], total: 1 },
 }) => {
   const requests = [];
@@ -844,10 +964,16 @@ const runV42Enrichment = async ({
       if (parsed.pathname === '/facturasrecibidas/regimen-sugerido') {
         return regimenResponse;
       }
+      if (
+        parsed.pathname ===
+        '/facturasrecibidas/cuentas-gasto-historicas'
+      ) {
+        return expenseHistoryResponse;
+      }
       if (parsed.pathname === '/albaranes-gastos/punteables') {
         return maResponse;
       }
-      throw new Error(`Peticion inesperada en validator v4.2: ${url}`);
+      throw new Error(`Peticion inesperada en validator v4.3: ${url}`);
     },
   };
   const input = {
@@ -866,14 +992,14 @@ const runV42Enrichment = async ({
         confidence: 0.99,
         warnings: [],
         erp_lookup: {
-          status: 'unique',
-          entity_type: 'acreedor',
-          matched_by: 'nif',
-          entity_id: acreedor.id,
-          codigo: acreedor.codigo,
-          nombre: acreedor.nombre,
-          nif: acreedor.nif,
-          candidate_count: 1,
+          status: 'not_consulted',
+          entity_type: null,
+          matched_by: null,
+          entity_id: null,
+          codigo: null,
+          nombre: null,
+          nif: null,
+          candidate_count: 0,
           candidates: [],
           warnings: [],
         },
@@ -892,10 +1018,10 @@ const exactV42 = await runV42Enrichment({});
 const exactFrr = exactV42.output.extraction;
 assert.equal(exactFrr.FRR_idproveedor, 17);
 assert.equal(exactFrr.FRR_Idempresa, 1);
-assert.equal(exactFrr.FRR_ejercicio, 25);
-assert.equal(exactFrr.FRR_fechactb, '2026-06-30');
-assert.equal(exactFrr.FRR_tipofactura, 'OT');
-assert.equal(exactFrr.FRR_idregimen, 2110);
+assert.equal(exactFrr.FRR_ejercicio, null);
+assert.equal(exactFrr.FRR_fechactb, null);
+assert.equal(exactFrr.FRR_tipofactura, null);
+assert.equal(exactFrr.FRR_idregimen, null);
 assert.deepEqual(
   [exactFrr.FRR_base1, exactFrr.FRR_iva1, exactFrr.FRR_cuota1],
   [100, 21, 21],
@@ -915,26 +1041,20 @@ assert.deepEqual(
   [exactFrr.FRR_baseret, exactFrr.FRR_ret, exactFrr.FRR_cuotaret],
   [0, 0, 0],
 );
-assert.equal(exactFrr.FRR_CuotaNoDeducible, 0);
-assert.equal(exactFrr.FRR_ctagasto1, '60200000001');
-assert.equal(exactFrr.FRR_igasto1, 100);
-assert.equal(exactFrr.FRR_Concepto, 'FRA. ONDUSPAN, S.A');
-assert.equal(exactFrr.FRR_ObservacionesAEAT, exactFrr.FRR_Concepto);
-assert.equal(exactFrr.FRR_Contabilizar, 'S');
+assert.equal(exactFrr.FRR_CuotaNoDeducible, null);
+assert.equal(exactFrr.FRR_ctagasto1, null);
+assert.equal(exactFrr.FRR_igasto1, null);
+assert.equal(exactFrr.FRR_Concepto, null);
+assert.equal(exactFrr.FRR_ObservacionesAEAT, null);
+assert.equal(exactFrr.FRR_Contabilizar, null);
 assert.deepEqual(exactFrr.vencimientos, []);
 assert.deepEqual(exactV42.output.ctb, []);
-assert.deepEqual(exactV42.output.gastos, [
-  {
-    posicion: 1,
-    descripcion: '60200000001',
-    cuenta_gasto: '60200000001',
-    importe: 100,
-  },
-]);
+assert.deepEqual(exactV42.output.gastos, []);
 assert.equal(exactV42.output.punteos.length, 1);
 assert.equal(exactV42.output.punteos[0].S, true);
 assert.deepEqual(exactV42.output.punteos[0].source_lines, []);
-assert.equal(exactV42.output.metadata.ready_for_erp, true);
+assert.equal(exactV42.output.metadata.ready_for_edge_enrichment, true);
+assert.equal(exactV42.output.metadata.ready_for_erp, false);
 assert.deepEqual(exactV42.result.json.ingest_payload.gastos, exactV42.output.gastos);
 assert.deepEqual(exactV42.result.json.ingest_payload.punteos, exactV42.output.punteos);
 
@@ -947,6 +1067,46 @@ assert.equal(regimenRequest.searchParams.get('empresa_id'), '1');
 assert.equal(regimenRequest.searchParams.get('base2'), '0');
 assert.equal(regimenRequest.searchParams.get('iva2'), '0');
 assert.equal(regimenRequest.searchParams.get('cuota2'), '0');
+const expenseHistoryRequest = exactV42.requests
+  .map((url) => new URL(url))
+  .find(
+    (url) =>
+      url.pathname === '/facturasrecibidas/cuentas-gasto-historicas',
+  );
+assert(
+  expenseHistoryRequest,
+  'Debe consultarse el historico de gasto tras confirmar el acreedor.',
+);
+assert.equal(expenseHistoryRequest.searchParams.get('empresa_id'), '1');
+assert.equal(expenseHistoryRequest.searchParams.get('proveedor_id'), '17');
+assert.equal(
+  expenseHistoryRequest.searchParams.get('proveedor_tipo'),
+  'acreedor',
+);
+assert.equal(expenseHistoryRequest.searchParams.get('limit'), '10');
+assert.equal(
+  exactV42.output.metadata.match_evidence.cuenta_gasto_proposal
+    .proposed_account,
+  '60200000001',
+);
+assert.equal(
+  exactV42.output.metadata.match_evidence.cuenta_gasto_proposal.eligible,
+  true,
+);
+assert.equal(
+  exactV42.output.metadata.match_evidence.cuenta_gasto_proposal.authoritative,
+  false,
+);
+const duplicateRequest = exactV42.requests
+  .map((url) => new URL(url))
+  .find((url) => url.pathname === '/facturasrecibidas/buscar');
+assert(duplicateRequest, 'Debe comprobarse el duplicado exacto.');
+assert.equal(duplicateRequest.searchParams.get('tipo_factura'), 'OT');
+assert.equal(duplicateRequest.searchParams.has('ejercicio'), false);
+assert.equal(
+  duplicateRequest.searchParams.get('fecha_factura'),
+  '2026-06-30',
+);
 const maRequest = exactV42.requests
   .map((url) => new URL(url))
   .find((url) => url.pathname === '/albaranes-gastos/punteables');
@@ -956,6 +1116,100 @@ assert.equal(maRequest.searchParams.get('proveedor_id'), '17');
 assert.equal(maRequest.searchParams.get('empresa_id'), '1');
 assert.equal(maRequest.searchParams.get('referencia'), '479628');
 assert.equal(maRequest.searchParams.get('solo_pendientes'), 'true');
+
+const dynamicExpenseAccountV43 = await runV42Enrichment({
+  expenseHistoryResponse: {
+    ...expenseHistory602,
+    items: [
+      {
+        ...expenseHistory602.items[0],
+        cuenta: '60700000001',
+        descripcion: 'TRABAJOS EXTERIORES',
+      },
+    ],
+  },
+});
+assert.equal(
+  dynamicExpenseAccountV43.output.extraction.FRR_ctagasto1,
+  null,
+  'n8n nunca debe escribir la cuenta observada en la cabecera.',
+);
+assert.equal(
+  dynamicExpenseAccountV43.output.metadata.match_evidence
+    .cuenta_gasto_proposal.proposed_account,
+  '60700000001',
+);
+assert.deepEqual(dynamicExpenseAccountV43.output.gastos, []);
+
+const insufficientExpenseHistoryV43 = await runV42Enrichment({
+  expenseHistoryResponse: {
+    ...expenseHistory602,
+    total_facturas_con_gasto: 2,
+    items: [
+      {
+        ...expenseHistory602.items[0],
+        usos_facturas: 2,
+        usos_lineas: 2,
+        porcentaje_facturas: 1,
+      },
+    ],
+  },
+});
+assert.equal(insufficientExpenseHistoryV43.output.extraction.FRR_ctagasto1, null);
+assert.deepEqual(insufficientExpenseHistoryV43.output.gastos, []);
+assert.equal(
+  insufficientExpenseHistoryV43.output.metadata.match_evidence
+    .cuenta_gasto_proposal.status,
+  'insufficient_dominance',
+);
+assert.equal(insufficientExpenseHistoryV43.output.metadata.ready_for_erp, false);
+
+const tiedExpenseHistoryV43 = await runV42Enrichment({
+  expenseHistoryResponse: {
+    ...expenseHistory602,
+    total_facturas_con_gasto: 10,
+    items: [
+      {
+        ...expenseHistory602.items[0],
+        usos_facturas: 5,
+        usos_lineas: 5,
+        porcentaje_facturas: 0.5,
+      },
+      {
+        ...expenseHistory602.items[0],
+        cuenta: '60700000001',
+        descripcion: 'TRABAJOS EXTERIORES',
+        usos_facturas: 5,
+        usos_lineas: 5,
+        porcentaje_facturas: 0.5,
+        primera_fecha_uso: '2025-01-01',
+        ultima_fecha_uso: '2026-05-30',
+      },
+    ],
+  },
+});
+assert.equal(tiedExpenseHistoryV43.output.extraction.FRR_ctagasto1, null);
+assert.equal(
+  tiedExpenseHistoryV43.output.metadata.match_evidence.cuenta_gasto_proposal
+    .eligible,
+  false,
+);
+
+const wrongExpenseContextV43 = await runV42Enrichment({
+  expenseHistoryResponse: {
+    ...expenseHistory602,
+    filtros: {
+      ...expenseHistory602.filtros,
+      proveedor_id: 18,
+    },
+  },
+});
+assert.equal(wrongExpenseContextV43.output.extraction.FRR_ctagasto1, null);
+assert.equal(
+  wrongExpenseContextV43.output.metadata.match_evidence.cuenta_gasto_proposal
+    .status,
+  'invalid_response',
+);
 
 const equivalentLegalNameV42 = await runV42Enrichment({
   extraction: {
@@ -1175,7 +1429,12 @@ assert.deepEqual(
   [0, 0, 0],
   'Un slot ERP preconfigurado como 0/10/0 esta inactivo y debe limpiarse a 0/0/0.',
 );
-assert.equal(configuredZeroVatV42.output.extraction.FRR_idregimen, 2110);
+assert.equal(configuredZeroVatV42.output.extraction.FRR_idregimen, null);
+assert.equal(
+  configuredZeroVatV42.output.metadata.match_evidence.regimen_proposal.value,
+  2110,
+  'La sugerencia puede observarse, pero solo Edge puede aplicarla.',
+);
 assert.doesNotMatch(
   configuredZeroVatV42.output.metadata.warnings.join(' '),
   /tramo IVA activo 2 esta incompleto/i,
@@ -1241,11 +1500,17 @@ assert.equal(overReferenceLimitV42.output.metadata.ready_for_erp, false);
 
 const executedRegressionNames = [
   'parser-esquema-invalido-reintentable',
+  'schema-v3-ok-true-falla-cerrado',
   'normalizador-elimina-bases-prorrateadas',
   'normalizador-respeta-descuento-global',
-  'normalizador-conserva-lookup-unico-coherente',
-  'normalizador-degrada-lookup-unico-incoherente',
+  'normalizador-descarta-lookup-modelo-coherente',
+  'normalizador-descarta-lookup-modelo-incoherente',
+  'agente-sin-tools-erp',
   'borrador-acreedor-y-ma-exacto',
+  'cuenta-gasto-historica-dinamica',
+  'cuenta-gasto-historico-insuficiente',
+  'cuenta-gasto-historico-empatado',
+  'cuenta-gasto-historico-contexto-incorrecto',
   'nombre-equivalente-sa-sau',
   'nombre-equivalente-sl-slu',
   'nif-exacto-con-nombre-contradictorio',
