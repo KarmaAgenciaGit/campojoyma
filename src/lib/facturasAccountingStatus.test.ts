@@ -29,12 +29,64 @@ describe('estado contable independiente', () => {
         { accounting_status: 'created' },
         unavailableRuntime,
       ),
-    ).toBe('Creada');
+    ).toBe('Contabilizada');
     expect(
       getFacturaAccountingStatusText(
         { accounting_status: 'reference_unverified' },
         unavailableRuntime,
       ),
-    ).toBe('Referencia sin verificar');
+    ).toBe('Pendiente de comprobar');
+  });
+
+  it('prioriza el estado del snapshot contable sobre la referencia heredada', () => {
+    expect(
+      getFacturaAccountingStatusText(
+        {
+          accounting_status: 'reference_unverified',
+          asiento_estado: 'error',
+        },
+        unavailableRuntime,
+      ),
+    ).toBe('Error');
+
+    expect(
+      getFacturaAccountingStatusText(
+        {
+          accounting_status: 'reference_unverified',
+          asiento_estado: 'created',
+        },
+        unavailableRuntime,
+      ),
+    ).toBe('Contabilizada');
+  });
+
+  it.each([
+    ['pending', 'Pendiente'],
+    ['unknown', 'Resultado incierto'],
+    ['error', 'Error'],
+    ['stale', 'Caducada'],
+  ])(
+    'mantiene el estado explicito %s aunque exista un snapshot creado',
+    (accountingStatus, expectedText) => {
+      expect(
+        getFacturaAccountingStatusText(
+          {
+            accounting_status: accountingStatus,
+            asiento_estado: 'created',
+            accounting: { status: 'created' },
+          },
+          unavailableRuntime,
+        ),
+      ).toBe(expectedText);
+    },
+  );
+
+  it('usa el snapshot cuando no existe un estado contable explicito', () => {
+    expect(
+      getFacturaAccountingStatusText(
+        { asiento_estado: 'created' },
+        unavailableRuntime,
+      ),
+    ).toBe('Contabilizada');
   });
 });

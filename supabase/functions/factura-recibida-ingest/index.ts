@@ -5,7 +5,9 @@ import {
   createServiceClient,
   ensureArchivoPdf,
   fetchERPReadConsulta,
+  filterFacturaERPWarningsAfterDuplicateVerification,
   getFacturaERPDocumentedReferenceIssues,
+  getFacturaERPDocumentedReferenceCount,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   loadAndResolveFacturaERPAccountingRules,
@@ -16,10 +18,12 @@ import {
   requireAgentToken,
   requestHasServiceRoleCredential,
   resolveFacturaIngestAuthority,
+  resolveFacturaERPExistingPunteoLinks,
   resolveFacturaProveedorTipo,
   rpcErrorStatus,
   syncFacturaERPAccountingMatchEvidence,
   text,
+  verifyFacturaERPExactDuplicate,
   verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
@@ -256,6 +260,7 @@ Deno.serve(async (req) => {
         const requestId = requestIdValue.trim();
         itemRequestId = requestId;
         const normalized = normalizeOnePayload(input, trustedImportSignal);
+        let persistedPunteos: JsonObject[] | null = normalized.punteos;
         const proveedorTipo = getFacturaProveedorTipoFromMatchEvidence(
           normalized.matchEvidence,
           normalized.frr.FRR_idproveedor,
@@ -270,21 +275,63 @@ Deno.serve(async (req) => {
           normalized.matchEvidence,
           accountingRules,
         );
+        let duplicateVerification: Awaited<
+          ReturnType<typeof verifyFacturaERPExactDuplicate>
+        > = {
+          duplicate: false,
+          candidates: [],
+          issues: [],
+          evidence: {
+            source: "erp_exact_duplicate",
+            status: "not_applicable_erp_reference",
+            verified: false,
+            checked: false,
+          },
+        };
+        if (!normalized.isERPReference) {
+          duplicateVerification = await verifyFacturaERPExactDuplicate(
+            normalized.frr,
+            fetchERPReadConsulta,
+          );
+          normalized.matchEvidence = {
+            ...normalized.matchEvidence,
+            erp_duplicate_verification: duplicateVerification.evidence,
+          };
+        }
         let punteoVerificationIssues: Awaited<
           ReturnType<typeof verifyFacturaERPExactMAPunteos>
         >["issues"] = [];
         if (!normalized.isERPReference) {
-          const punteoVerification = await verifyFacturaERPExactMAPunteos(
-            normalized.frr,
-            normalized.requestedPunteos,
-            fetchERPReadConsulta,
-          );
-          normalized.punteos = punteoVerification.punteos;
-          punteoVerificationIssues = punteoVerification.issues;
-          normalized.matchEvidence = {
-            ...normalized.matchEvidence,
-            punteos_edge_verification: punteoVerification.evidence,
-          };
+          if (duplicateVerification.duplicate) {
+            const existingPunteoLinks = await resolveFacturaERPExistingPunteoLinks(
+              duplicateVerification,
+              fetchERPReadConsulta,
+              {
+                requireNonEmpty: getFacturaERPDocumentedReferenceCount(
+                  normalized.extraction,
+                  normalized.matchEvidence,
+                ) > 0,
+              },
+            );
+            persistedPunteos = existingPunteoLinks.punteos;
+            punteoVerificationIssues = existingPunteoLinks.issues;
+            normalized.matchEvidence = {
+              ...normalized.matchEvidence,
+              punteos_edge_verification: existingPunteoLinks.evidence,
+            };
+          } else {
+            const punteoVerification = await verifyFacturaERPExactMAPunteos(
+              normalized.frr,
+              normalized.requestedPunteos,
+              fetchERPReadConsulta,
+            );
+            persistedPunteos = punteoVerification.punteos;
+            punteoVerificationIssues = punteoVerification.issues;
+            normalized.matchEvidence = {
+              ...normalized.matchEvidence,
+              punteos_edge_verification: punteoVerification.evidence,
+            };
+          }
         }
         const documentedReferenceIssues = normalized.isERPReference
           ? []
@@ -292,7 +339,8 @@ Deno.serve(async (req) => {
             factura: normalized.frr,
             extraction: normalized.extraction,
             matchEvidence: normalized.matchEvidence,
-            punteos: normalized.punteos,
+            punteos: persistedPunteos ?? [],
+            existingInvoiceVerified: duplicateVerification.duplicate,
           });
         const pdfResult = await ensureArchivoPdf(supabase, normalized.pdfBase64, normalized.fileName);
 
@@ -346,11 +394,15 @@ Deno.serve(async (req) => {
         const validationErrors = mergeValidationIssues(
           [
             ...accountingRules.issues,
+            ...duplicateVerification.issues,
             ...punteoVerificationIssues,
             ...documentedReferenceIssues,
             ...baseValidationErrors,
           ],
-          normalized.warnings,
+          filterFacturaERPWarningsAfterDuplicateVerification(
+            normalized.warnings,
+            duplicateVerification.duplicate,
+          ),
         );
         const duplicateOf = duplicateCandidates[0] ?? null;
         const nextEstado = duplicateOf
@@ -379,7 +431,7 @@ Deno.serve(async (req) => {
             validation_errors: validationErrors,
           },
           p_ctb: normalized.ctb,
-          p_punteos: normalized.punteos,
+          p_punteos: persistedPunteos,
           p_actor: null,
           p_request_id: requestId,
           p_change_source: normalized.isERPReference ? "erp_import" : "ingest",

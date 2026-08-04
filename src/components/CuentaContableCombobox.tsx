@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Check, ChevronsUpDown, Loader2, Search } from 'lucide-react';
+import { Check, Loader2, Search } from 'lucide-react';
 
 import {
   fetchFacturaCuentas,
@@ -14,6 +14,11 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from '@/components/ui/popover';
 
 type CuentaContableComboboxProps = {
   empresaId: number | null | undefined;
@@ -48,7 +53,7 @@ export function CuentaContableCombobox({
   empresaId,
   value,
   onChange,
-  placeholder = 'Buscar cuenta o descripción',
+  placeholder = 'Buscar cuenta',
   disabled = false,
   className,
   searchLimit = 25,
@@ -58,7 +63,7 @@ export function CuentaContableCombobox({
   const optionRefs = React.useRef(new Map<string, HTMLDivElement>());
   const searchRequestRef = React.useRef(0);
   const selectedOptionRef = React.useRef<FacturaCuentaOption | null>(null);
-  const listboxId = `cuenta-contable-options-${React.useId().replace(/:/g, '')}`;
+  const [renderedListboxId, setRenderedListboxId] = React.useState<string>();
   const normalizedValue = value?.trim() || null;
   const normalizedEmpresaId =
     Number.isInteger(Number(empresaId)) && Number(empresaId) > 0
@@ -289,26 +294,16 @@ export function CuentaContableCombobox({
     }
   }, [activeValue]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && rootRef.current?.contains(target)) return;
-      setOpen(false);
-      setEditingSearch(false);
-      setSearch('');
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () =>
-      document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, [open]);
-
   const close = () => {
     setOpen(false);
     setEditingSearch(false);
     setSearch('');
     setActiveValue(null);
   };
+
+  const setListboxRef = React.useCallback((node: HTMLDivElement | null) => {
+    setRenderedListboxId(node?.id);
+  }, []);
 
   const selectOption = (option: FacturaCuentaOption) => {
     selectedOptionRef.current = option;
@@ -343,90 +338,109 @@ export function CuentaContableCombobox({
     : selectedOption?.label ?? '';
   const emptyMessage = !normalizedEmpresaId
     ? 'Selecciona primero la empresa ERP.'
-    : errorMessage ??
-      (search.trim()
-        ? 'No se encontraron cuentas.'
-        : 'Escribe una cuenta o descripción.');
+    : errorMessage ?? 'No se encontraron cuentas.';
 
   return (
-    <div ref={rootRef} className="relative w-full">
-      <div
-        aria-disabled={disabled}
-        className={cn(
-          'relative flex w-full items-center',
-          disabled ? 'cursor-not-allowed opacity-60' : 'cursor-text',
-          className,
-        )}
-        onClick={() => {
-          if (disabled) return;
-          setOpen(true);
-          window.setTimeout(() => {
-            inputRef.current?.focus();
-            inputRef.current?.select();
-          }, 0);
-        }}
-      >
-        {loading && open ? (
-          <Loader2 className="pointer-events-none absolute left-3 h-4 w-4 animate-spin text-slate-400" />
-        ) : (
-          <Search className="pointer-events-none absolute left-3 h-4 w-4 text-slate-400" />
-        )}
-        <input
-          ref={inputRef}
-          role="combobox"
-          aria-autocomplete="list"
-          aria-controls={listboxId}
-          aria-expanded={open}
-          aria-activedescendant={
-            open && activeValue
-              ? `${listboxId}-option-${activeValue}`
-              : undefined
-          }
-          value={displayValue}
-          disabled={disabled}
-          placeholder={placeholder}
-          className="h-full min-w-0 flex-1 bg-transparent pl-7 pr-8 font-[inherit] text-inherit outline-none placeholder:text-slate-400 disabled:cursor-not-allowed dark:placeholder:text-slate-500"
-          onFocus={() => {
-            if (!disabled) setOpen(true);
-          }}
-          onChange={(event) => {
-            setEditingSearch(true);
-            setSearch(event.target.value);
-            setActiveValue(null);
-            if (!open) setOpen(true);
-            if (!event.target.value && normalizedValue) onChange(null);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-              event.preventDefault();
-              setOpen(true);
-              moveActiveOption(event.key === 'ArrowDown' ? 1 : -1);
-              return;
-            }
-            if (event.key === 'Enter' && open && activeValue) {
-              const active = filteredOptions.find(
-                (option) => option.value === activeValue,
-              );
-              if (active) {
-                event.preventDefault();
-                selectOption(active);
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
+          setEditingSearch(false);
+          setSearch('');
+          setActiveValue(null);
+        }
+      }}
+    >
+      <div ref={rootRef} className="relative w-full">
+        <PopoverAnchor asChild>
+          <div
+            aria-disabled={disabled}
+            className={cn(
+              'relative flex w-full items-center',
+              disabled ? 'cursor-not-allowed opacity-60' : 'cursor-text',
+              className,
+            )}
+            onClick={() => {
+              if (disabled) return;
+              window.setTimeout(() => {
+                inputRef.current?.focus();
+                if (!editingSearch) inputRef.current?.select();
+              }, 0);
+            }}
+          >
+            {loading && open ? (
+              <Loader2 className="pointer-events-none absolute left-3 h-4 w-4 animate-spin text-slate-400" />
+            ) : (
+              <Search className="pointer-events-none absolute left-3 h-4 w-4 text-slate-400" />
+            )}
+            <input
+              ref={inputRef}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls={open ? renderedListboxId : undefined}
+              aria-expanded={open}
+              aria-activedescendant={
+                open && activeValue
+                  ? optionRefs.current.get(activeValue)?.id
+                  : undefined
               }
-              return;
-            }
-            if (event.key === 'Escape') {
-              event.preventDefault();
-              close();
-              inputRef.current?.blur();
-              return;
-            }
-            if (event.key === 'Tab' && open) close();
-          }}
-        />
-        <ChevronsUpDown className="pointer-events-none absolute right-3 h-4 w-4 opacity-50" />
-      </div>
+              value={displayValue}
+              disabled={disabled}
+              placeholder={placeholder}
+              className="h-full min-w-0 flex-1 bg-transparent pl-7 pr-3 font-[inherit] text-inherit outline-none placeholder:text-slate-400 disabled:cursor-not-allowed dark:placeholder:text-slate-500"
+              onChange={(event) => {
+                const nextSearch = event.target.value;
+                setEditingSearch(true);
+                setSearch(nextSearch);
+                setActiveValue(null);
+                setOpen(Boolean(nextSearch.trim()));
+                if (!nextSearch && normalizedValue) onChange(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  if (!editingSearch || !search.trim()) return;
+                  event.preventDefault();
+                  setOpen(true);
+                  moveActiveOption(event.key === 'ArrowDown' ? 1 : -1);
+                  return;
+                }
+                if (event.key === 'Enter' && open && activeValue) {
+                  const active = filteredOptions.find(
+                    (option) => option.value === activeValue,
+                  );
+                  if (active) {
+                    event.preventDefault();
+                    selectOption(active);
+                  }
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  close();
+                  inputRef.current?.blur();
+                  return;
+                }
+                if (event.key === 'Tab' && open) close();
+              }}
+            />
+          </div>
+        </PopoverAnchor>
 
-      {open ? (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border bg-popover text-popover-foreground shadow-md">
+        <PopoverContent
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          className="w-[min(26rem,calc(100vw-1rem))] p-0"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          onInteractOutside={(event) => {
+            const target = event.target;
+            if (target instanceof Node && rootRef.current?.contains(target)) {
+              event.preventDefault();
+            }
+          }}
+        >
           <Command
             shouldFilter={false}
             value={activeValue ?? ''}
@@ -438,7 +452,7 @@ export function CuentaContableCombobox({
               }
             }}
           >
-            <CommandList id={listboxId}>
+            <CommandList ref={setListboxRef}>
               {loading ? (
                 <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -454,7 +468,6 @@ export function CuentaContableCombobox({
                         if (node) optionRefs.current.set(option.value, node);
                         else optionRefs.current.delete(option.value);
                       }}
-                      id={`${listboxId}-option-${option.value}`}
                       key={option.value}
                       value={option.value}
                       onSelect={() => selectOption(option)}
@@ -508,8 +521,8 @@ export function CuentaContableCombobox({
               ) : null}
             </CommandList>
           </Command>
-        </div>
-      ) : null}
-    </div>
+        </PopoverContent>
+      </div>
+    </Popover>
   );
 }

@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowLeft,
+  Calculator,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
@@ -32,7 +33,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { FilterSelect, type FilterSelectOption } from '../components/FilterSelect';
 import { AcreedorCombobox } from '../components/AcreedorCombobox';
 import { CuentaContableCombobox } from '../components/CuentaContableCombobox';
-import { AsientoContableTable } from '../components/facturas/AsientoContableTable';
+import { FacturaAsientoViewer } from '../components/facturas/FacturaAsientoViewer';
+import { FacturaIssuesOverlay } from '../components/facturas/FacturaIssuesOverlay';
 import { FacturaPunteosTable } from '../components/facturas/FacturaPunteosTable';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -40,6 +42,7 @@ import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { PdfViewer } from '../components/PdfViewer';
 import { facturaEstadoLabels } from '../lib/facturasSummary';
 import { getFacturaAccountingStatusText } from '../lib/facturasAccountingStatus';
+import { calculateFacturaIvaCuota, isFacturaIvaCuotaOutdated } from '../lib/facturasIva';
 import {
   facturaERPRegistrationLabels,
   getFacturaERPRegistrationState,
@@ -54,6 +57,7 @@ import {
   type FacturaProveedorERPDetail,
   type FacturaRegimenOption,
   type FacturaTipoIvaOption,
+  accountFacturaRecibidaERP,
   fetchAlbaranEntradaLineas,
   fetchAlbaranMaterialLineas,
   fetchFacturaPunteables,
@@ -65,13 +69,16 @@ import {
   fetchFacturasRecibidasERPRuntime,
   fetchFacturasRecibidasPage,
   facturaProveedorERPKind,
+  getFacturaAccountingActionRequestId,
   getFacturaERPReconciliationRequestId,
   getFacturaERPSendConfirmation,
+  getVerifiedERPDuplicateId,
   getFacturaPdfSignedUrl,
   getPunteoImporte,
   extractFacturaFromPdf,
   isERPReferenceFactura,
   isERPReadOnlyFactura,
+  isFacturaAccountingActionable,
   isRetryableFacturaERPReadError,
   localizarProveedorERP,
   normalizeFacturaValidationIssues,
@@ -79,6 +86,7 @@ import {
   preflightFacturaRecibidaERP,
   saveFacturaRecibida,
   sendFacturaRecibidaToERP,
+  shouldStartFacturaAccountingAfterManagement,
   validateFacturaRecibidaERP,
   tipoFacturaRadioValue,
   type FacturasRecibidasERPRuntime,
@@ -127,10 +135,6 @@ type ModalMessage = {
 
 type FacturaSortOrder = 'created_desc' | 'created_asc' | 'fecha_desc' | 'fecha_asc' | 'total_desc' | 'total_asc';
 type FacturaUploadStep = 'idle' | 'uploading' | 'analyzing' | 'done';
-type RegimenIvaFeedback = {
-  estado: 'consultando' | 'aplicada' | 'ambigua' | 'sin_historial' | 'error';
-  mensaje: string;
-};
 type FacturaCatalogKey = 'regimenes' | 'tipos_iva';
 type FacturaCatalogErrors = Partial<Record<FacturaCatalogKey, string>>;
 
@@ -518,10 +522,19 @@ const facturaProviderScopeKey = (factura: FacturaDraft | null | undefined) =>
     cleanOptionalString(factura?.proveedor_codigo) ?? 'sin-proveedor',
   ].join(':');
 
+const facturaRegimenIvaProfileScopeKey = (
+  factura: FacturaDraft | null | undefined,
+  regimenOverride?: string | null,
+) =>
+  [
+    factura?.id ?? 'new',
+    cleanOptionalString(regimenOverride ?? factura?.tipo_iva_codigo) ?? 'sin-regimen',
+  ].join(':');
+
 const erpStatusMeta = (state: FacturaERPRegistrationState) => ({
   text: facturaERPRegistrationLabels[state],
   className:
-    state === 'confirmed'
+    state === 'confirmed' || state === 'registered'
       ? 'text-emerald-700 dark:text-emerald-300'
       : state === 'error'
         ? 'text-red-700 dark:text-red-300'
@@ -687,9 +700,10 @@ function FacturaListItem({
   const lineCount = factura.facturas_recibidas_lineas?.length ?? 0;
   const invoiceErpState = getFacturaERPRegistrationState(factura);
   const invoiceStatus = erpStatusMeta(invoiceErpState);
-  const isSent = invoiceErpState === 'confirmed';
+  const isSent =
+    invoiceErpState === 'confirmed' || invoiceErpState === 'registered';
   const invoiceStatusDotClass =
-    invoiceErpState === 'confirmed'
+    invoiceErpState === 'confirmed' || invoiceErpState === 'registered'
       ? 'bg-emerald-500'
       : invoiceErpState === 'error'
         ? 'bg-red-500'
@@ -1074,7 +1088,7 @@ const Facturas = () => {
   const [historialProveedor, setHistorialProveedor] = useState<FacturaHistorica[]>([]);
   const historialRunRef = useRef(0);
   const regimenIvaRunRef = useRef(0);
-  const [regimenIvaFeedback, setRegimenIvaFeedback] = useState<RegimenIvaFeedback | null>(null);
+  const regimenIvaHydrationScopeRef = useRef('');
   const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
   const { toast } = useToast();
   const [catalogErrors, setCatalogErrors] = useState<FacturaCatalogErrors>({});
@@ -1107,6 +1121,7 @@ const Facturas = () => {
   const activeProviderScopeRef = useRef('');
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
+  const [accountingERP, setAccountingERP] = useState(false);
   const [validatingERP, setValidatingERP] = useState(false);
   const [extractingIa, setExtractingIa] = useState(false);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -1128,6 +1143,9 @@ const Facturas = () => {
     erpRuntime?.write_mode === 'management' &&
     erpRuntime.ready_for_commit === true &&
     erpRuntime.capabilities.management_commit === true;
+  const canCommitAccounting =
+    erpRuntime?.accounting_ready_for_commit === true &&
+    erpRuntime.capabilities.accounting_commit === true;
 
   const isNewFacturaDraft = Boolean(draft && !draft.id);
   const isDetailMode = Boolean(draft?.id && !modalOpen);
@@ -1209,7 +1227,7 @@ const Facturas = () => {
   // Una factura nueva invalida cualquier sugerencia asíncrona de régimen anterior.
   useEffect(() => {
     regimenIvaRunRef.current += 1;
-    setRegimenIvaFeedback(null);
+    regimenIvaHydrationScopeRef.current = '';
   }, [draft?.id]);
 
   const currentProviderScopeKey = facturaProviderScopeKey(draft);
@@ -1221,9 +1239,7 @@ const Facturas = () => {
     ) {
       providerDetailRunRef.current += 1;
       punteablesRunRef.current += 1;
-      regimenIvaRunRef.current += 1;
       setPunteosLoading(false);
-      setRegimenIvaFeedback(null);
     }
     activeProviderScopeRef.current = currentProviderScopeKey;
   }, [currentProviderScopeKey]);
@@ -1619,6 +1635,7 @@ const Facturas = () => {
       ? `${formatInteger(facturasTotal)} facturas filtradas`
       : `${formatInteger(facturasTotal)} facturas entrantes`;
   const detailActionMessage = isDetailMode ? modalMessage : null;
+  const detailActionError = detailActionMessage?.type === 'error' ? detailActionMessage.text : null;
   const showSaveFeedback = Boolean(
     isDetailMode &&
       saveFeedback &&
@@ -1778,11 +1795,9 @@ const Facturas = () => {
       const nextDraft = draft ? { ...draft, [key]: value } : null;
       providerDetailRunRef.current += 1;
       punteablesRunRef.current += 1;
-      regimenIvaRunRef.current += 1;
       activeProviderScopeRef.current = facturaProviderScopeKey(nextDraft);
       setPunteosLoading(false);
       setPunteosLoadError(null);
-      setRegimenIvaFeedback(null);
     }
 
     setDraft((current) => {
@@ -1806,72 +1821,95 @@ const Facturas = () => {
   const changeRegimenIva = async (value: string) => {
     const runId = regimenIvaRunRef.current + 1;
     regimenIvaRunRef.current = runId;
+    regimenIvaHydrationScopeRef.current = facturaRegimenIvaProfileScopeKey(draft, value);
     await updateDraft('tipo_iva_codigo', value);
 
     const regimenId = Number.parseInt(value, 10);
     if (!Number.isInteger(regimenId) || regimenId <= 0) {
-      setRegimenIvaFeedback(null);
       return;
     }
 
-    const proveedorId = proveedorErpId;
-    const tipoFactura = tipoFacturaRadioValue(
-      draft?.fr_sufa,
-      draft?.match_evidence,
-      draft?.proveedor_codigo,
-    );
-    setRegimenIvaFeedback({
-      estado: 'consultando',
-      mensaje: 'Consultando los porcentajes usados anteriormente con este régimen…',
-    });
-
     try {
-      const perfiles = await obtenerPerfilesIvaRegimen({
-        regimenId,
-        proveedorId,
-        tipoFactura,
-      });
+      const perfiles = await obtenerPerfilesIvaRegimen({ regimenId });
       if (regimenIvaRunRef.current !== runId) return;
 
-      if (perfiles.estado === 'dominante' && !perfiles.ambiguo && perfiles.plantilla_sugerida) {
+      const perfilAplicable = perfiles.plantilla_sugerida ?? perfiles.perfil_mas_usado;
+      if (perfilAplicable) {
         setDraft((current) => {
           if (!current || cleanOptionalString(current.tipo_iva_codigo) !== value) return current;
           const source = current.iva_tramos?.length
             ? current.iva_tramos
             : createEmptyDraft().iva_tramos ?? [];
-          const resultado = aplicarPlantillaIvaHistorica(source, perfiles);
+          const resultado = aplicarPlantillaIvaHistorica(source, perfiles, {
+            allowMostUsedProfile: true,
+            replaceExistingPercentages: true,
+          });
           return resultado.aplicada ? { ...current, iva_tramos: resultado.tramos } : current;
         });
-        setRegimenIvaFeedback({
-          estado: 'aplicada',
-          mensaje: `Porcentajes actualizados según ${perfiles.plantilla_sugerida.usos} de ${perfiles.total_facturas} facturas históricas. Bases y cuotas se han conservado.`,
-        });
-        return;
       }
-
-      if (perfiles.estado === 'ambiguo' || perfiles.ambiguo) {
-        setRegimenIvaFeedback({
-          estado: 'ambigua',
-          mensaje:
-            'El histórico no tiene una plantilla IVA dominante. Revisa y ajusta los porcentajes manualmente en el desglose.',
-        });
-        return;
-      }
-
-      setRegimenIvaFeedback({
-        estado: 'sin_historial',
-        mensaje:
-          'No hay histórico suficiente para este régimen. Revisa los porcentajes manualmente en el desglose.',
-      });
     } catch {
-      if (regimenIvaRunRef.current !== runId) return;
-      setRegimenIvaFeedback({
-        estado: 'error',
-        mensaje:
-          'No se pudo consultar el histórico de este régimen. Los porcentajes no se han modificado; revísalos manualmente.',
-      });
+      // Si el histórico no está disponible, se conservan los valores actuales.
     }
   };
+
+  useEffect(() => {
+    const facturaActualId = draft?.id;
+    const value = cleanOptionalString(draft?.tipo_iva_codigo);
+    const regimenId = Number.parseInt(value ?? '', 10);
+    if (
+      !facturaActualId ||
+      detailIsReadOnly ||
+      !value ||
+      !Number.isInteger(regimenId) ||
+      regimenId <= 0
+    ) {
+      return;
+    }
+
+    const scope = facturaRegimenIvaProfileScopeKey(draft);
+    if (regimenIvaHydrationScopeRef.current === scope) return;
+    regimenIvaHydrationScopeRef.current = scope;
+
+    const runId = regimenIvaRunRef.current + 1;
+    regimenIvaRunRef.current = runId;
+
+    void obtenerPerfilesIvaRegimen({ regimenId })
+      .then((perfiles) => {
+        if (regimenIvaRunRef.current !== runId) return;
+
+        const perfilAplicable = perfiles.plantilla_sugerida ?? perfiles.perfil_mas_usado;
+        if (perfilAplicable) {
+          setDraft((current) => {
+            if (
+              !current ||
+              current.id !== facturaActualId ||
+              facturaRegimenIvaProfileScopeKey(current) !== scope
+            ) {
+              return current;
+            }
+            const source = current.iva_tramos?.length
+              ? current.iva_tramos
+              : createEmptyDraft().iva_tramos ?? [];
+            const resultado = aplicarPlantillaIvaHistorica(source, perfiles, {
+              preserveExistingPercentages: true,
+              allowMostUsedProfile: true,
+            });
+            const hasChanges = resultado.tramos.some(
+              (tramo, index) =>
+                source[index]?.porcentaje == null && tramo.porcentaje != null,
+            );
+            return hasChanges ? { ...current, iva_tramos: resultado.tramos } : current;
+          });
+        }
+      })
+      .catch(() => {
+        // Si el histórico no está disponible, se conservan los valores actuales.
+      });
+  }, [
+    detailIsReadOnly,
+    draft?.id,
+    draft?.tipo_iva_codigo,
+  ]);
 
   const changeTipoFactura = async (nextTipo: 'GE' | 'OT') => {
     if (
@@ -1907,10 +1945,8 @@ const Facturas = () => {
 
     providerDetailRunRef.current += 1;
     punteablesRunRef.current += 1;
-    regimenIvaRunRef.current += 1;
     setPunteosLoading(false);
     setPunteosLoadError(null);
-    setRegimenIvaFeedback(null);
     setPreflightIssues([]);
     setDuplicateCandidate(null);
     setModalMessage(null);
@@ -2086,7 +2122,6 @@ const Facturas = () => {
     value: number | null,
   ) => {
     regimenIvaRunRef.current += 1;
-    setRegimenIvaFeedback(null);
     setDraft((current) => {
       if (!current) return current;
       const source = current.iva_tramos?.length
@@ -2105,22 +2140,10 @@ const Facturas = () => {
     });
   };
 
-  const calculateIvaCuotas = () => {
-    setDraft((current) => {
-      if (!current) return current;
-      const source = current.iva_tramos?.length
-        ? current.iva_tramos
-        : createEmptyDraft().iva_tramos ?? [];
-      const ivaTramos = source.map((tramo) => ({
-        ...tramo,
-        cuota: Number(((Number(tramo.base ?? 0) * Number(tramo.porcentaje ?? 0)) / 100).toFixed(2)),
-      }));
-      return {
-        ...current,
-        iva_tramos: ivaTramos,
-        iva_importe: ivaTramos.reduce((sum, tramo) => sum + Number(tramo.cuota ?? 0), 0),
-      };
-    });
+  const calculateIvaCuota = (tramo: FacturaRecibidaIvaTramo) => {
+    const cuota = calculateFacturaIvaCuota(tramo.base, tramo.porcentaje);
+    if (cuota === null) return;
+    updateIvaTramo(tramo.posicion, 'cuota', cuota);
   };
 
   const updateVencimiento = (
@@ -2200,6 +2223,11 @@ const Facturas = () => {
   };
 
   const loadPunteables = async () => {
+    if (getVerifiedERPDuplicateId(draft) !== null) {
+      setPunteosLoadError(null);
+      return;
+    }
+
     const empresaId = Number(draft?.fr_alm ?? '');
     const proveedorId = Number(draft?.proveedor_codigo ?? '');
     if (!Number.isFinite(empresaId) || empresaId < 1 || !Number.isFinite(proveedorId) || proveedorId < 1) {
@@ -2413,6 +2441,7 @@ const Facturas = () => {
           return;
         }
 
+        const accountingRequestedOnCommit = draft.contabilizar === 'S';
         const sent = await sendFacturaRecibidaToERP(
           draft.id,
           draft.version,
@@ -2428,12 +2457,83 @@ const Facturas = () => {
         setDuplicateCandidate(null);
         setLastSavedEditorSnapshot(createEditorSnapshot(sent, sentLineas));
         setLoadedDetailId(sent.id);
+
+        let completed = sent;
+        if (
+          sendConfirmation === 'confirmed' &&
+          shouldStartFacturaAccountingAfterManagement(
+            sent,
+            accountingRequestedOnCommit,
+          )
+        ) {
+          const accountingRequestId =
+            getFacturaAccountingActionRequestId(sent);
+          try {
+            completed = await accountFacturaRecibidaERP(
+              sent.id,
+              sent.version,
+              accountingRequestId,
+            );
+          } catch (accountingError) {
+            try {
+              completed =
+                (await fetchFacturaRecibidaById(sent.id)) ?? sent;
+            } catch {
+              completed = sent;
+            }
+            setFacturas((current) => replaceFactura(current, completed));
+            const completedLineas = getLineas(completed);
+            setDraft(completed);
+            setLineas(completedLineas);
+            setLastSavedEditorSnapshot(
+              createEditorSnapshot(completed, completedLineas),
+            );
+            setLoadedDetailId(completed.id);
+            setModalMessage({
+              type: 'error',
+              text: `Factura registrada en el ERP. No se pudo completar la contabilización: ${getErrorMessage(
+                accountingError,
+                'Revisa el estado contable antes de volver a intentarlo.',
+              )}`,
+            });
+            return;
+          }
+          setFacturas((current) => replaceFactura(current, completed));
+          const completedLineas = getLineas(completed);
+          setDraft(completed);
+          setLineas(completedLineas);
+          setLastSavedEditorSnapshot(
+            createEditorSnapshot(completed, completedLineas),
+          );
+          setLoadedDetailId(completed.id);
+        }
+
         setModalMessage(
           sendConfirmation === 'confirmed'
-            ? {
-                type: 'success',
-                text: 'Alta de gestión confirmada por el ERP. La factura no se ha contabilizado.',
-              }
+            ? completed.accounting_status === 'created'
+              ? {
+                  type: 'success',
+                  text: 'Factura registrada y contabilizada.',
+                }
+              : completed.accounting_status === 'error'
+                ? {
+                    type: 'info',
+                    text: 'Factura registrada. No se pudo completar la contabilización.',
+                  }
+                : completed.accounting_status === 'pending'
+                  ? {
+                      type: 'info',
+                      text: 'Factura registrada. La contabilización está en curso.',
+                    }
+                : completed.accounting_status === 'unknown'
+                  ? {
+                      type: 'info',
+                      text: 'Factura registrada. El resultado de la contabilización está pendiente de comprobar.',
+                    }
+                  : {
+                      type: 'success',
+                      text: 'Factura registrada en el ERP.',
+                    }
             : {
                 type: 'info',
                 text: 'El resultado del alta no es concluyente. Queda pendiente de reconciliación y no se repetirá el envío.',
@@ -2584,6 +2684,62 @@ const Facturas = () => {
     }
   };
 
+  const handleAccountERP = async () => {
+    if (!draft?.id) {
+      setModalMessage({ type: 'error', text: 'No hay factura seleccionada.' });
+      return;
+    }
+    if (!canCommitAccounting) {
+      setModalMessage({
+        type: 'info',
+        text: erpRuntimeChecked
+          ? 'La contabilización no está disponible en este momento.'
+          : 'Espera mientras se comprueba la conexión con el ERP.',
+      });
+      return;
+    }
+
+    setAccountingERP(true);
+    setModalMessage(null);
+    setSaveFeedback(null);
+    try {
+      const accountingRequestId = getFacturaAccountingActionRequestId(draft);
+      const accounted = await accountFacturaRecibidaERP(
+        draft.id,
+        draft.version,
+        accountingRequestId,
+      );
+      setFacturas((current) => replaceFactura(current, accounted));
+      const accountedLineas = getLineas(accounted);
+      setDraft(accounted);
+      setLineas(accountedLineas);
+      setLastSavedEditorSnapshot(
+        createEditorSnapshot(accounted, accountedLineas),
+      );
+      setLoadedDetailId(accounted.id);
+      setModalMessage(
+        accounted.accounting_status === 'created'
+          ? { type: 'success', text: 'Factura contabilizada.' }
+          : accounted.accounting_status === 'unknown'
+            ? {
+                type: 'info',
+                text: 'El resultado no está confirmado. No se repetirá el alta de la factura.',
+              }
+            : {
+                type: 'info',
+                text: 'No se pudo completar la contabilización.',
+              },
+      );
+    } catch (error) {
+      setModalMessage({
+        type: 'error',
+        text: getErrorMessage(error, 'No se pudo contabilizar la factura.'),
+      });
+    } finally {
+      setAccountingERP(false);
+    }
+  };
+
   const handleRegisterNewFactura = async () => {
     if (!pdfFile) {
       setModalMessage({ type: 'error', text: 'Selecciona un PDF para continuar.' });
@@ -2730,36 +2886,85 @@ const Facturas = () => {
 
   const detailERPState = getFacturaERPRegistrationState(draft);
   const hasLegacyUnscopedERPError = isFacturaERPLegacyUnscopedError(draft);
-  const visibleERPError = hasLegacyUnscopedERPError ? null : draft?.erp_error;
+  const visibleERPError = hasLegacyUnscopedERPError
+    ? draft?.accounting_error ?? null
+    : draft?.erp_error ?? draft?.accounting_error ?? null;
   const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
   const detailERPStatus = erpStatusMeta(detailERPState);
   const isReadOnlyDetail = isERPReadOnlyFactura(draft);
+  const accountingDetailStatus = String(
+    draft?.accounting_status ?? 'not_requested',
+  )
+    .trim()
+    .toLowerCase();
+  const accountingPending = Boolean(
+    draft?.accounting_requested === true &&
+      accountingDetailStatus === 'pending',
+  );
+  const accountingUnknown = Boolean(
+    draft?.accounting_requested === true &&
+      accountingDetailStatus === 'unknown',
+  );
+  const accountingAwaitingCheck = accountingPending || accountingUnknown;
+  const canContinueAccounting = Boolean(
+    draft?.id &&
+      detailERPState === 'confirmed' &&
+      draft.accounting_requested === true &&
+      isFacturaAccountingActionable(draft),
+  );
+  const verifiedDuplicateERPId = getVerifiedERPDuplicateId(draft);
+  const duplicateERPPunteosReadOnly = verifiedDuplicateERPId !== null;
+  const punteosReadOnly = isReadOnlyDetail || duplicateERPPunteosReadOnly;
   const providerLabel = providerKind === 'agricultor' ? 'Proveedor' : 'Acreedor';
   const detailStatusText = hasLegacyUnscopedERPError
     ? 'Pendiente de revisión'
     : draft?.estado
       ? estadoLabels[draft.estado]
       : detailERPStatus.text;
-  const detailReadOnlyStatusText = isERPReferenceFactura(draft)
-    ? 'Referencia ERP'
-    : draft?.estado === 'enviada_erp' || detailERPState === 'confirmed'
+  const detailReadOnlyStatusText =
+    draft?.estado === 'enviada_erp' ||
+    detailERPState === 'confirmed' ||
+    detailERPState === 'registered'
       ? 'Enviada'
+      : isERPReferenceFactura(draft)
+        ? 'Referencia ERP'
       : detailERPStatus.text;
   const isERPValidationCurrent =
     draft?.erp_validation_status === 'valid' &&
     Boolean(draft.erp_validation_request_id) &&
     !hasUnsavedDetailChanges;
-  const erpCapabilityMessage = !erpRuntimeChecked
-    ? 'Comprobando las capacidades disponibles del ERP…'
-    : reconciliationRequestId && !canCommitManagement
-      ? 'Las altas nuevas están deshabilitadas; la reconciliación del intento existente sigue disponible.'
-      : !erpRuntime
-        ? 'No se han podido comprobar las capacidades del ERP. Las altas permanecen deshabilitadas.'
-        : !canValidateWithERP
-          ? 'La validación con ERP no está disponible hasta que el entorno esté preparado.'
-          : !canCommitManagement
-            ? 'Puedes validar la factura, pero las altas de gestión ERP están deshabilitadas.'
-            : null;
+  const erpCapabilityMessage = (() => {
+    if (!erpRuntimeChecked) {
+      return 'Comprobando la conexión con el ERP…';
+    }
+    if (accountingPending) {
+      return 'La contabilización está en curso. No vuelvas a enviarla.';
+    }
+    if (accountingUnknown) {
+      return 'El resultado de la contabilización está pendiente de comprobar. No vuelvas a intentarlo.';
+    }
+    if (canContinueAccounting) {
+      return canCommitAccounting
+        ? null
+        : 'La contabilización está desactivada en este momento.';
+    }
+    if (reconciliationRequestId && !canCommitManagement) {
+      return 'Las altas nuevas están deshabilitadas; la comprobación del intento existente sigue disponible.';
+    }
+    if (!erpRuntime) {
+      return 'No se ha podido conectar con el ERP. El envío permanece desactivado.';
+    }
+    if (!canValidateWithERP) {
+      return 'No se puede conectar con el ERP en este momento.';
+    }
+    if (!canCommitManagement) {
+      return 'Puedes validar la factura, pero el envío está desactivado.';
+    }
+    if (draft?.contabilizar === 'S' && !canCommitAccounting) {
+      return 'El envío con contabilización está desactivado.';
+    }
+    return null;
+  })();
   const lineasBaseTotal = lineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
   const accountingLinesWithData = lineas.filter(hasAccountingLineData);
   const revealedEmptyGastoIndexSet = new Set(revealedEmptyGastoIndexes);
@@ -2794,10 +2999,11 @@ const Facturas = () => {
   const ctbTotal = ctbLineas.reduce((sum, linea) => sum + (Number(linea.importe) || 0), 0);
   const punteos = draft?.punteos ?? [];
   const getPunteoSelected = (punteo: FacturaRecibidaPunteo) => punteo.seleccionado === true;
-  const punteosTotal = punteos
-    .filter(getPunteoSelected)
+  const selectedPunteos = punteos.filter(getPunteoSelected);
+  const summarizedPunteos = duplicateERPPunteosReadOnly ? punteos : selectedPunteos;
+  const punteosTotal = summarizedPunteos
     .reduce((sum, punteo) => sum + getPunteoImporte(punteo), 0);
-  const punteosSeleccionados = punteos.filter(getPunteoSelected).length;
+  const punteosSeleccionados = summarizedPunteos.length;
   const punteosBaseDifference = punteosTotal - accountingBase;
   const punteosGastosDifference = punteosTotal - lineasBaseTotal;
   const ivaTramos = draft?.iva_tramos?.length
@@ -2830,9 +3036,6 @@ const Facturas = () => {
     0,
   );
   const vencimientosDifference = Number(draft?.total ?? 0) - vencimientosTotal;
-  const useCalculatedInvoiceTotal = () => {
-    updateDraft('total', Number(calculatedInvoiceTotal.toFixed(2)));
-  };
   const assignTotalToFirstVencimiento = async () => {
     const hasOtherAmounts = vencimientos
       .slice(1)
@@ -2864,7 +3067,6 @@ const Facturas = () => {
       };
     });
   };
-  const asientoLineas = draft?.asiento_lineas ?? draft?.accounting?.lines ?? [];
   const accountingSummary =
     accountingLineCount === 0
       ? 'Sin desglose de gastos'
@@ -3142,25 +3344,22 @@ const Facturas = () => {
           </h1>
 
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 lg:justify-end">
-            {detailActionMessage ? (
+            {detailActionMessage && detailActionMessage.type !== 'error' ? (
               <p
-                className={`min-w-0 text-sm font-semibold ${
-                  detailActionMessage.type === 'error'
-                    ? 'text-red-700 dark:text-red-300'
-                    : 'text-primary dark:text-blue-300'
-                }`}
+                className="min-w-0 text-sm font-semibold text-primary dark:text-blue-300"
               >
                 {detailActionMessage.text}
               </p>
             ) : null}
-            {!isReadOnlyDetail || reconciliationRequestId ? (
+            <FacturaAsientoViewer factura={draft} gastos={lineas} />
+            {!isReadOnlyDetail || reconciliationRequestId || canContinueAccounting ? (
               <>
                 {!isReadOnlyDetail ? (
                   <>
                     <button
                       type="button"
                       className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
-                      disabled={saving || sending || validatingERP}
+                      disabled={saving || sending || accountingERP || validatingERP}
                       onClick={() => void handleDiscard()}
                     >
                       <Trash2 size={15} />
@@ -3169,7 +3368,7 @@ const Facturas = () => {
                     <button
                       type="button"
                       className={saveButtonClass}
-                      disabled={saving || sending || validatingERP || !hasUnsavedDetailChanges}
+                      disabled={saving || sending || accountingERP || validatingERP || !hasUnsavedDetailChanges}
                       onClick={() => void persistFactura(false)}
                     >
                       {saving ? <Loader2 className="animate-spin" size={15} /> : showSaveFeedback ? <CheckCircle2 size={15} /> : <Save size={15} />}
@@ -3184,6 +3383,7 @@ const Facturas = () => {
                     disabled={
                       saving ||
                       sending ||
+                      accountingERP ||
                       validatingERP ||
                       !erpRuntimeChecked ||
                       !canValidateWithERP ||
@@ -3206,19 +3406,23 @@ const Facturas = () => {
                         : 'Validar con ERP'}
                   </button>
                 ) : null}
+                {!isReadOnlyDetail || reconciliationRequestId ? (
                 <button
                   type="button"
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
                   disabled={
                     saving ||
                     sending ||
+                    accountingERP ||
                     validatingERP ||
                     extractingIa ||
                     detailERPState === 'confirmed' ||
                     detailERPState === 'sending' ||
                     (detailERPState === 'uncertain' && !reconciliationRequestId) ||
                     (!reconciliationRequestId &&
-                      (!erpRuntimeChecked || !canCommitManagement)) ||
+                      (!erpRuntimeChecked ||
+                        !canCommitManagement ||
+                        (draft.contabilizar === 'S' && !canCommitAccounting))) ||
                     (!reconciliationRequestId && !isERPValidationCurrent) ||
                     draft.estado === 'descartada'
                   }
@@ -3233,8 +3437,33 @@ const Facturas = () => {
                       ? reconciliationRequestId
                         ? 'Reconciliar con ERP'
                         : 'Pendiente de reconciliacion'
-                  : 'Enviar a gestión ERP (sin contabilizar)'}
+                  : draft.contabilizar === 'S'
+                    ? 'Enviar y contabilizar'
+                    : 'Enviar a ERP'}
                 </button>
+                ) : null}
+                {canContinueAccounting ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
+                    disabled={
+                      saving ||
+                      sending ||
+                      accountingERP ||
+                      validatingERP ||
+                      !erpRuntimeChecked ||
+                      !canCommitAccounting
+                    }
+                    onClick={() => void handleAccountERP()}
+                  >
+                    {accountingERP ? (
+                      <Loader2 className="animate-spin" size={15} />
+                    ) : (
+                      <Calculator size={15} />
+                    )}
+                    {accountingERP ? 'Contabilizando…' : 'Contabilizar'}
+                  </button>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -3273,7 +3502,10 @@ const Facturas = () => {
           </dl>
         </div>
         {erpCapabilityMessage &&
-        (!isReadOnlyDetail || Boolean(reconciliationRequestId)) ? (
+        (!isReadOnlyDetail ||
+          Boolean(reconciliationRequestId) ||
+          canContinueAccounting ||
+          accountingAwaitingCheck) ? (
           <p
             role="status"
             className="mt-2 text-sm font-medium text-slate-600 dark:text-slate-300"
@@ -3283,71 +3515,17 @@ const Facturas = () => {
         ) : null}
       </header>
 
-      {visibleERPError || visibleErrors.length > 0 || visibleWarnings.length > 0 || catalogError ? (
-        <div className="mx-2 mt-4 space-y-3">
-          {visibleERPError ? (
-            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
-              <p className="font-bold">Error ERP</p>
-              <p className="mt-1">
-                {sanitizeUserFacingErrorMessage(visibleERPError)}
-              </p>
-            </div>
-          ) : null}
-          {visibleErrors.length > 0 ? (
-            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/35 dark:text-red-200">
-              <p className="font-bold">Errores bloqueantes</p>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {visibleErrors.map((issue) => (
-                  <li key={issue.code ?? `${issue.field}:${issue.message}`}>
-                    {sanitizeUserFacingErrorMessage(issue.message)}
-                  </li>
-                ))}
-              </ul>
-              {duplicateCandidate ? (
-                <div className="mt-3 rounded border border-red-200 bg-white/70 px-3 py-2 dark:border-red-900/60 dark:bg-red-950/30">
-                  <p className="font-bold">Candidato encontrado en ERP</p>
-                  <p className="mt-1">
-                    Empresa {duplicateCandidate.empresaId ?? '-'} · Ejercicio {duplicateCandidate.ejercicio ?? '-'} · Proveedor{' '}
-                    {duplicateCandidate.proveedorId ?? '-'}{duplicateCandidate.proveedor ? ` (${duplicateCandidate.proveedor})` : ''} · Factura{' '}
-                    {duplicateCandidate.numeroFactura ?? '-'} · FRR_id {duplicateCandidate.frrId}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          {visibleWarnings.length > 0 ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
-              <p className="font-bold">Avisos de revision</p>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {visibleWarnings.map((issue) => (
-                  <li key={issue.code ?? `${issue.field}:${issue.message}`}>
-                    {sanitizeUserFacingErrorMessage(issue.message)}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {catalogError ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/35 dark:text-amber-200">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="font-bold">{catalogErrorTitle}</p>
-                  <p className="mt-1">{catalogError}</p>
-                </div>
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-xs font-bold text-amber-900 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
-                  disabled={catalogLoading}
-                  onClick={() => void loadCatalogs(failedCatalogKeys)}
-                >
-                  {catalogLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                  {catalogLoading ? 'Reintentando...' : 'Reintentar'}
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      <FacturaIssuesOverlay
+        actionError={detailActionError}
+        erpError={visibleERPError}
+        errors={visibleErrors}
+        warnings={visibleWarnings}
+        duplicateCandidate={duplicateCandidate}
+        catalogError={catalogError}
+        catalogErrorTitle={catalogErrorTitle}
+        catalogLoading={catalogLoading}
+        onRetryCatalog={() => void loadCatalogs(failedCatalogKeys)}
+      />
 
       <div className="purchase-invoice-detail-main grid flex-1 items-start gap-6 px-5 py-6 md:px-6 xl:grid-cols-[minmax(420px,0.92fr)_minmax(0,1.08fr)]">
         <section className="purchase-invoice-detail-pdf-panel flex min-w-0 flex-col bg-white dark:bg-transparent xl:sticky xl:top-4">
@@ -3508,57 +3686,15 @@ const Facturas = () => {
                       disabled={isReadOnlyDetail}
                       onAplicar={(valor) => void changeRegimenIva(valor)}
                     />
-                    {regimenIvaFeedback ? (
-                      <p
-                        role="status"
-                        className={`mt-1.5 text-xs font-medium ${
-                          regimenIvaFeedback.estado === 'ambigua' || regimenIvaFeedback.estado === 'error'
-                            ? 'text-amber-700 dark:text-amber-300'
-                            : regimenIvaFeedback.estado === 'aplicada'
-                              ? 'text-emerald-700 dark:text-emerald-300'
-                              : 'text-slate-500 dark:text-slate-400'
-                        }`}
-                      >
-                        {regimenIvaFeedback.mensaje}
-                      </p>
-                    ) : null}
                   </Field>
-                  {draft.asiento_numero ? (
-                    <Field label="N.º de asiento">
-                      <Input className={detailInputClass} value={draft.asiento_numero ?? ''} disabled />
-                    </Field>
-                  ) : null}
-                  {draft.asiento_fecha ? (
-                    <Field label="Fecha asiento">
-                      <Input className={detailInputClass} value={formatDate(draft.asiento_fecha)} disabled />
-                    </Field>
-                  ) : null}
                 </div>
               </FieldGroup>
 
               <FieldGroup title="Desglose de IVA">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="mb-3">
                   <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">
                     Base {formatMoney(ivaBaseTotal)} · Cuota {formatMoney(ivaCuotaTotal)}
                   </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="inline-flex h-9 items-center rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
-                      disabled={isReadOnlyDetail}
-                      onClick={calculateIvaCuotas}
-                    >
-                      Calcular cuotas
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex h-9 items-center rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
-                      disabled={isReadOnlyDetail}
-                      onClick={useCalculatedInvoiceTotal}
-                    >
-                      Usar total calculado
-                    </button>
-                  </div>
                 </div>
                 <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
                   <table className="w-full min-w-[560px] text-left text-sm">
@@ -3602,7 +3738,26 @@ const Facturas = () => {
                             />
                           </td>
                           <td className="px-3 py-3">
-                            <Input className={detailTableInputClass} inputMode="decimal" value={numberInputValue(tramo.cuota)} disabled={isReadOnlyDetail} onChange={(event) => updateIvaTramo(tramo.posicion, 'cuota', parseNumber(event.target.value))} />
+                            <div className="flex items-center gap-2">
+                              <Input className={detailTableInputClass} inputMode="decimal" value={numberInputValue(tramo.cuota)} disabled={isReadOnlyDetail} onChange={(event) => updateIvaTramo(tramo.posicion, 'cuota', parseNumber(event.target.value))} />
+                              <button
+                                type="button"
+                                className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-blue-300 bg-blue-50 text-blue-700 shadow-sm transition-colors hover:border-blue-400 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-default disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300 disabled:shadow-none dark:border-blue-700 dark:bg-blue-950/50 dark:text-blue-300 dark:hover:bg-blue-900/60 dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-700"
+                                disabled={
+                                  isReadOnlyDetail ||
+                                  !isFacturaIvaCuotaOutdated(
+                                    tramo.base,
+                                    tramo.porcentaje,
+                                    tramo.cuota,
+                                  )
+                                }
+                                aria-label={`Calcular cuota del tramo ${tramo.posicion}`}
+                                title="Calcular cuota"
+                                onClick={() => calculateIvaCuota(tramo)}
+                              >
+                                <Calculator className="size-4" aria-hidden="true" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -3843,14 +3998,22 @@ const Facturas = () => {
                 </div>
               </FieldGroup>
 
-              <FieldGroup title="Albaranes/Gtos para puntear">
+              <FieldGroup
+                title={
+                  duplicateERPPunteosReadOnly
+                    ? 'Albaranes/gastos vinculados en ERP'
+                    : 'Albaranes/Gtos para puntear'
+                }
+              >
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">
-                    {isReadOnlyDetail
+                    {duplicateERPPunteosReadOnly
+                      ? `Esta factura ya existe en el ERP (entrada ${verifiedDuplicateERPId}). Se muestran sus vínculos actuales en modo consulta; no se modificarán desde este borrador.`
+                      : isReadOnlyDetail
                       ? 'Albaranes y gastos vinculados en el ERP.'
                       : 'Selecciona los albaranes o gastos que deben vincularse a la factura.'}
                   </p>
-                  {!isReadOnlyDetail ? (
+                  {!punteosReadOnly ? (
                     <button
                       type="button"
                       className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
@@ -3866,29 +4029,32 @@ const Facturas = () => {
                 {punteosLoadError ? (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
                     <span>{punteosLoadError}</span>
-                    <button
-                      type="button"
-                      className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 bg-white px-3 text-xs font-bold hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900/60 dark:bg-amber-950/40"
-                      disabled={isReadOnlyDetail ? punteoReferencesLoading : punteosLoading}
-                      onClick={() =>
-                        void (isReadOnlyDetail ? loadPunteoReferences() : loadPunteables())
-                      }
-                    >
-                      {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading) ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      )}
-                      {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading)
-                        ? 'Recuperando...'
-                        : 'Reintentar'}
-                    </button>
+                    {!duplicateERPPunteosReadOnly ? (
+                      <button
+                        type="button"
+                        className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 bg-white px-3 text-xs font-bold hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900/60 dark:bg-amber-950/40"
+                        disabled={isReadOnlyDetail ? punteoReferencesLoading : punteosLoading}
+                        onClick={() =>
+                          void (isReadOnlyDetail ? loadPunteoReferences() : loadPunteables())
+                        }
+                      >
+                        {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading) ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading)
+                          ? 'Recuperando...'
+                          : 'Reintentar'}
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
 
                 <FacturaPunteosTable
                   punteos={punteos}
-                  readOnly={isReadOnlyDetail}
+                  readOnly={punteosReadOnly}
+                  existingERPLinks={duplicateERPPunteosReadOnly}
                   selectedCount={punteosSeleccionados}
                   selectedTotal={punteosTotal}
                   baseDifference={punteosBaseDifference}
@@ -3903,7 +4069,7 @@ const Facturas = () => {
                   formatMoney={formatMoney}
                   formatDate={formatDate}
                 />
-                {!isReadOnlyDetail && punteosSeleccionados > 0 ? (
+                {!punteosReadOnly && punteosSeleccionados > 0 ? (
                   <p
                     className={`mt-3 text-xs font-semibold ${
                       Math.abs(punteosBaseDifference) >
@@ -3946,7 +4112,17 @@ const Facturas = () => {
                 </div>
                 {ctbLineas.length > 0 ? (
                   <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-800">
-                    <table className="w-full min-w-[1040px] text-left text-sm">
+                    <table className="w-full min-w-[1180px] table-fixed text-left text-sm">
+                      <colgroup>
+                        <col className="w-12" />
+                        <col className="w-[300px]" />
+                        <col className="w-[140px]" />
+                        <col className="w-[140px]" />
+                        <col className="w-[140px]" />
+                        <col className="w-[170px]" />
+                        <col className="w-[180px]" />
+                        <col className="w-14" />
+                      </colgroup>
                       <thead>
                         <tr className="bg-slate-50 text-xs font-bold uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
                           <th className="w-12 px-3 py-3">#</th>
@@ -4010,20 +4186,6 @@ const Facturas = () => {
                 </FieldGroup>
               ) : null}
 
-              {!isReadOnlyDetail || asientoLineas.length > 0 || draft.accounting?.created === true ? (
-                <FieldGroup title="Asiento contable (Debe / Haber)">
-                  <AsientoContableTable
-                    lines={asientoLineas}
-                    status={draft.asiento_estado}
-                    error={
-                      draft.accounting?.error
-                        ? sanitizeUserFacingErrorMessage(draft.accounting.error)
-                        : null
-                    }
-                  />
-                </FieldGroup>
-              ) : null}
-
               <FieldGroup title="Pagos">
                 <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
                   {!isReadOnlyDetail || hasMeaningfulERPValue(draft.forma_pago) ? (
@@ -4049,21 +4211,18 @@ const Facturas = () => {
                   {!isReadOnlyDetail || hasMeaningfulERPValue(draft.contabilizar) ? (
                     <Field label="Contabilizar">
                       <FilterSelect
-                        value={isReadOnlyDetail && draft.contabilizar === 'S' ? 'S' : 'N'}
+                        value={draft.contabilizar === 'S' ? 'S' : 'N'}
                         options={yesNoOptions}
-                        onChange={() => undefined}
+                        onChange={(value) => updateDraft('contabilizar', value)}
                         ariaLabel="Contabilizar"
-                        disabled
+                        disabled={isReadOnlyDetail}
                         triggerClassName={detailInputClass}
                       />
-                      {!isReadOnlyDetail ? (
+                      {!isReadOnlyDetail && draft.contabilizar === 'S' ? (
                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                          {erpRuntime?.accounting_mode === 'unavailable' ||
-                          erpRuntime?.capabilities.accounting_commit === false
-                            ? 'No disponible: el ERP no ofrece aún el mecanismo contable oficial.'
-                            : erpRuntime
-                              ? 'Solo se habilitará mediante la operación contable oficial.'
-                              : 'Capacidad contable pendiente de comprobar.'}
+                          {canCommitAccounting
+                            ? 'Se creará el asiento después de registrar la factura.'
+                            : 'La contabilización no está disponible en este momento.'}
                         </p>
                       ) : null}
                     </Field>

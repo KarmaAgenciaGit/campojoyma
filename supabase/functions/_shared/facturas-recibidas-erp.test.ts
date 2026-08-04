@@ -13,6 +13,7 @@ import {
   buildERPContractV2,
   confirmFacturaProveedorTipoFromERP,
   extractOperationalERPAvailabilityWarnings,
+  filterFacturaERPWarningsAfterDuplicateVerification,
   forceFacturaERPAccountingDisabled,
   getERPReadAuthorizedRoutes,
   getERPProviderPreflightIssues,
@@ -39,6 +40,7 @@ import {
   parseERPProviderDetailResponse,
   prepareFacturaExtractionPersistence,
   requestHasServiceRoleCredential,
+  resolveFacturaERPExistingPunteoLinks,
   resolveFacturaIngestAuthority,
   resolveFacturaERPAccountingRules,
   resolveFacturaERPExerciseFromExactInvoice,
@@ -59,6 +61,7 @@ import {
   validateERPReadbackAgainstWrite,
   validateERPWriteRequestV2,
   validateERPWriteResponseV2,
+  verifyFacturaERPExactDuplicate,
   verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "./facturas-recibidas-erp.ts";
@@ -67,10 +70,13 @@ import {
   normalizeFacturaExtractionPayload,
 } from "./factura-recibida-extraction.ts";
 import {
+  buildAccountingContractV3,
   buildERPContractV3,
   buildFacturaWriteIdentity,
   parseStructuredERPError,
+  scopeNetagroReadToTarget,
   timestampsReferToSameInstant,
+  validateNetagroAccountingResponseV3,
   validateNetagroWriteResponseV3,
 } from "./netagro-api-v3.ts";
 
@@ -228,6 +234,113 @@ Deno.test("contrato ERP v3 no envia hash cliente y valida la identidad devuelta"
   );
 });
 
+Deno.test("contrato contable v3 conserva una identidad minima entre validacion y commit", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const targetId = "netagro-test-write";
+  const datasetEpoch = "33333333-3333-4333-8333-333333333333";
+
+  assertEquals(
+    buildAccountingContractV3({
+      operation: "validate",
+      requestId,
+      targetId,
+      datasetEpoch,
+    }),
+    {
+      contract_version: 3,
+      operation: "validate",
+      request_id: requestId,
+      target_id: targetId,
+      dataset_epoch: datasetEpoch,
+    },
+  );
+  assertEquals(
+    buildAccountingContractV3({
+      operation: "commit",
+      requestId,
+      targetId,
+      datasetEpoch,
+    }),
+    {
+      contract_version: 3,
+      operation: "commit",
+      request_id: requestId,
+      target_id: targetId,
+      dataset_epoch: datasetEpoch,
+    },
+  );
+});
+
+Deno.test("readback contable v3 exige identidad, hashes y asiento creado", () => {
+  const expected = {
+    operation: "commit" as const,
+    requestId: "11111111-1111-4111-8111-111111111111",
+    targetId: "netagro-test-write",
+    datasetEpoch: "33333333-3333-4333-8333-333333333333",
+    facturaId: 49723,
+    payloadHash: "a".repeat(64),
+    invoiceFingerprint: "b".repeat(64),
+    requireCreated: true,
+  };
+  const response = {
+    contract_version: 3,
+    operation: "commit",
+    request_id: expected.requestId,
+    target_id: expected.targetId,
+    dataset_epoch: expected.datasetEpoch,
+    factura_id: expected.facturaId,
+    payload_hash: expected.payloadHash,
+    invoice_fingerprint: expected.invoiceFingerprint,
+    ok: true,
+    eligible: true,
+    readback_confirmed: true,
+    accounting: {
+      created: true,
+      status: "created",
+      balanced: true,
+      technical_id: 394936,
+      visible_number: "53344",
+      total_debit: 121,
+      total_credit: 121,
+    },
+    entries: [
+      { account: "60200000001", debit: 100, credit: 0 },
+      { account: "47200000008", debit: 21, credit: 0 },
+      { account: "41000000017", debit: 0, credit: 121 },
+    ],
+  };
+
+  assertEquals(validateNetagroAccountingResponseV3(response, expected).ok, true);
+
+  for (const [field, value] of [
+    ["request_id", "22222222-2222-4222-8222-222222222222"],
+    ["target_id", "netagro-other"],
+    ["dataset_epoch", "44444444-4444-4444-8444-444444444444"],
+    ["factura_id", 49724],
+    ["payload_hash", "c".repeat(64)],
+    ["invoice_fingerprint", "d".repeat(64)],
+  ] as const) {
+    const invalid = { ...response, [field]: value };
+    assertEquals(
+      validateNetagroAccountingResponseV3(invalid, expected).ok,
+      false,
+      `${field} cruzado debe invalidar el readback`,
+    );
+  }
+
+  assertEquals(
+    validateNetagroAccountingResponseV3(
+      { ...response, accounting: { ...response.accounting, balanced: false } },
+      expected,
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateNetagroAccountingResponseV3({ ...response, entries: [] }, expected).ok,
+    false,
+  );
+});
+
 Deno.test("hash v3 coincide con el vector canonico de FastAPI sin schema fisico", async () => {
   const identity = await buildFacturaWriteIdentity({
     cabecera: {
@@ -241,6 +354,26 @@ Deno.test("hash v3 coincide con el vector canonico de FastAPI sin schema fisico"
   assertEquals(
     identity.payloadHash,
     "3f2a37e26f99062e186e2a49119cc0fc7ede6d922576764cee47a5a00031cc6a",
+  );
+});
+
+Deno.test("readback v3 queda ligado al target y epoch persistentes", () => {
+  assertEquals(
+    scopeNetagroReadToTarget(
+      "facturasrecibidas/49723/punteos?include_lines=false",
+      "netagro-test-write",
+      "33333333-3333-4333-8333-333333333333",
+    ),
+    "facturasrecibidas/49723/punteos?include_lines=false&target_id=netagro-test-write&dataset_epoch=33333333-3333-4333-8333-333333333333",
+  );
+  assertThrows(
+    () => scopeNetagroReadToTarget(
+      "https://example.invalid/facturasrecibidas/49723",
+      "netagro-test-write",
+      "33333333-3333-4333-8333-333333333333",
+    ),
+    Error,
+    "ERP_READ_SCOPE_INVALID",
   );
 });
 
@@ -1040,6 +1173,32 @@ Deno.test("una senal positiva del modelo no valida referencias omitidas o ambigu
   assert(issues[0]?.message.includes("478975"));
 });
 
+Deno.test("solo una comprobacion Edge confirmada omite la seleccion MA de una factura ya existente", () => {
+  const input = {
+    factura: {
+      FRR_Idempresa: 1,
+      FRR_idproveedor: 17,
+      FRR_tipofactura: "OT",
+    },
+    extraction: {
+      albaranes_referenciados: [{ referencia: "478974" }],
+    },
+    matchEvidence: {
+      punteos: {
+        existing_invoice_found: true,
+        documented_count: 1,
+      },
+    },
+    punteos: [],
+  };
+
+  assertEquals(getFacturaERPDocumentedReferenceIssues(input).length, 1);
+  assertEquals(getFacturaERPDocumentedReferenceIssues({
+    ...input,
+    existingInvoiceVerified: true,
+  }), []);
+});
+
 Deno.test("evidencia de referencias sin literales verificables tambien falla cerrada", () => {
   const issues = getFacturaERPDocumentedReferenceIssues({
     factura: {
@@ -1807,6 +1966,22 @@ Deno.test("validacion estructural no consulta cache y fusiona avisos por campo s
   assertEquals(merged.find((issue) => issue.field === "FRR_idregimen")?.severity, "error");
 });
 
+Deno.test("la fusion conserva codigo y detalle estructurado del error", () => {
+  assertEquals(mergeValidationIssues([{
+    code: "duplicate_invoice",
+    field: "erp_duplicate",
+    message: "La factura ya existe en ERP.",
+    severity: "error",
+    details: { total: 1, candidates: [{ FRR_id: 49305 }] },
+  }], []), [{
+    code: "duplicate_invoice",
+    field: "erp_duplicate",
+    message: "La factura ya existe en ERP.",
+    severity: "error",
+    details: { total: 1, candidates: [{ FRR_id: 49305 }] },
+  }]);
+});
+
 Deno.test("conserva por separado proveedor ausente y caida operativa de acreedores", async () => {
   const structuralIssues = await getValidationErrorsForFactura({});
   const apiWarning = "No se pudo consultar /acreedores. La resolucion queda pendiente.";
@@ -2313,6 +2488,238 @@ Deno.test("duplicado ERP usa la clave exacta y conserva candidatos utiles", () =
     FRR_numerofactura: "A-00748886",
     FRR_tipofactura: "OT",
   }]);
+});
+
+Deno.test("Edge confirma el duplicado exacto y devuelve un error estructurado", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-00748886",
+    FRR_tipofactura: "OT",
+  };
+  const candidate = {
+    FRR_id: 49305,
+    FRR_numero: 5052,
+    ...factura,
+  };
+  let consulta = "";
+  const verification = await verifyFacturaERPExactDuplicate(
+    factura,
+    (value) => {
+      consulta = value;
+      return Promise.resolve({ items: [candidate], total: 1 });
+    },
+  );
+
+  assert(consulta.startsWith("facturasrecibidas/buscar?"));
+  assertEquals(verification.duplicate, true);
+  assertEquals(verification.evidence.status, "duplicate");
+  assertEquals(verification.evidence.verified, true);
+  assertEquals(verification.issues[0]?.code, "duplicate_invoice");
+  assertEquals(verification.issues[0]?.field, "erp_duplicate");
+  assert(verification.issues[0]?.message.includes("49305"));
+  assert(verification.issues[0]?.message.includes("5052"));
+});
+
+Deno.test("Edge no confunde una senal n8n con un duplicado cuando Netagro devuelve cero", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "NUEVA-1",
+    FRR_tipofactura: "OT",
+  };
+  const verification = await verifyFacturaERPExactDuplicate(
+    factura,
+    () => Promise.resolve({ items: [], total: 0 }),
+    {
+      punteos: { existing_invoice_found: true },
+      duplicado: { status: "ok", count: 1 },
+    },
+  );
+
+  assertEquals(verification.duplicate, false);
+  assertEquals(verification.issues, []);
+  assertEquals(verification.evidence.status, "clear");
+});
+
+Deno.test("Edge falla cerrado si la comprobacion de duplicado no es verificable", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-00748886",
+    FRR_tipofactura: "OT",
+  };
+  const invalid = await verifyFacturaERPExactDuplicate(
+    factura,
+    () => Promise.resolve({ items: [], total: "0" }),
+  );
+  const unavailable = await verifyFacturaERPExactDuplicate(
+    factura,
+    () => Promise.reject(new Error("timeout")),
+  );
+
+  for (const verification of [invalid, unavailable]) {
+    assertEquals(verification.duplicate, false);
+    assertEquals(verification.issues[0]?.code, "upstream_unavailable");
+    assertEquals(verification.issues[0]?.severity, "error");
+    assertEquals(verification.issues[0]?.field, "erp_duplicate");
+  }
+});
+
+Deno.test("una caida al guardar conserva un duplicado Edge previo solo para la misma clave", async () => {
+  const factura = {
+    FRR_Idempresa: 1,
+    FRR_ejercicio: 25,
+    FRR_idproveedor: 17,
+    FRR_numerofactura: "A-00748886",
+    FRR_tipofactura: "OT",
+  };
+  const confirmed = await verifyFacturaERPExactDuplicate(
+    factura,
+    () => Promise.resolve({
+      items: [{ FRR_id: 49305, FRR_numero: 5052, ...factura }],
+      total: 1,
+    }),
+  );
+  const preserved = await verifyFacturaERPExactDuplicate(
+    factura,
+    () => Promise.reject(new Error("timeout")),
+    confirmed.evidence,
+  );
+  const changed = await verifyFacturaERPExactDuplicate(
+    { ...factura, FRR_numerofactura: "OTRA" },
+    () => Promise.reject(new Error("timeout")),
+    confirmed.evidence,
+  );
+
+  assertEquals(preserved.duplicate, true);
+  assertEquals(preserved.evidence.status, "duplicate");
+  assertEquals(preserved.evidence.fresh, false);
+  assertEquals(preserved.issues[0]?.code, "duplicate_invoice");
+  assertEquals(preserved.issues[1]?.severity, "warning");
+  assertEquals(changed.duplicate, false);
+  assertEquals(changed.issues[0]?.code, "upstream_unavailable");
+});
+
+Deno.test("readback del duplicado unico restaura vinculos ERP completos como solo consulta", async () => {
+  const verification = {
+    duplicate: true,
+    candidates: [{ FRR_id: 49305, FRR_numero: 5052 }],
+    issues: [],
+    evidence: { total: 1 },
+  };
+  let consulta = "";
+  const result = await resolveFacturaERPExistingPunteoLinks(
+    verification,
+    (value) => {
+      consulta = value;
+      return Promise.resolve({
+        items: [{
+          id_interno_estable: "MA:2058",
+          source_table: "albmaterial",
+          source_id: 2058,
+          Ref: "478897",
+          S: "S",
+          Importe: 2400,
+        }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+    },
+    { requireNonEmpty: true },
+  );
+
+  assertEquals(
+    consulta,
+    "facturasrecibidas/49305/punteos?limit=100&offset=0&include_lines=false",
+  );
+  assertEquals(result.issues, []);
+  assertEquals(result.evidence.status, "verified");
+  assertEquals(result.punteos?.length, 1);
+  assertEquals(result.punteos?.[0]?.remote_id, "MA:2058");
+  assertEquals(result.punteos?.[0]?.source_id, 2058);
+  assertEquals(result.punteos?.[0]?.S, false);
+});
+
+Deno.test("readback del duplicado nunca transforma un fallo o pagina parcial en borrado", async () => {
+  const verification = {
+    duplicate: true,
+    candidates: [{ FRR_id: 49305 }],
+    issues: [],
+    evidence: { total: 1 },
+  };
+  const unavailable = await resolveFacturaERPExistingPunteoLinks(
+    verification,
+    () => Promise.reject(new Error("timeout")),
+    { requireNonEmpty: true },
+  );
+  const partial = await resolveFacturaERPExistingPunteoLinks(
+    verification,
+    () => Promise.resolve({ items: [], total: 17, limit: 100, offset: 0 }),
+    { requireNonEmpty: true },
+  );
+  const documentedButEmpty = await resolveFacturaERPExistingPunteoLinks(
+    verification,
+    () => Promise.resolve({ items: [], total: 0, limit: 100, offset: 0 }),
+    { requireNonEmpty: true },
+  );
+  const invalidIdentity = await resolveFacturaERPExistingPunteoLinks(
+    verification,
+    () => Promise.resolve({
+      items: [{ source_table: "albmaterial", source_id: null }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    }),
+  );
+  const invalidTotal = await resolveFacturaERPExistingPunteoLinks(
+    verification,
+    () => Promise.resolve({ items: [], total: "0", limit: 100, offset: 0 }),
+  );
+
+  for (const result of [
+    unavailable,
+    partial,
+    documentedButEmpty,
+    invalidIdentity,
+    invalidTotal,
+  ]) {
+    assertEquals(result.punteos, null);
+    assertEquals(result.evidence.preserve_existing, true);
+    assertEquals(result.issues[0]?.code, "erp_linked_punteos_unavailable");
+    assertEquals(result.issues[0]?.severity, "warning");
+  }
+});
+
+Deno.test("readback solo sustituye por vacio cuando ERP confirma cero vinculos no documentados", async () => {
+  const result = await resolveFacturaERPExistingPunteoLinks(
+    {
+      duplicate: true,
+      candidates: [{ FRR_id: 49305 }],
+      issues: [],
+      evidence: { total: 1 },
+    },
+    () => Promise.resolve({ items: [], total: 0, limit: 100, offset: 0 }),
+  );
+
+  assertEquals(result.punteos, []);
+  assertEquals(result.evidence.authoritative, true);
+});
+
+Deno.test("el duplicado Edge sustituye avisos n8n redundantes pero conserva el resto", () => {
+  assertEquals(filterFacturaERPWarningsAfterDuplicateVerification([
+    "La factura ya existe en ERP para empresa, ejercicio, acreedor y numero.",
+    "Las referencias de albaran fueron consultadas en ERP y no se encontraron coincidencias MA.",
+    "La factura existe en ERP. Los enlaces reales se muestran sin seleccion.",
+    "Hay una nota manuscrita que requiere revision.",
+  ], true), [
+    "La factura existe en ERP. Los enlaces reales se muestran sin seleccion.",
+    "Hay una nota manuscrita que requiere revision.",
+  ]);
 });
 
 Deno.test("contrato /buscar falla cerrado ante shapes o candidatos no verificables", () => {

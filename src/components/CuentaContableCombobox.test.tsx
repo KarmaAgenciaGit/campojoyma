@@ -56,6 +56,13 @@ describe('CuentaContableCombobox', () => {
     fireEvent.change(input, { target: { value: 'material' } });
 
     await screen.findByText('Material de oficina');
+    const listbox = screen.getByRole('listbox');
+    expect(input).toHaveAttribute('aria-controls', listbox.id);
+    await waitFor(() => {
+      const activeDescendant = input.getAttribute('aria-activedescendant');
+      expect(activeDescendant).toBeTruthy();
+      expect(document.getElementById(activeDescendant!)).not.toBeNull();
+    });
     expect(fetchFacturaCuentas).toHaveBeenCalledWith({
       empresaId: 1,
       search: 'material',
@@ -66,6 +73,61 @@ describe('CuentaContableCombobox', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
 
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('60200000001'));
+  });
+
+  it('no abre un desplegable vacío solo por recibir el foco', () => {
+    render(
+      <CuentaContableCombobox
+        empresaId={1}
+        value={null}
+        onChange={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+
+    expect(input).toHaveAttribute('aria-expanded', 'false');
+    expect(input).toHaveAttribute('placeholder', 'Buscar cuenta');
+    expect(document.body.querySelector('[cmdk-list]')).toBeNull();
+  });
+
+  it('renderiza los resultados fuera de contenedores que puedan recortarlos', () => {
+    render(
+      <div data-testid="overflow-container" style={{ overflow: 'auto' }}>
+        <CuentaContableCombobox
+          empresaId={1}
+          value="60200000001"
+          onChange={vi.fn()}
+        />
+      </div>,
+    );
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '602' } });
+
+    const overflowContainer = screen.getByTestId('overflow-container');
+    expect(overflowContainer.querySelector('[cmdk-list]')).toBeNull();
+    expect(document.body.querySelector('[cmdk-list]')).not.toBeNull();
+  });
+
+  it('cierra los resultados cuando se vacía la búsqueda', () => {
+    render(
+      <CuentaContableCombobox
+        empresaId={1}
+        value={null}
+        onChange={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, { target: { value: '602' } });
+    expect(document.body.querySelector('[cmdk-list]')).not.toBeNull();
+
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input).toHaveAttribute('aria-expanded', 'false');
+    expect(document.body.querySelector('[cmdk-list]')).toBeNull();
   });
 
   it('conserva visible un valor histórico aunque el catálogo no lo encuentre', async () => {

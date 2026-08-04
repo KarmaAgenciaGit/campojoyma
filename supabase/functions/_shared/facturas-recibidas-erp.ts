@@ -884,7 +884,10 @@ export const normalizePunteoPayload = (input: JsonObject, position: number) => {
   const rawSourceTable = text(pick(input, ["source_table", "tabla_origen", "tabla"]), null);
   return {
     posicion: integerValue(pick(input, ["posicion", "position"]), position) ?? position,
-    remote_id: text(pick(input, ["remote_id", "id", "ID", "ALB_id", "GTO_id", "AMA_id"]), null),
+    remote_id: text(
+      pick(input, ["remote_id", "id_interno_estable", "id", "ID", "ALB_id", "GTO_id", "AMA_id"]),
+      null,
+    ),
     source_table: rawSourceTable?.toLowerCase() ?? null,
     source_id: integerValue(pick(input, ["source_id", "id_origen", "AMA_id"]), null),
     importe_factura: numberValue(
@@ -2211,9 +2214,11 @@ export const applyCampojoymaLegacyERPReadScope = (consulta: string): string => {
 };
 
 export type FacturaValidationIssue = {
+  code?: string;
   field: string;
   message: string;
   severity: "error" | "warning";
+  details?: JsonObject;
 };
 
 export type FacturaERPAccountingRuleRow = {
@@ -2253,11 +2258,25 @@ export type FacturaERPExactMAPunteoVerification = {
   evidence: JsonObject;
 };
 
+export type FacturaERPExactDuplicateVerification = {
+  duplicate: boolean;
+  candidates: JsonObject[];
+  issues: FacturaValidationIssue[];
+  evidence: JsonObject;
+};
+
+export type FacturaERPExistingPunteoLinksResolution = {
+  punteos: JsonObject[] | null;
+  issues: FacturaValidationIssue[];
+  evidence: JsonObject;
+};
+
 export type FacturaERPDocumentedReferenceValidationInput = {
   factura: JsonObject;
   extraction: JsonObject;
   matchEvidence?: JsonObject;
   punteos: JsonObject[];
+  existingInvoiceVerified?: boolean;
 };
 
 const normalizedDocumentedReference = (value: unknown): string | null => {
@@ -2281,21 +2300,358 @@ const jsonObjectArray = (value: unknown): JsonObject[] =>
     )
     : [];
 
-/**
- * Una señal positiva de n8n/IA nunca basta para resolver referencias. Edge
- * deriva las referencias documentadas del detalle extraído y exige una
- * selección MA revalidada, exacta, única y uno-a-uno para cada referencia.
- * La evidencia de n8n solo amplía el conjunto que debe revisarse; nunca
- * sustituye la verificación de los punteos seleccionados por Edge.
- */
-export const getFacturaERPDocumentedReferenceIssues = ({
-  factura,
-  extraction,
-  matchEvidence = {},
-  punteos,
-}: FacturaERPDocumentedReferenceValidationInput): FacturaValidationIssue[] => {
-  if (resolveFacturaProveedorTipo(factura) !== "acreedor") return [];
+const facturaERPDuplicateBusinessKey = (factura: JsonObject): JsonObject | null => {
+  const empresaId = positiveIdentityInteger(factura.FRR_Idempresa);
+  const ejercicio = positiveIdentityInteger(factura.FRR_ejercicio);
+  const proveedorId = positiveIdentityInteger(factura.FRR_idproveedor);
+  const numeroFactura = text(factura.FRR_numerofactura, null);
+  const tipoFactura = text(factura.FRR_tipofactura, null)?.toUpperCase() ?? null;
+  if (!empresaId || !ejercicio || !proveedorId || !numeroFactura || !tipoFactura) {
+    return null;
+  }
+  return {
+    empresa_id: empresaId,
+    ejercicio,
+    circuito: tipoFactura === "GE" ? "GE" : "MA",
+    proveedor_id: proveedorId,
+    numero_factura: numeroFactura,
+  };
+};
 
+const sameFacturaERPDuplicateBusinessKey = (
+  left: JsonObject,
+  right: JsonObject,
+): boolean =>
+  left.empresa_id === right.empresa_id &&
+  left.ejercicio === right.ejercicio &&
+  left.circuito === right.circuito &&
+  left.proveedor_id === right.proveedor_id &&
+  left.numero_factura === right.numero_factura;
+
+const facturaERPExactDuplicateIssue = (
+  candidates: JsonObject[],
+  total: number,
+): FacturaValidationIssue => {
+  const onlyCandidate = total === 1 && candidates.length === 1 ? candidates[0] : null;
+  const remoteId = onlyCandidate ? positiveIdentityInteger(onlyCandidate.FRR_id) : null;
+  const visibleNumber = onlyCandidate ? positiveIdentityInteger(onlyCandidate.FRR_numero) : null;
+  const candidateDetail = remoteId
+    ? ` como entrada ${remoteId}${visibleNumber ? ` (número ERP ${visibleNumber})` : ""}`
+    : " para la misma empresa, ejercicio, circuito, proveedor y número";
+  return {
+    code: "duplicate_invoice",
+    field: "erp_duplicate",
+    message: `La factura ya existe en ERP${candidateDetail}; este borrador no puede enviarse de nuevo.`,
+    severity: "error",
+    details: {
+      total,
+      candidates,
+    },
+  };
+};
+
+const reusableFacturaERPExactDuplicate = (
+  previousEvidence: unknown,
+  businessKey: JsonObject,
+): { candidates: JsonObject[]; total: number; evidence: JsonObject } | null => {
+  const evidence = jsonObjectOrEmpty(previousEvidence);
+  const previousKey = jsonObjectOrEmpty(evidence.business_key);
+  const candidates = jsonObjectArray(evidence.candidates);
+  const total = integerValue(evidence.total, null);
+  if (
+    evidence.source !== "erp_exact_duplicate" ||
+    evidence.status !== "duplicate" ||
+    evidence.verified !== true ||
+    !total ||
+    total < 1 ||
+    candidates.length === 0 ||
+    candidates.some((candidate) => !positiveIdentityInteger(candidate.FRR_id)) ||
+    !sameFacturaERPDuplicateBusinessKey(previousKey, businessKey)
+  ) {
+    return null;
+  }
+  return { candidates, total, evidence };
+};
+
+/**
+ * Edge vuelve a comprobar la clave de duplicado directamente contra Netagro.
+ * Una señal de n8n nunca se acepta como autoridad. Si una revalidación de una
+ * clave ya confirmada falla temporalmente, se conserva el bloqueo previo y se
+ * registra que la comprobación fresca no estuvo disponible.
+ */
+export const verifyFacturaERPExactDuplicate = async (
+  factura: JsonObject,
+  readERP: (consulta: string) => Promise<unknown>,
+  previousEvidence: unknown = null,
+): Promise<FacturaERPExactDuplicateVerification> => {
+  const consulta = buildERPDuplicateConsulta(factura);
+  const businessKey = facturaERPDuplicateBusinessKey(factura);
+  if (!consulta || !businessKey) {
+    return {
+      duplicate: false,
+      candidates: [],
+      issues: [],
+      evidence: {
+        source: "erp_exact_duplicate",
+        status: "not_checkable",
+        verified: false,
+        checked: false,
+      },
+    };
+  }
+
+  const rejectUnverifiable = (
+    status: "invalid_response" | "unavailable",
+    reason: string,
+  ): FacturaERPExactDuplicateVerification => {
+    const reusable = reusableFacturaERPExactDuplicate(previousEvidence, businessKey);
+    const availabilityIssue: FacturaValidationIssue = {
+      code: "upstream_unavailable",
+      field: reusable ? "metadata.warnings" : "erp_duplicate",
+      message: reusable
+        ? "No se pudo revalidar ahora el duplicado ya confirmado en ERP; se conserva el bloqueo anterior."
+        : "No se pudo comprobar de forma fiable si la factura ya existe en el ERP.",
+      severity: reusable ? "warning" : "error",
+      details: { reason },
+    };
+    if (reusable) {
+      return {
+        duplicate: true,
+        candidates: reusable.candidates,
+        issues: [
+          facturaERPExactDuplicateIssue(reusable.candidates, reusable.total),
+          availabilityIssue,
+        ],
+        evidence: {
+          ...reusable.evidence,
+          checked: false,
+          fresh: false,
+          last_revalidation_status: status,
+          last_revalidation_reason: reason,
+        },
+      };
+    }
+    return {
+      duplicate: false,
+      candidates: [],
+      issues: [availabilityIssue],
+      evidence: {
+        source: "erp_exact_duplicate",
+        status,
+        verified: false,
+        checked: false,
+        fresh: false,
+        reason,
+        business_key: businessKey,
+        total: null,
+        candidates: [],
+      },
+    };
+  };
+
+  let payload: unknown;
+  try {
+    payload = await readERP(consulta);
+  } catch {
+    return rejectUnverifiable("unavailable", "upstream_unavailable");
+  }
+  const validation = validateERPDuplicateSearchResponse(payload, factura);
+  if (!validation.ok || validation.total === null) {
+    return rejectUnverifiable(
+      "invalid_response",
+      validation.error ?? "invalid_response",
+    );
+  }
+
+  const duplicate = validation.total > 0;
+  const evidence: JsonObject = {
+    source: "erp_exact_duplicate",
+    status: duplicate ? "duplicate" : "clear",
+    verified: true,
+    checked: true,
+    fresh: true,
+    business_key: businessKey,
+    total: validation.total,
+    candidates: validation.candidates,
+  };
+  return {
+    duplicate,
+    candidates: validation.candidates,
+    issues: duplicate
+      ? [facturaERPExactDuplicateIssue(validation.candidates, validation.total)]
+      : [],
+    evidence,
+  };
+};
+
+/**
+ * Recupera del ERP los vinculos que ya pertenecen a una factura duplicada
+ * exacta y unica. `null` significa deliberadamente "no sustituir lo que ya
+ * existe en Supabase"; nunca se convierte un fallo o una pagina incompleta en
+ * un array vacio que el RPC interpretaria como una orden de borrado.
+ */
+export const resolveFacturaERPExistingPunteoLinks = async (
+  duplicateVerification: FacturaERPExactDuplicateVerification,
+  readERP: (consulta: string) => Promise<unknown>,
+  options: { requireNonEmpty?: boolean } = {},
+): Promise<FacturaERPExistingPunteoLinksResolution> => {
+  const declaredDuplicateTotal = integerValue(
+    duplicateVerification.evidence.total,
+    null,
+  );
+  const onlyCandidate =
+    duplicateVerification.duplicate &&
+      declaredDuplicateTotal === 1 &&
+      duplicateVerification.candidates.length === 1
+      ? duplicateVerification.candidates[0]
+      : null;
+  const remoteFacturaId = onlyCandidate
+    ? positiveIdentityInteger(onlyCandidate.FRR_id)
+    : null;
+
+  if (!remoteFacturaId) {
+    return {
+      punteos: null,
+      issues: [],
+      evidence: {
+        source: "erp_existing_invoice_punteos",
+        status: duplicateVerification.duplicate
+          ? "not_checkable_ambiguous_duplicate"
+          : "not_applicable",
+        checked: false,
+        authoritative: false,
+        preserve_existing: true,
+      },
+    };
+  }
+
+  const unavailable = (reason: string): FacturaERPExistingPunteoLinksResolution => ({
+    punteos: null,
+    issues: [{
+      code: "erp_linked_punteos_unavailable",
+      field: "punteos",
+      message:
+        "No se pudieron actualizar los vinculos historicos de la factura existente en ERP; no se han modificado los vinculos guardados.",
+      severity: "warning",
+      details: { reason, existing_invoice_id: remoteFacturaId },
+    }],
+    evidence: {
+      source: "erp_existing_invoice_punteos",
+      status: "unavailable",
+      checked: false,
+      authoritative: false,
+      preserve_existing: true,
+      existing_invoice_id: remoteFacturaId,
+      reason,
+    },
+  });
+
+  let payload: unknown;
+  try {
+    payload = await readERP(
+      `facturasrecibidas/${remoteFacturaId}/punteos?limit=100&offset=0&include_lines=false`,
+    );
+  } catch {
+    return unavailable("upstream_unavailable");
+  }
+
+  const parsed = parseERPArrayEnvelope(payload, ["items", "punteos"]);
+  if (!parsed.ok) return unavailable(parsed.error ?? "invalid_response");
+
+  const payloadObject = jsonObjectOrEmpty(payload);
+  const nestedEnvelope = jsonObjectOrEmpty(payloadObject.data ?? payloadObject.result);
+  const envelope = hasOwn(payloadObject, "items") || hasOwn(payloadObject, "punteos")
+    ? payloadObject
+    : nestedEnvelope;
+  const total = typeof envelope.total === "number" &&
+      Number.isSafeInteger(envelope.total) && envelope.total >= 0
+    ? envelope.total
+    : null;
+  if (total === null) return unavailable("missing_or_invalid_total");
+  if (
+    hasOwn(envelope, "limit") &&
+    (typeof envelope.limit !== "number" ||
+      !Number.isSafeInteger(envelope.limit) || envelope.limit !== 100)
+  ) {
+    return unavailable("unexpected_page_limit");
+  }
+  if (
+    hasOwn(envelope, "offset") &&
+    (typeof envelope.offset !== "number" ||
+      !Number.isSafeInteger(envelope.offset) || envelope.offset !== 0)
+  ) {
+    return unavailable("unexpected_page_offset");
+  }
+  if (total !== parsed.items.length) return unavailable("partial_response");
+  if (options.requireNonEmpty === true && total === 0) {
+    return unavailable("documented_links_missing");
+  }
+
+  const normalizedPunteos = parsed.items.map((punteo, index) => ({
+    ...normalizePunteoPayload(punteo, index + 1),
+    posicion: index + 1,
+    S: false,
+  }));
+  const identities = new Set<string>();
+  for (const [index, punteo] of normalizedPunteos.entries()) {
+    const sourceTable = text(punteo.source_table, null)?.toLowerCase() ?? null;
+    const sourceId = positiveIdentityInteger(punteo.source_id);
+    const remoteFacturaKey = ["factura_recibida_id", "FRR_id", "frr_id"]
+      .find((key) => hasOwn(parsed.items[index], key));
+    const rawRemoteFacturaId = remoteFacturaKey
+      ? parsed.items[index][remoteFacturaKey]
+      : undefined;
+    const linkedRemoteFacturaId = rawRemoteFacturaId === undefined
+      ? null
+      : positiveIdentityInteger(rawRemoteFacturaId);
+    if (
+      !sourceTable ||
+      !sourceId ||
+      (rawRemoteFacturaId !== undefined && linkedRemoteFacturaId !== remoteFacturaId)
+    ) {
+      return unavailable("invalid_link_identity");
+    }
+    const identity = `${sourceTable}:${sourceId}`;
+    if (identities.has(identity)) return unavailable("duplicate_link_identity");
+    identities.add(identity);
+  }
+
+  return {
+    punteos: normalizedPunteos,
+    issues: [],
+    evidence: {
+      source: "erp_existing_invoice_punteos",
+      status: "verified",
+      checked: true,
+      authoritative: true,
+      preserve_existing: false,
+      existing_invoice_id: remoteFacturaId,
+      total,
+    },
+  };
+};
+
+export const filterFacturaERPWarningsAfterDuplicateVerification = (
+  warnings: readonly string[],
+  existingInvoiceVerified: boolean,
+): string[] => {
+  if (!existingInvoiceVerified) return [...warnings];
+  return warnings.filter((warning) => {
+    const normalized = warning
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase("es-ES");
+    return !normalized.includes("la factura ya existe en erp") &&
+      !normalized.includes(
+        "las referencias de albaran fueron consultadas en erp y no se encontraron coincidencias ma",
+      );
+  });
+};
+
+const facturaERPDocumentedReferenceContext = (
+  extraction: JsonObject,
+  matchEvidence: JsonObject,
+) => {
   const documentedReferences = new Map<string, string>();
   const addReference = (value: unknown) => {
     const literal = text(value, null);
@@ -2305,9 +2661,7 @@ export const getFacturaERPDocumentedReferenceIssues = ({
     }
   };
 
-  for (
-    const albaran of jsonObjectArray(extraction.albaranes_referenciados)
-  ) {
+  for (const albaran of jsonObjectArray(extraction.albaranes_referenciados)) {
     addReference(albaran.referencia);
   }
   for (const linea of jsonObjectArray(extraction.lineas)) {
@@ -2328,6 +2682,35 @@ export const getFacturaERPDocumentedReferenceIssues = ({
       ? evidenceDocumentedCount
       : 0,
   );
+  return { documentedReferences, expectedReferenceCount };
+};
+
+export const getFacturaERPDocumentedReferenceCount = (
+  extraction: JsonObject,
+  matchEvidence: JsonObject = {},
+) => facturaERPDocumentedReferenceContext(extraction, matchEvidence).expectedReferenceCount;
+
+/**
+ * Una señal positiva de n8n/IA nunca basta para resolver referencias. Edge
+ * deriva las referencias documentadas del detalle extraído y exige una
+ * selección MA revalidada, exacta, única y uno-a-uno para cada referencia.
+ * La evidencia de n8n solo amplía el conjunto que debe revisarse; nunca
+ * sustituye la verificación de los punteos seleccionados por Edge.
+ */
+export const getFacturaERPDocumentedReferenceIssues = ({
+  factura,
+  extraction,
+  matchEvidence = {},
+  punteos,
+  existingInvoiceVerified = false,
+}: FacturaERPDocumentedReferenceValidationInput): FacturaValidationIssue[] => {
+  if (resolveFacturaProveedorTipo(factura) !== "acreedor") return [];
+  // Una factura ya existente no tiene punteos pendientes que volver a
+  // seleccionar. Este booleano solo puede proceder de la consulta Edge anterior.
+  if (existingInvoiceVerified) return [];
+
+  const { documentedReferences, expectedReferenceCount } =
+    facturaERPDocumentedReferenceContext(extraction, matchEvidence);
   if (expectedReferenceCount === 0) return [];
 
   if (documentedReferences.size !== expectedReferenceCount) {
@@ -4056,7 +4439,13 @@ export const mergeValidationIssues = (
       if (genericMessages.has(messageKey)) return;
       genericMessages.add(messageKey);
     }
-    merged.push({ field, message, severity });
+    const normalizedIssue: FacturaValidationIssue = { field, message, severity };
+    const code = text(issue.code, null);
+    if (code) normalizedIssue.code = code;
+    if (issue.details && typeof issue.details === "object" && !Array.isArray(issue.details)) {
+      normalizedIssue.details = issue.details;
+    }
+    merged.push(normalizedIssue);
   };
 
   for (const issue of [...issues].sort((left, right) =>

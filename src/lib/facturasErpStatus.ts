@@ -8,6 +8,7 @@ export type FacturaERPRegistrationState =
   | 'not_validated'
   | 'validated'
   | 'sending'
+  | 'registered'
   | 'confirmed'
   | 'uncertain'
   | 'error'
@@ -25,6 +26,8 @@ export type FacturaERPStatusSource = {
   remote_frr_id?: number | null;
   erp_factura_id?: string | null;
   erp_sent_at?: string | null;
+  erp_last_read_at?: string | null;
+  erp_readback_matches_remote?: boolean | null;
 };
 
 export type FacturaERPValidationSource = {
@@ -150,6 +153,14 @@ export const getFacturaERPRegistrationState = (
     return 'confirmed';
   }
   if (
+    syncStatus === 'sent' &&
+    hasRemoteIdentity(factura) &&
+    Boolean(cleanText(factura.erp_last_read_at)) &&
+    factura.erp_readback_matches_remote === true
+  ) {
+    return 'registered';
+  }
+  if (
     hasRemoteIdentity(factura) &&
     (referenceStatus === 'legacy_unverified' ||
       referenceStatus === 'unverified')
@@ -186,6 +197,7 @@ export const facturaERPRegistrationLabels: Record<
   not_validated: 'No validado',
   validated: 'Validado',
   sending: 'Enviando',
+  registered: 'Registrada',
   confirmed: 'Confirmado',
   uncertain: 'Resultado incierto',
   error: 'Error',

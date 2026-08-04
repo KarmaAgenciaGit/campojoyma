@@ -46,6 +46,37 @@ describe('estado independiente del registro ERP', () => {
     expect(isFacturaERPConfirmed(factura)).toBe(false);
   });
 
+  it('presenta como registrada una referencia legacy con readback exacto', () => {
+    const factura = {
+      estado: 'enviada_erp',
+      sync_status: 'sent',
+      erp_reference_status: 'legacy_unverified',
+      erp_target_id: null,
+      erp_dataset_epoch: null,
+      erp_verified_at: null,
+      remote_frr_id: 49305,
+      erp_last_read_at: '2026-08-03T09:40:06Z',
+      erp_readback_matches_remote: true,
+    };
+
+    expect(getFacturaERPRegistrationState(factura)).toBe('registered');
+    expect(isFacturaERPConfirmed(factura)).toBe(false);
+    expect(facturaERPRegistrationLabels.registered).toBe('Registrada');
+  });
+
+  it('no confunde un readback sin identidad coincidente con una factura registrada', () => {
+    expect(
+      getFacturaERPRegistrationState({
+        estado: 'enviada_erp',
+        sync_status: 'sent',
+        erp_reference_status: 'legacy_unverified',
+        remote_frr_id: 49305,
+        erp_last_read_at: '2026-08-03T09:40:06Z',
+        erp_readback_matches_remote: false,
+      }),
+    ).toBe('not_validated');
+  });
+
   it('solo confirma una referencia válida con target, epoch e identidad', () => {
     const factura = {
       estado: 'enviada_erp',

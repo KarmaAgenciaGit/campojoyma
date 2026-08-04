@@ -3,6 +3,10 @@ import {
   FACTURAS_RECIBIDAS_CONTRACT_VERSION,
   corsHeaders,
   extractOperationalERPAvailabilityWarnings,
+  fetchERPReadConsulta,
+  filterFacturaERPWarningsAfterDuplicateVerification,
+  getFacturaERPDocumentedReferenceIssues,
+  getFacturaERPDocumentedReferenceCount,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   integerValue,
@@ -15,7 +19,10 @@ import {
   requestIdValue,
   requireRouteUser,
   rpcErrorStatus,
+  resolveFacturaERPExistingPunteoLinks,
   syncFacturaERPAccountingMatchEvidence,
+  verifyFacturaERPExactDuplicate,
+  verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
 
@@ -73,18 +80,81 @@ Deno.serve(async (req) => {
         validationBase.FRR_idproveedor,
       ),
     );
-    const resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
+    let resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
       validationBase.match_evidence,
       accountingRules,
     );
+    const ctbInput = asObjectArray(body.ctb);
+    const punteosInput = asObjectArray(body.punteos);
+    const ctb = ctbInput?.map((linea, index) => normalizeFrcPayload(linea, index + 1)) ?? null;
+    let punteos: JsonObject[] | null = punteosInput
+      ?.map((punteo, index) => normalizePunteoPayload(punteo, index + 1)) ?? null;
+    const duplicateVerification = await verifyFacturaERPExactDuplicate(
+      accountingRules.factura,
+      fetchERPReadConsulta,
+      asObject(resolvedMatchEvidence.erp_duplicate_verification),
+    );
+    resolvedMatchEvidence = {
+      ...resolvedMatchEvidence,
+      erp_duplicate_verification: duplicateVerification.evidence,
+    };
+    let punteoVerificationIssues: Awaited<
+      ReturnType<typeof verifyFacturaERPExactMAPunteos>
+    >["issues"] = [];
+    if (duplicateVerification.duplicate) {
+      const existingPunteoLinks = await resolveFacturaERPExistingPunteoLinks(
+        duplicateVerification,
+        fetchERPReadConsulta,
+        {
+          requireNonEmpty: getFacturaERPDocumentedReferenceCount(
+            asObject(validationBase.extraction),
+            resolvedMatchEvidence,
+          ) > 0,
+        },
+      );
+      punteos = existingPunteoLinks.punteos;
+      punteoVerificationIssues = existingPunteoLinks.issues;
+      resolvedMatchEvidence = {
+        ...resolvedMatchEvidence,
+        punteos_edge_verification: existingPunteoLinks.evidence,
+      };
+    } else if (punteos !== null) {
+      const punteoVerification = await verifyFacturaERPExactMAPunteos(
+        accountingRules.factura,
+        punteos,
+        fetchERPReadConsulta,
+      );
+      punteos = punteoVerification.punteos;
+      punteoVerificationIssues = punteoVerification.issues;
+      resolvedMatchEvidence = {
+        ...resolvedMatchEvidence,
+        punteos_edge_verification: punteoVerification.evidence,
+      };
+    }
+    const documentedReferenceIssues = getFacturaERPDocumentedReferenceIssues({
+      factura: accountingRules.factura,
+      extraction: asObject(validationBase.extraction),
+      matchEvidence: resolvedMatchEvidence,
+      punteos: punteos ?? [],
+      existingInvoiceVerified: duplicateVerification.duplicate,
+    });
     const structuralIssues = await getValidationErrorsForFactura(accountingRules.factura);
     const preservedOperationalWarnings = extractOperationalERPAvailabilityWarnings(
       current.validation_errors,
       { providerPreflightVerified: body.provider_preflight_verified === true },
     );
     const validationErrors = mergeValidationIssues(
-      [...accountingRules.issues, ...structuralIssues],
-      preservedOperationalWarnings,
+      [
+        ...accountingRules.issues,
+        ...duplicateVerification.issues,
+        ...punteoVerificationIssues,
+        ...documentedReferenceIssues,
+        ...structuralIssues,
+      ],
+      filterFacturaERPWarningsAfterDuplicateVerification(
+        preservedOperationalWarnings,
+        duplicateVerification.duplicate,
+      ),
     );
     // Document state is derived at the trusted Edge boundary. A caller cannot
     // force `validada` while blocking validation issues still exist.
@@ -119,11 +189,6 @@ Deno.serve(async (req) => {
     ) {
       frr.FRR_fechactb = frr.FRR_fechafactura;
     }
-
-    const ctbInput = asObjectArray(body.ctb);
-    const punteosInput = asObjectArray(body.punteos);
-    const ctb = ctbInput?.map((linea, index) => normalizeFrcPayload(linea, index + 1)) ?? null;
-    const punteos = punteosInput?.map((punteo, index) => normalizePunteoPayload(punteo, index + 1)) ?? null;
 
     const { data, error } = await auth.serviceClient.rpc("save_factura_recibida_v2", {
       p_factura_id: facturaId,

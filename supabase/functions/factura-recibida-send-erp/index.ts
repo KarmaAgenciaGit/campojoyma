@@ -47,6 +47,7 @@ import {
   callNetagroWriteV3,
   fetchNetagroRuntime,
   parseStructuredERPError,
+  scopeNetagroReadToTarget,
   timestampsReferToSameInstant,
   validateNetagroWriteResponseV3,
   type StructuredERPError,
@@ -270,6 +271,10 @@ Deno.serve(async (req) => {
         },
       });
     }
+    const accountingRequested =
+      (factura as JsonObject).accounting_requested === true ||
+      String((factura as JsonObject).FRR_Contabilizar ?? "N").trim().toUpperCase() ===
+        "S";
 
     const entryDecision = getFacturaSyncEntryDecision(factura as JsonObject, requestId);
     if (entryDecision.mode === "replay") {
@@ -494,9 +499,48 @@ Deno.serve(async (req) => {
         },
       });
     }
+    if (
+      !reconciliationMode &&
+      requestedOperation === "commit" &&
+      accountingRequested &&
+      (
+        !runtime.accounting_ready_for_commit ||
+        !runtime.capabilities.accounting_commit ||
+        !["official", "sql_test"].includes(runtime.accounting_mode) ||
+        (localTarget as JsonObject).accounting_mode !== runtime.accounting_mode ||
+        (
+          runtime.accounting_mode === "sql_test" &&
+          (
+            (localTarget as JsonObject).environment !== "test" ||
+            runtime.accounting_write_mode !== "sql_test"
+          )
+        )
+      )
+    ) {
+      return edgeError({
+        status: 503,
+        error: {
+          code: "accounting_unavailable",
+          category: "accounting",
+          user_message:
+            "La contabilización no está habilitada en el entorno de pruebas. No se ha enviado la factura.",
+          technical_details: {},
+          retryable: false,
+          reconciliation_required: false,
+          request_id: syncRequestId,
+          target_id: targetId,
+          dataset_epoch: datasetEpoch,
+        },
+      });
+    }
 
     const callReadResponse = async (consulta: string) => {
-      const { response, payload } = await callNetagroRead(consulta);
+      const scopedConsulta = scopeNetagroReadToTarget(
+        consulta,
+        targetId,
+        datasetEpoch,
+      );
+      const { response, payload } = await callNetagroRead(scopedConsulta);
       return {
         response,
         payload,
@@ -1857,6 +1901,11 @@ Deno.serve(async (req) => {
         202,
       );
     }
+
+    // El alta de gestion termina aqui. La contabilizacion se orquesta
+    // exclusivamente desde factura-recibida-account-erp para mantener una
+    // sola maquina de estados contable y un unico control de idempotencia.
+    activeWriterOpened = false;
 
     return jsonResponse({
       contract_version: FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,

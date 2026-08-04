@@ -18,6 +18,7 @@ import {
   buildFacturaDuplicateConsulta,
   buildFacturaPayload,
   buildPunteosPayload,
+  buildPunteosUpdatePayload,
   fetchAlbaranEntradaLineas,
   fetchAlbaranMaterialLineas,
   fetchFacturaPunteables,
@@ -25,6 +26,8 @@ import {
   fetchFacturaTiposIva,
   fetchFacturasRecibidasERPRuntime,
   facturaProveedorERPKind,
+  getFacturaAccountingActionRequestId,
+  getVerifiedERPDuplicateId,
   getFacturaERPSendConfirmation,
   getFacturaERPReconciliationRequestId,
   getPunteoImporte,
@@ -32,6 +35,7 @@ import {
   getFunctionInvokeErrorMessage,
   isERPReferenceFactura,
   isRetryableFacturaERPReadError,
+  isFacturaAccountingActionable,
   labelTipoFactura,
   isERPReadOnlyFactura,
   localizarProveedorERP,
@@ -41,6 +45,7 @@ import {
   normalizeFacturaTiposIva,
   partitionFacturaValidationIssues,
   preflightFacturaRecibidaERP,
+  shouldStartFacturaAccountingAfterManagement,
   tipoFacturaRadioValue,
   validateFacturaAccountPairs,
 } from '@/services/facturas';
@@ -209,6 +214,45 @@ describe('reintentos ERP', () => {
     expect(factura.last_request_id).toBe('c2caa09c-3574-46f7-9b47-11c6651b8e55');
     expect(getFacturaERPSendConfirmation(factura)).toBe('unconfirmed');
   });
+
+  it('acredita el readback solo cuando la cabecera coincide con la identidad remota', () => {
+    const factura = mapFacturaToUi({
+      id: 'factura-reconciliada',
+      estado: 'enviada_erp',
+      sync_status: 'sent',
+      FRR_id: 49305,
+      remote_frr_id: 49305,
+      erp_last_read_at: '2026-08-03T09:40:06Z',
+      erp_last_read_payload: {
+        source: 'netagro_api_readback',
+        factura: { FRR_id: 49305 },
+      },
+      validation_errors: [],
+      asientos: [],
+      ctb: [],
+      punteos: [],
+    } as never);
+
+    expect(factura.erp_readback_matches_remote).toBe(true);
+
+    const mismatched = mapFacturaToUi({
+      id: 'factura-readback-distinto',
+      estado: 'enviada_erp',
+      sync_status: 'sent',
+      FRR_id: 49305,
+      remote_frr_id: 49305,
+      erp_last_read_at: '2026-08-03T09:40:06Z',
+      erp_last_read_payload: {
+        factura: { FRR_id: 49306 },
+      },
+      validation_errors: [],
+      asientos: [],
+      ctb: [],
+      punteos: [],
+    } as never);
+
+    expect(mismatched.erp_readback_matches_remote).toBe(false);
+  });
 });
 
 describe('modelo reversible de facturas recibidas', () => {
@@ -292,6 +336,101 @@ describe('modelo reversible de facturas recibidas', () => {
       descripcion: 'Material 1.1',
     });
     expect(isERPReadOnlyFactura(factura)).toBe(true);
+  });
+
+  it('conserva los campos del visualizador de asiento desde el readback contable', () => {
+    const factura = mapRemoteFacturaToUi(
+      { ...onduSpanHeader, FRR_idcentro: 1 },
+      [],
+      [],
+      {
+        factura_id: 49305,
+        accounting: {
+          requested: true,
+          created: true,
+          status: 'created',
+          technical_id: 390305,
+          visible_number: '48732',
+          date: '2026-06-30',
+          concept: 'FRA. ONDUSPAN, S.A',
+          balanced: true,
+          total_debit: 51233.24,
+          total_credit: 51233.24,
+        },
+        entries: [
+          {
+            id: 1024596,
+            position: 2,
+            account: '60200000001',
+            account_name: 'COMPRAS ENVASES Y EMBALAJES',
+            description: 'FRA. ONDUSPAN, S.A',
+            document: 'A-00748886',
+            activity_id: 1,
+            section_id: 1,
+            debit: 42341.52,
+            credit: 0,
+          },
+        ],
+      },
+    );
+
+    expect(factura.centro).toBe(1);
+    expect(factura.asiento_numero).toBe('48732');
+    expect(factura.asiento_lineas?.[0]).toMatchObject({
+      cuenta: '60200000001',
+      titulo: 'COMPRAS ENVASES Y EMBALAJES',
+      descripcion: 'FRA. ONDUSPAN, S.A',
+      documento: 'A-00748886',
+      actividad_id: 1,
+      seccion_id: 1,
+    });
+  });
+
+  it('recupera título, documento y analítica desde el raw inmutable de Supabase', () => {
+    const factura = mapFacturaToUi({
+      id: 'factura-onduspan-contabilizada',
+      estado: 'enviada_erp',
+      FRR_idcentro: 1,
+      FRR_ejercicio: 25,
+      FRR_numerofactura: 'A-00748886',
+      validation_errors: [],
+      ctb: [],
+      punteos: [],
+      asientos: [
+        {
+          status: 'created',
+          visible_number: '48732',
+          accounting_date: '2026-06-30',
+          concept: 'FRA. ONDUSPAN, S.A',
+          technical_id: 390305,
+          total_debit: 51233.24,
+          total_credit: 51233.24,
+          balanced: true,
+          raw: {},
+          apuntes: [
+            {
+              posicion: 3,
+              cuenta: '47200000008',
+              descripcion: 'FRA. ONDUSPAN, S.A',
+              debe: 8891.72,
+              haber: 0,
+              analytic: { activity_id: 1, section_id: 1 },
+              raw: {
+                account_name: 'IVA SOPORTADO 21%',
+                document: 'A-00748886',
+              },
+            },
+          ],
+        },
+      ],
+    } as never);
+
+    expect(factura.asiento_lineas?.[0]).toMatchObject({
+      titulo: 'IVA SOPORTADO 21%',
+      documento: 'A-00748886',
+      actividad_id: 1,
+      seccion_id: 1,
+    });
   });
 
   it('presenta vacíos los huecos IVA a cero y conserva un 0 % realmente usado', () => {
@@ -404,14 +543,14 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(payload.FRR_Contabilizar).toBe('N');
   });
 
-  it('fuerza contabilizar a N aunque el formulario indique S', () => {
+  it('conserva la intención de contabilizar indicada en el formulario', () => {
     const payload = buildFacturaPayload(
       { contabilizar: 'S' },
       null,
       [],
     );
 
-    expect(payload.FRR_Contabilizar).toBe('N');
+    expect(payload.FRR_Contabilizar).toBe('S');
   });
 
   it('mantiene los candidatos de punteo sin seleccionar para N o valor ausente', () => {
@@ -727,6 +866,89 @@ describe('modelo reversible de facturas recibidas', () => {
     expect(isERPReferenceFactura({ source_kind: 'erp_reference', is_readonly_reference: true })).toBe(true);
     expect(isERPReferenceFactura({ source_kind: 'email_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(false);
     expect(isERPReadOnlyFactura({ source_kind: 'email_draft', sync_status: 'sent', remote_frr_id: 49399 })).toBe(true);
+  });
+
+  it('acepta unicamente la verificacion Edge exacta de un duplicado ERP', () => {
+    expect(getVerifiedERPDuplicateId({
+      match_evidence: {
+        erp_duplicate_verification: {
+          source: 'erp_exact_duplicate',
+          status: 'duplicate',
+          verified: true,
+          total: 1,
+          candidates: [{ FRR_id: 49305 }],
+        },
+      },
+    })).toBe(49305);
+
+    expect(getVerifiedERPDuplicateId({
+      match_evidence: {
+        duplicado: { status: 'ok', checked: true, count: 1 },
+        punteos: { existing_invoice_found: true, existing_links_complete: true },
+      },
+    })).toBeNull();
+  });
+
+  it('omite punteos al guardar un duplicado ERP exacto para no borrar sus vinculos historicos', () => {
+    expect(buildPunteosUpdatePayload({
+      match_evidence: {
+        erp_duplicate_verification: {
+          source: 'erp_exact_duplicate',
+          status: 'duplicate',
+          verified: true,
+          total: 1,
+          candidates: [{ FRR_id: 49305 }],
+        },
+      },
+      punteos: [{
+        posicion: 1,
+        source_table: 'albmaterial',
+        source_id: 2058,
+        origen: 'MA',
+        serie: 'A26',
+        albaran: 2058,
+        ref: '478897',
+        fecha: '2026-06-23',
+        importe_punteado: 100,
+        importe: 100,
+        seleccionado: false,
+        ver: false,
+      }],
+    })).toBeUndefined();
+  });
+
+  it('mantiene el payload editable de punteos cuando no existe duplicado Edge exacto', () => {
+    expect(buildPunteosUpdatePayload({
+      punteos: [{
+        posicion: 1,
+        source_table: 'albmaterial',
+        source_id: 2058,
+        origen: 'MA',
+        serie: 'A26',
+        albaran: 2058,
+        ref: '478897',
+        fecha: '2026-06-23',
+        importe_punteado: 100,
+        importe: 100,
+        seleccionado: true,
+        ver: false,
+      }],
+    })).toEqual([
+      expect.objectContaining({ source_table: 'albmaterial', source_id: 2058, S: true }),
+    ]);
+  });
+
+  it.each([
+    ['origen distinto', { source: 'n8n_duplicate', status: 'duplicate', verified: true, total: 1, candidates: [{ FRR_id: 49305 }] }],
+    ['estado distinto', { source: 'erp_exact_duplicate', status: 'ok', verified: true, total: 1, candidates: [{ FRR_id: 49305 }] }],
+    ['sin verificar', { source: 'erp_exact_duplicate', status: 'duplicate', verified: false, total: 1, candidates: [{ FRR_id: 49305 }] }],
+    ['varios resultados', { source: 'erp_exact_duplicate', status: 'duplicate', verified: true, total: 2, candidates: [{ FRR_id: 49305 }, { FRR_id: 49306 }] }],
+    ['id no positivo', { source: 'erp_exact_duplicate', status: 'duplicate', verified: true, total: 1, candidates: [{ FRR_id: 0 }] }],
+    ['id textual', { source: 'erp_exact_duplicate', status: 'duplicate', verified: true, total: 1, candidates: [{ FRR_id: '49305' }] }],
+  ])('rechaza evidencia de duplicado no autoritativa: %s', (_case, verification) => {
+    expect(getVerifiedERPDuplicateId({
+      match_evidence: { erp_duplicate_verification: verification },
+    })).toBeNull();
   });
 
   it('limita la bandeja a PDFs procesados y excluye referencias o fixtures manuales', () => {
@@ -1186,6 +1408,84 @@ describe('validacion ERP autoritativa', () => {
     expect(getFacturaERPReconciliationRequestId({ sync_status: 'unknown', last_request_id: 'nuevo-id' })).toBeNull();
   });
 
+  it('reutiliza el request contable solicitado y crea uno nuevo tras un error', () => {
+    const existingRequestId = '5e2d251a-61f4-48f8-a28a-58f96023317f';
+    const newRequestId = 'd1bbf665-bf73-47e8-9569-a3215b0bc5cb';
+    const createRequestId = vi.fn(() => newRequestId);
+
+    expect(
+      getFacturaAccountingActionRequestId(
+        {
+          accounting_status: 'requested',
+          accounting_request_id: existingRequestId,
+        },
+        createRequestId,
+      ),
+    ).toBe(existingRequestId);
+    expect(createRequestId).not.toHaveBeenCalled();
+
+    expect(
+      getFacturaAccountingActionRequestId(
+        { accounting_status: 'error' },
+        createRequestId,
+      ),
+    ).toBe(newRequestId);
+    expect(createRequestId).toHaveBeenCalledOnce();
+  });
+
+  it('no permite accionar de nuevo una contabilizacion pendiente o incierta', () => {
+    const requestId = '5e2d251a-61f4-48f8-a28a-58f96023317f';
+    const pending = {
+      accounting_status: 'pending',
+      accounting_request_id: requestId,
+    };
+    const unknown = {
+      accounting_status: 'unknown',
+      accounting_request_id: requestId,
+    };
+
+    expect(isFacturaAccountingActionable(pending)).toBe(false);
+    expect(isFacturaAccountingActionable(unknown)).toBe(false);
+    expect(() => getFacturaAccountingActionRequestId(pending)).toThrow(
+      'La contabilización ya está en curso.',
+    );
+    expect(() => getFacturaAccountingActionRequestId(unknown)).toThrow(
+      'El resultado de la contabilización está pendiente de comprobar.',
+    );
+  });
+
+  it('encadena contabilidad tras el alta solo cuando aun no existe un intento', () => {
+    expect(
+      shouldStartFacturaAccountingAfterManagement(
+        { accounting_status: 'not_requested' },
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldStartFacturaAccountingAfterManagement(
+        {
+          accounting_status: 'requested',
+          accounting_request_id: '5e2d251a-61f4-48f8-a28a-58f96023317f',
+        },
+        true,
+      ),
+    ).toBe(true);
+    for (const status of ['pending', 'unknown', 'error', 'created']) {
+      expect(
+        shouldStartFacturaAccountingAfterManagement(
+          { accounting_status: status },
+          true,
+        ),
+      ).toBe(false);
+    }
+    expect(
+      shouldStartFacturaAccountingAfterManagement(
+        { accounting_status: 'not_requested' },
+        false,
+      ),
+    ).toBe(false);
+  });
+
   it('deduplica por campo y conserva la severidad mas bloqueante', () => {
     const issues = normalizeFacturaValidationIssues([
       { field: 'FRR_fechactb', message: 'Revisa la fecha CTB.', severity: 'warning' },
@@ -1569,6 +1869,8 @@ describe('runtime ERP de facturas', () => {
           snapshot_at: '2026-07-30T12:00:00Z',
           write_mode: 'management',
           accounting_mode: 'unavailable',
+          accounting_write_mode: 'disabled',
+          accounting_ready_for_commit: false,
           ready_for_commit: true,
           capabilities: {
             validate: true,
@@ -1584,6 +1886,8 @@ describe('runtime ERP de facturas', () => {
       target_id: 'netagro-test-write',
       dataset_epoch: 'epoch-actual',
       accounting_mode: 'unavailable',
+      accounting_write_mode: 'disabled',
+      accounting_ready_for_commit: false,
       capabilities: {
         accounting_commit: false,
       },

@@ -112,7 +112,7 @@ describe('FacturasRecibidasService ERP v3', () => {
     const visibleMessage =
       caught instanceof Error ? caught.message : String(caught);
     expect(visibleMessage).toBe(
-      'El envío al ERP está deshabilitado temporalmente. Solicitud: request-error-server.',
+      'El envío al ERP está deshabilitado temporalmente.',
     );
     expect(visibleMessage).not.toContain('technical_details');
     expect(visibleMessage.toLowerCase()).not.toContain('webhook');
@@ -177,7 +177,7 @@ describe('FacturasRecibidasService ERP v3', () => {
       requestId: 'request-terminal',
     } satisfies Partial<FacturaERPServiceError>);
     await expect(operation).rejects.toThrow(
-      'El proveedor no supera la validacion ERP. Solicitud: request-terminal.',
+      'El proveedor no supera la validacion ERP.',
     );
     expect(getByIdSpy).not.toHaveBeenCalled();
   });
@@ -205,6 +205,145 @@ describe('FacturasRecibidasService ERP v3', () => {
         factura_id: 'factura-reconcile',
         expected_version: 8,
       },
+    });
+  });
+
+  it('contabiliza una factura ya registrada mediante la Edge separada', async () => {
+    const persisted = {
+      id: 'factura-account',
+      row_version: 12,
+      sync_status: 'sent',
+      accounting_status: 'created',
+      accounting_request_id: '5e2d251a-61f4-48f8-a28a-58f96023317f',
+      remote_frr_id: 49723,
+      ctb: [],
+      punteos: [],
+      asientos: [],
+    } as FacturaRecibida;
+    vi.spyOn(facturasRecibidas, 'getById').mockResolvedValue(persisted);
+    invokeMock.mockResolvedValueOnce({
+      data: { operation: 'account', ok: true },
+      error: null,
+    } as never);
+
+    const result = await facturasRecibidas.accountERP(
+      'factura-account',
+      11,
+      '5e2d251a-61f4-48f8-a28a-58f96023317f',
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith('factura-recibida-account-erp', {
+      body: {
+        contract_version: 3,
+        request_id: '5e2d251a-61f4-48f8-a28a-58f96023317f',
+        factura_id: 'factura-account',
+        expected_version: 11,
+      },
+    });
+    expect(result).toBe(persisted);
+  });
+
+  it('devuelve el error contable persistido por la Edge para la misma operacion', async () => {
+    const requestId = 'd1bbf665-bf73-47e8-9569-a3215b0bc5cb';
+    const persisted = {
+      id: 'factura-account-error',
+      row_version: 14,
+      sync_status: 'sent',
+      accounting_status: 'error',
+      accounting_request_id: requestId,
+      accounting_error: 'La factura no cumple las condiciones para contabilizarse.',
+      ctb: [],
+      punteos: [],
+      asientos: [],
+    } as FacturaRecibida;
+    const getByIdSpy = vi
+      .spyOn(facturasRecibidas, 'getById')
+      .mockResolvedValue(persisted);
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        error: {
+          code: 'accounting_validation_failed',
+          category: 'accounting',
+          user_message: persisted.accounting_error,
+          retryable: false,
+          reconciliation_required: false,
+          request_id: requestId,
+        },
+      },
+      error: new Error('Edge Function returned a non-2xx status code'),
+    } as never);
+
+    const result = await facturasRecibidas.accountERP(
+      persisted.id,
+      13,
+      requestId,
+    );
+
+    expect(getByIdSpy).toHaveBeenCalledWith(persisted.id);
+    expect(result).toBe(persisted);
+  });
+
+  it.each(['pending', 'unknown'] as const)(
+    'conserva el estado contable %s de la misma operacion si falla la llamada',
+    async (accountingStatus) => {
+      const requestId = '77c6d1a5-878f-4c87-9d9e-241619fd86d2';
+      const persisted = {
+        id: `factura-account-${accountingStatus}`,
+        row_version: 18,
+        sync_status: 'sent',
+        accounting_status: accountingStatus,
+        accounting_request_id: requestId,
+        ctb: [],
+        punteos: [],
+        asientos: [],
+      } as FacturaRecibida;
+      const getByIdSpy = vi
+        .spyOn(facturasRecibidas, 'getById')
+        .mockResolvedValue(persisted);
+      invokeMock.mockResolvedValueOnce({
+        data: null,
+        error: new Error('FunctionsFetchError'),
+      } as never);
+
+      const result = await facturasRecibidas.accountERP(
+        persisted.id,
+        17,
+        requestId,
+      );
+
+      expect(getByIdSpy).toHaveBeenCalledOnce();
+      expect(getByIdSpy).toHaveBeenCalledWith(persisted.id);
+      expect(result).toBe(persisted);
+      expect(result.accounting_status).toBe(accountingStatus);
+    },
+  );
+
+  it('no adopta el estado de otra operacion contable tras un fallo de llamada', async () => {
+    const requestId = '0a78dd74-3995-4cf1-919d-8c10065c61c5';
+    vi.spyOn(facturasRecibidas, 'getById').mockResolvedValue({
+      id: 'factura-account-other-request',
+      row_version: 20,
+      sync_status: 'sent',
+      accounting_status: 'unknown',
+      accounting_request_id: 'a78b9161-e9ed-41c4-bcb1-26c03d2908d7',
+      ctb: [],
+      punteos: [],
+      asientos: [],
+    } as FacturaRecibida);
+    invokeMock.mockResolvedValueOnce({
+      data: null,
+      error: new Error('FunctionsFetchError'),
+    } as never);
+
+    await expect(
+      facturasRecibidas.accountERP(
+        'factura-account-other-request',
+        19,
+        requestId,
+      ),
+    ).rejects.toMatchObject({
+      name: 'FacturaERPServiceError',
+      requestId,
     });
   });
 });

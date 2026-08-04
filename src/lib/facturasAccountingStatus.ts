@@ -17,18 +17,20 @@ export const getFacturaAccountingStatusText = (
   factura: FacturaAccountingStatusSource | null | undefined,
   runtime: FacturaAccountingRuntimeSource | null | undefined,
 ) => {
-  const status = String(
-    factura?.accounting_status ??
-      factura?.asiento_estado ??
-      factura?.accounting?.status ??
-      'not_requested',
-  )
-    .trim()
-    .toLowerCase();
+  const normalizeStatus = (value: unknown) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : '';
+  const explicitStatus = normalizeStatus(factura?.accounting_status);
+  const snapshotStatus =
+    normalizeStatus(factura?.asiento_estado) ||
+    normalizeStatus(factura?.accounting?.status);
+  const status =
+    explicitStatus === 'reference_unverified' || !explicitStatus
+      ? snapshotStatus || explicitStatus || 'not_requested'
+      : explicitStatus;
 
-  if (status === 'created') return 'Creada';
+  if (status === 'created') return 'Contabilizada';
   if (status === 'pending' || status === 'requested') return 'Pendiente';
-  if (status === 'reference_unverified') return 'Referencia sin verificar';
+  if (status === 'reference_unverified') return 'Pendiente de comprobar';
   if (status === 'stale') return 'Caducada';
   if (status === 'error' || status === 'unbalanced') return 'Error';
   if (status === 'unknown') return 'Resultado incierto';

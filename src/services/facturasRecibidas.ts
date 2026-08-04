@@ -82,10 +82,7 @@ export class FacturaERPServiceError extends Error {
   readonly datasetEpoch: string | null;
 
   constructor(data: FacturaERPErrorData) {
-    const visibleMessage = data.requestId
-      ? `${data.userMessage} Solicitud: ${data.requestId}.`
-      : data.userMessage;
-    super(visibleMessage);
+    super(data.userMessage);
     this.name = 'FacturaERPServiceError';
     this.code = data.code;
     this.category = data.category;
@@ -378,6 +375,16 @@ const mapFactura = (row: RawFactura): FacturaRecibida => {
   accounting_status: row.accounting_status ?? null,
   accounting_visible_number: row.accounting_visible_number ?? null,
   accounting_date: row.accounting_date ?? null,
+  accounting_requested: row.accounting_requested ?? false,
+  accounting_request_id: row.accounting_request_id ?? null,
+  accounting_payload_hash: row.accounting_payload_hash ?? null,
+  accounting_invoice_fingerprint: row.accounting_invoice_fingerprint ?? null,
+  accounting_error: row.accounting_error
+    ? sanitizeUserFacingErrorMessage(row.accounting_error)
+    : null,
+  accounting_response: row.accounting_response ?? null,
+  accounting_verified_at: row.accounting_verified_at ?? null,
+  accounting_updated_at: row.accounting_updated_at ?? null,
   erp_last_read_at: row.erp_last_read_at ?? null,
   erp_last_read_payload: row.erp_last_read_payload ?? null,
   last_request_id: row.last_request_id ?? null,
@@ -684,6 +691,61 @@ class FacturasRecibidasService {
     requestId?: string | null,
   ): Promise<FacturaRecibida> {
     return this.executeERPOperation('reconcile', facturaId, version, requestId);
+  }
+
+  async accountERP(
+    facturaId: string,
+    version?: number | null,
+    requestId?: string | null,
+  ): Promise<FacturaRecibida> {
+    const expectedVersion =
+      version ?? (await this.getById(facturaId))?.row_version ?? null;
+    if (!expectedVersion) {
+      throw new Error(
+        'No se pudo determinar la versión de la factura antes de contabilizarla.',
+      );
+    }
+    const accountingRequestId = requestId ?? crypto.randomUUID();
+    const { data, error } = await supabase.functions.invoke(
+      'factura-recibida-account-erp',
+      {
+        body: {
+          contract_version: 3,
+          request_id: accountingRequestId,
+          factura_id: facturaId,
+          expected_version: expectedVersion,
+        },
+      },
+    );
+    const structuredError = extractERPErrorData(data, {
+      requestId: accountingRequestId,
+    });
+    if (error || structuredError) {
+      let persisted: FacturaRecibida | null = null;
+      try {
+        persisted = await this.getById(facturaId);
+      } catch {
+        // Conservamos el fallo original de la Edge si la recarga tampoco responde.
+      }
+      const persistedStatus = String(persisted?.accounting_status ?? '')
+        .trim()
+        .toLowerCase();
+      if (
+        persisted?.accounting_request_id === accountingRequestId &&
+        ['pending', 'unknown', 'error'].includes(persistedStatus)
+      ) {
+        return persisted;
+      }
+      if (structuredError) {
+        throw new FacturaERPServiceError(structuredError);
+      }
+      throw await getFunctionInvokeERPError(error, data, accountingRequestId);
+    }
+    const updated = await this.getById(facturaId);
+    if (!updated) {
+      throw new Error('Factura no encontrada tras contabilizarla en el ERP.');
+    }
+    return updated;
   }
 
   async delete(facturaId: string, version?: number | null): Promise<void> {

@@ -69,6 +69,14 @@ type FacturasRecibidasRow = {
   accounting_status: string
   accounting_visible_number: string | null
   accounting_date: string | null
+  accounting_requested: boolean
+  accounting_request_id: string | null
+  accounting_payload_hash: string | null
+  accounting_invoice_fingerprint: string | null
+  accounting_error: string | null
+  accounting_response: Json | null
+  accounting_verified_at: string | null
+  accounting_updated_at: string | null
   erp_last_read_at: string | null
   erp_last_read_payload: Json | null
   last_request_id: string | null
@@ -1086,6 +1094,43 @@ export type Database = {
         }
         Returns: Json
       }
+      begin_factura_recibida_accounting_commit_v3: {
+        Args: {
+          p_actor?: string | null
+          p_dataset_epoch: string
+          p_factura_id: string
+          p_invoice_fingerprint: string
+          p_payload_hash: string
+          p_request_id: string
+          p_target_id: string
+        }
+        Returns: Json
+      }
+      prepare_factura_recibida_accounting_v3: {
+        Args: {
+          p_actor?: string | null
+          p_dataset_epoch: string
+          p_factura_id: string
+          p_request_id: string
+          p_target_id: string
+        }
+        Returns: Json
+      }
+      record_factura_recibida_accounting_v3: {
+        Args: {
+          p_actor?: string | null
+          p_dataset_epoch: string
+          p_error?: string | null
+          p_factura_id: string
+          p_invoice_fingerprint?: string | null
+          p_payload_hash?: string | null
+          p_request_id: string
+          p_response?: Json | null
+          p_status: string
+          p_target_id: string
+        }
+        Returns: Json
+      }
       create_factura_recibida_v2: {
         Args: {
           p_actor?: string | null
@@ -1237,6 +1282,17 @@ export type Database = {
           p_gates?: Json
           p_target_id: string
           p_write_mode: string
+        }
+        Returns: Json
+      }
+      set_erp_target_accounting_mode_v3: {
+        Args: {
+          p_accounting_mode: string
+          p_actor?: string | null
+          p_confirmation?: string | null
+          p_dataset_epoch: string
+          p_gates?: Json
+          p_target_id: string
         }
         Returns: Json
       }

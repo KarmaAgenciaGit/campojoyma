@@ -18,6 +18,7 @@ type MaterialLinesState = LinesState<FacturaRecibidaPunteoLinea>;
 export type FacturaPunteosTableProps = {
   punteos: FacturaRecibidaPunteo[];
   readOnly: boolean;
+  existingERPLinks?: boolean;
   selectedCount: number;
   selectedTotal: number;
   baseDifference: number;
@@ -268,6 +269,7 @@ const MaterialLinesDetail = ({
 export const FacturaPunteosTable = ({
   punteos,
   readOnly,
+  existingERPLinks = false,
   selectedCount,
   selectedTotal,
   baseDifference,
@@ -390,7 +392,9 @@ export const FacturaPunteosTable = ({
   if (punteos.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-        Sin albaranes/gastos para puntear recibidos desde API.
+        {existingERPLinks
+          ? 'El registro ERP existente no tiene albaranes ni gastos vinculados.'
+          : 'Sin albaranes/gastos para puntear recibidos desde API.'}
       </div>
     );
   }
@@ -407,7 +411,9 @@ export const FacturaPunteosTable = ({
             <th className="px-3 py-3">Fecha</th>
             <th className="px-3 py-3 text-right">Importe P</th>
             <th className="px-3 py-3 text-right">Importe</th>
-            <th className="px-3 py-3 text-center">S</th>
+            <th className="px-3 py-3 text-center">
+              {existingERPLinks ? 'Vínculo ERP' : 'S'}
+            </th>
             <th className="px-3 py-3 text-center">Ver</th>
           </tr>
         </thead>
@@ -433,7 +439,11 @@ export const FacturaPunteosTable = ({
                   <td className="px-3 py-3 text-right">{formatMoney(punteo.importe_punteado)}</td>
                   <td className="px-3 py-3 text-right">{formatMoney(punteo.importe)}</td>
                   <td className="px-3 py-3 text-center">
-                    {readOnly || !selectable ? (
+                    {existingERPLinks ? (
+                      <span title="Vínculo recuperado del registro ERP existente">
+                        Vinculado
+                      </span>
+                    ) : readOnly || !selectable ? (
                       <span
                         title={
                           selectable
@@ -508,18 +518,25 @@ export const FacturaPunteosTable = ({
         <tfoot>
           <tr className="border-t border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
             <td className="px-3 py-3" colSpan={5}>
-              Total seleccionado: {selectedCount}
+              {existingERPLinks
+                ? `Albaranes vinculados: ${selectedCount}`
+                : `Total seleccionado: ${selectedCount}`}
             </td>
             <td />
-            <td className="px-3 py-3 text-right">{formatMoney(selectedTotal)}</td>
+            <td className="px-3 py-3 text-right">
+              {existingERPLinks ? 'Importe: ' : null}
+              {formatMoney(selectedTotal)}
+            </td>
             <td colSpan={2} />
           </tr>
-          <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-            <td className="px-3 pb-3" colSpan={9}>
-              Diferencia frente a base: {formatMoney(baseDifference)} · Diferencia frente a gastos:{' '}
-              {formatMoney(expensesDifference)}
-            </td>
-          </tr>
+          {!existingERPLinks ? (
+            <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+              <td className="px-3 pb-3" colSpan={9}>
+                Diferencia frente a base: {formatMoney(baseDifference)} · Diferencia frente a gastos:{' '}
+                {formatMoney(expensesDifference)}
+              </td>
+            </tr>
+          ) : null}
         </tfoot>
       </table>
     </div>

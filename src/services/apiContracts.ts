@@ -134,7 +134,9 @@ export interface FacturaRecibidaAsientoLinea {
   id?: string | number | null;
   posicion: number;
   cuenta: string | null;
+  titulo?: string | null;
   descripcion: string | null;
+  documento?: string | null;
   debe: number;
   haber: number;
   actividad_id?: number | null;
@@ -170,6 +172,7 @@ export interface FacturaRecibida {
   numero_factura: string | null;
   referencia: string | null;
   ejercicio: number | null;
+  centro?: number | null;
   fecha_ctb: string | null;
   fecha_ctb_source?: 'invoice_date' | 'manual' | null;
   tipo_iva_codigo: string | null;
@@ -241,7 +244,12 @@ export interface FacturaRecibida {
   erp_dataset_epoch?: string | null;
   erp_verified_at?: string | null;
   accounting_status?: string | null;
+  accounting_requested?: boolean;
+  accounting_request_id?: string | null;
+  accounting_error?: string | null;
+  accounting_verified_at?: string | null;
   erp_last_read_at?: string | null;
+  erp_readback_matches_remote?: boolean | null;
   created_at: string;
   updated_at: string;
   ctb_lineas?: FacturaRecibidaLinea[];

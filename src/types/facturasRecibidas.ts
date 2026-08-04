@@ -131,6 +131,14 @@ export type FacturaRecibida = {
   accounting_status: string | null;
   accounting_visible_number: string | null;
   accounting_date: string | null;
+  accounting_requested: boolean;
+  accounting_request_id: string | null;
+  accounting_payload_hash: string | null;
+  accounting_invoice_fingerprint: string | null;
+  accounting_error: string | null;
+  accounting_response: unknown;
+  accounting_verified_at: string | null;
+  accounting_updated_at: string | null;
   erp_last_read_at: string | null;
   erp_last_read_payload: unknown;
   last_request_id: string | null;

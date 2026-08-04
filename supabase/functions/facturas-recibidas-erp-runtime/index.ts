@@ -123,6 +123,7 @@ Deno.serve(async (req) => {
     );
     const localWriteMode = text(local.write_mode, "disabled")!;
     const localAccountingMode = text(local.accounting_mode, "unavailable")!;
+    const localEnvironment = text(local.environment, null);
     const capabilities = {
       validate:
         identityConsistent &&
@@ -135,8 +136,16 @@ Deno.serve(async (req) => {
         upstream.capabilities.management_commit,
       accounting_commit:
         identityConsistent &&
-        localAccountingMode === "official" &&
-        upstream.accounting_mode === "official" &&
+        ["official", "sql_test"].includes(localAccountingMode) &&
+        localAccountingMode === upstream.accounting_mode &&
+        (
+          localAccountingMode !== "sql_test" ||
+          (
+            localEnvironment === "test" &&
+            upstream.accounting_write_mode === "sql_test"
+          )
+        ) &&
+        upstream.accounting_ready_for_commit &&
         upstream.capabilities.accounting_commit,
     };
 
@@ -150,6 +159,8 @@ Deno.serve(async (req) => {
         snapshot_at: upstream.snapshot_at,
         write_mode: upstream.write_mode,
         accounting_mode: upstream.accounting_mode,
+        accounting_write_mode: upstream.accounting_write_mode,
+        accounting_ready_for_commit: capabilities.accounting_commit,
         ready_for_commit: capabilities.management_commit,
         identity_consistent: identityConsistent,
         capabilities,

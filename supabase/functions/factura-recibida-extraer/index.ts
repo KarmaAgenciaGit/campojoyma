@@ -5,7 +5,9 @@ import {
   corsHeaders,
   ensureArchivoPdf,
   fetchERPReadConsulta,
+  filterFacturaERPWarningsAfterDuplicateVerification,
   getFacturaERPDocumentedReferenceIssues,
+  getFacturaERPDocumentedReferenceCount,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
   loadAndResolveFacturaERPAccountingRules,
@@ -17,6 +19,7 @@ import {
   prepareFacturaExtractionPersistence,
   requestIdValue,
   requireRouteUser,
+  resolveFacturaERPExistingPunteoLinks,
   resolveFacturaProveedorTipo,
   rpcErrorStatus,
   sanitizeUntrustedFacturaAccountingFields,
@@ -24,6 +27,7 @@ import {
   signJwtHs256,
   syncFacturaERPAccountingMatchEvidence,
   text,
+  verifyFacturaERPExactDuplicate,
   verifyFacturaERPExactMAPunteos,
   type JsonObject,
 } from "../_shared/facturas-recibidas-erp.ts";
@@ -350,28 +354,55 @@ Deno.serve(async (req) => {
       normalizedMatchEvidence,
       accountingRules,
     );
+    const resolvedFrr = accountingRules.factura;
+    const duplicateVerification = await verifyFacturaERPExactDuplicate(
+      resolvedFrr,
+      fetchERPReadConsulta,
+    );
+    const verifiedExactDuplicate = duplicateVerification.duplicate;
+    resolvedMatchEvidence = {
+      ...resolvedMatchEvidence,
+      erp_duplicate_verification: duplicateVerification.evidence,
+    };
     let punteoVerificationIssues: Awaited<
       ReturnType<typeof verifyFacturaERPExactMAPunteos>
     >["issues"] = [];
-    if (extractionPersistence.punteos !== null) {
-      const punteoVerification = await verifyFacturaERPExactMAPunteos(
-        accountingRules.factura,
-        normalized.punteos,
+    if (verifiedExactDuplicate) {
+      const existingPunteoLinks = await resolveFacturaERPExistingPunteoLinks(
+        duplicateVerification,
         fetchERPReadConsulta,
+        {
+          requireNonEmpty: getFacturaERPDocumentedReferenceCount(
+            normalized.extraction,
+            resolvedMatchEvidence,
+          ) > 0,
+        },
       );
-      extractionPersistence.punteos = punteoVerification.punteos;
-      punteoVerificationIssues = punteoVerification.issues;
+      extractionPersistence.punteos = existingPunteoLinks.punteos;
+      punteoVerificationIssues = existingPunteoLinks.issues;
       resolvedMatchEvidence = {
         ...resolvedMatchEvidence,
-        punteos_edge_verification: punteoVerification.evidence,
+        punteos_edge_verification: existingPunteoLinks.evidence,
       };
+    } else if (extractionPersistence.punteos !== null) {
+        const punteoVerification = await verifyFacturaERPExactMAPunteos(
+          resolvedFrr,
+          normalized.punteos,
+          fetchERPReadConsulta,
+        );
+        extractionPersistence.punteos = punteoVerification.punteos;
+        punteoVerificationIssues = punteoVerification.issues;
+        resolvedMatchEvidence = {
+          ...resolvedMatchEvidence,
+          punteos_edge_verification: punteoVerification.evidence,
+        };
     }
-    const resolvedFrr = accountingRules.factura;
     const documentedReferenceIssues = getFacturaERPDocumentedReferenceIssues({
       factura: resolvedFrr,
       extraction: normalized.extraction,
       matchEvidence: resolvedMatchEvidence,
       punteos: extractionPersistence.punteos ?? [],
+      existingInvoiceVerified: verifiedExactDuplicate,
     });
     const persistedFrr = {
       ...extractionPersistence.persistedFrr,
@@ -381,11 +412,15 @@ Deno.serve(async (req) => {
     const validationErrors = mergeValidationIssues(
       [
         ...accountingRules.issues,
+        ...duplicateVerification.issues,
         ...punteoVerificationIssues,
         ...documentedReferenceIssues,
         ...validationBase,
       ],
-      normalized.warnings,
+      filterFacturaERPWarningsAfterDuplicateVerification(
+        normalized.warnings,
+        verifiedExactDuplicate,
+      ),
     );
     const hasBlockingErrors = validationErrors.some((issue) => issue.severity !== "warning");
 

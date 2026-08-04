@@ -28,6 +28,38 @@ const saveProtectionMigration = readFileSync(
   ),
   "utf8",
 );
+const clientAclMigration = readFileSync(
+  join(
+    supabaseRoot,
+    "migrations",
+    "20260803114713_harden_facturas_recibidas_client_acl.sql",
+  ),
+  "utf8",
+);
+const accountingMigration = readFileSync(
+  join(
+    supabaseRoot,
+    "migrations",
+    "20260804093000_integrate_factura_accounting_v3.sql",
+  ),
+  "utf8",
+);
+const accountingSafetyMigration = readFileSync(
+  join(
+    supabaseRoot,
+    "migrations",
+    "20260804100000_make_accounting_uncertainty_sticky_v3.sql",
+  ),
+  "utf8",
+);
+const accountingResumeMigration = readFileSync(
+  join(
+    supabaseRoot,
+    "migrations",
+    "20260804103000_resume_accounting_safely_v3.sql",
+  ),
+  "utf8",
+);
 
 const functionBody = (name, schema = "public") => {
   const marker = `create or replace function ${schema}.${name}(`;
@@ -38,6 +70,20 @@ const functionBody = (name, schema = "public") => {
     start + marker.length,
   );
   return migration.slice(start, next === -1 ? migration.length : next);
+};
+
+const accountingFunctionBody = (name, schema = "public") => {
+  const marker = `create or replace function ${schema}.${name}(`;
+  const start = accountingMigration.toLowerCase().indexOf(marker);
+  assert.notEqual(start, -1, `No se encuentra ${schema}.${name}`);
+  const next = accountingMigration.toLowerCase().indexOf(
+    "create or replace function ",
+    start + marker.length,
+  );
+  return accountingMigration.slice(
+    start,
+    next === -1 ? accountingMigration.length : next,
+  );
 };
 
 test("create v2 inicializa la identidad ERP v3 sin aceptar campos de cliente", () => {
@@ -209,6 +255,49 @@ test("estado derivado preserva descarte manual y duplicado enlazado", () => {
   );
   assert.match(update, /const discardRequested =[\s\S]*?body\.estado === "descartada"/i);
   assert.match(update, /discardRequested[\s\S]*?\? "descartada"/i);
+});
+
+test("extraccion, ingesta y guardado revalidan duplicado ERP antes de resolver punteos", () => {
+  const functionsRoot = join(supabaseRoot, "functions");
+  for (const functionName of [
+    "factura-recibida-extraer",
+    "factura-recibida-ingest",
+    "factura-recibida-update",
+  ]) {
+    const source = readFileSync(
+      join(functionsRoot, functionName, "index.ts"),
+      "utf8",
+    );
+    const duplicateCheck = source.indexOf("verifyFacturaERPExactDuplicate(");
+    const existingLinksReadback = source.indexOf("resolveFacturaERPExistingPunteoLinks(");
+    const punteoCheck = source.indexOf("verifyFacturaERPExactMAPunteos(");
+    const documentedCheck = source.indexOf("getFacturaERPDocumentedReferenceIssues({");
+    assert.ok(duplicateCheck >= 0, `${functionName} debe verificar el duplicado remoto`);
+    assert.ok(
+      existingLinksReadback > duplicateCheck,
+      `${functionName} debe releer los vinculos del duplicado confirmado`,
+    );
+    assert.ok(punteoCheck > duplicateCheck, `${functionName} debe comprobar primero el duplicado`);
+    assert.ok(documentedCheck > duplicateCheck, `${functionName} no puede resolver referencias antes del duplicado`);
+    assert.match(
+      source,
+      /existingInvoiceVerified:\s*(?:verifiedExactDuplicate|duplicateVerification\.duplicate)/i,
+    );
+    assert.match(source, /erp_duplicate_verification:\s*[^,\n]+\.evidence/i);
+  }
+});
+
+test("guardado de duplicado unico relee vinculos ERP y falla sin sustituirlos por vacio", () => {
+  const update = readFileSync(
+    join(supabaseRoot, "functions", "factura-recibida-update", "index.ts"),
+    "utf8",
+  );
+  const readback = update.indexOf("resolveFacturaERPExistingPunteoLinks(");
+  const persistence = update.indexOf('rpc("save_factura_recibida_v2"');
+  assert.ok(readback >= 0, "update debe releer los vinculos del duplicado exacto");
+  assert.ok(persistence > readback, "el readback debe ocurrir antes del RPC de guardado");
+  assert.match(update, /punteos\s*=\s*existingPunteoLinks\.punteos/i);
+  assert.match(update, /p_punteos:\s*punteos/i);
 });
 
 test("watchdog se ejecuta cada minuto y caduca intentos a los diez minutos", () => {
@@ -628,4 +717,465 @@ test("las revisiones v3 usan tipos admitidos y texto de auditoria libre", () => 
     assert.match(migration, new RegExp(`'${changeSource}'`, "i"));
     if (reason) assert.match(migration, new RegExp(`'${reason}'`, "i"));
   }
+});
+
+test("hardening ACL conserva lectura RLS y elimina toda mutacion de cliente", () => {
+  const tables = [
+    "facturasrecibidas",
+    "facturasrecibidas_ctb",
+    "facturasrecibidas_punteos",
+    "facturasrecibidas_sync_attempts",
+    "facturasrecibidas_asientos",
+    "facturasrecibidas_asiento_apuntes",
+    "facturasrecibidas_revisions",
+  ];
+
+  for (const table of tables) {
+    assert.match(
+      clientAclMigration,
+      new RegExp(`alter table public\\.${table} enable row level security`, "i"),
+    );
+    assert.match(
+      clientAclMigration,
+      new RegExp(`'public\\.${table}'::regclass`, "i"),
+    );
+  }
+
+  assert.match(
+    clientAclMigration,
+    /from pg_catalog\.pg_policies[\s\S]*?policy\.cmd <> 'SELECT'[\s\S]*?'drop policy if exists %I on %I\.%I'/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /revoke all privileges[\s\S]*?from public, anon, authenticated;/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /grant select[\s\S]*?to authenticated;/i,
+  );
+  assert.doesNotMatch(
+    clientAclMigration,
+    /grant\s+[^;]*\b(?:insert|update|delete|truncate|references|trigger)\b[^;]*\bto\s+authenticated\s*;/i,
+  );
+
+  assert.match(
+    clientAclMigration,
+    /pg_catalog\.pg_policy[\s\S]*?policy\.polcmd <> 'r'/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /pg_catalog\.pg_policy[\s\S]*?policy\.polcmd = 'r'/i,
+  );
+  for (const privilege of [
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+  ]) {
+    assert.match(clientAclMigration, new RegExp(`'${privilege}'`));
+  }
+  assert.match(
+    clientAclMigration,
+    /has_table_privilege\(\s*'authenticated'[\s\S]*?'SELECT'/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /has_table_privilege\(\s*'anon'[\s\S]*?'SELECT'/i,
+  );
+});
+
+test("hardening ACL preserva service_role y verifica los RPC v3", () => {
+  assert.match(
+    clientAclMigration,
+    /grant select, insert, update, delete[\s\S]*?to service_role;/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /grant select, insert, update[\s\S]*?facturasrecibidas_sync_attempts[\s\S]*?to service_role;/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /grant select, insert[\s\S]*?facturasrecibidas_asientos[\s\S]*?facturasrecibidas_asiento_apuntes[\s\S]*?facturasrecibidas_revisions[\s\S]*?to service_role;/i,
+  );
+
+  for (const rpc of [
+    "record_factura_recibida_validation_v3",
+    "begin_factura_recibida_sync_v3",
+    "finish_factura_recibida_sync_v3",
+    "finalize_factura_recibida_sync_v3",
+    "mark_stale_factura_recibida_syncs_v3",
+    "rotate_erp_target_epoch_v3",
+    "set_erp_target_write_mode_v3",
+  ]) {
+    assert.match(
+      clientAclMigration,
+      new RegExp(`'public\\.${rpc}\\(`, "i"),
+    );
+  }
+
+  assert.match(clientAclMigration, /pg_catalog\.to_regprocedure\(rpc_signature\)/i);
+  assert.match(
+    clientAclMigration,
+    /has_function_privilege\(\s*'service_role'[\s\S]*?'EXECUTE'/i,
+  );
+  assert.match(
+    clientAclMigration,
+    /foreach client_role in array array\['authenticated', 'anon'\][\s\S]*?has_function_privilege\(/i,
+  );
+  assert.doesNotMatch(clientAclMigration, /\b(?:grant|revoke)\s+execute\b/i);
+});
+
+test("la intencion contable queda separada del alta de gestion", () => {
+  assert.match(
+    accountingMigration,
+    /accounting_mode in \('unavailable', 'official', 'sql_test'\)/i,
+  );
+  for (const column of [
+    "accounting_requested",
+    "accounting_request_id",
+    "accounting_payload_hash",
+    "accounting_invoice_fingerprint",
+    "accounting_error",
+    "accounting_response",
+    "accounting_verified_at",
+  ]) {
+    assert.match(
+      accountingMigration,
+      new RegExp(`add column if not exists ${column}\\b`, "i"),
+    );
+  }
+
+  const capture = accountingFunctionBody("capture_factura_accounting_intent_v3");
+  assert.match(
+    capture,
+    /new\.accounting_requested\s*:=\s*coalesce\(new\."FRR_Contabilizar", 'N'\) = 'S'/i,
+  );
+  assert.match(
+    capture,
+    /new\.sync_status\s*=\s*'sending'[\s\S]*?new\.accounting_requested\s*:=\s*true/i,
+  );
+  assert.match(
+    accountingMigration,
+    /before insert or update of "FRR_Contabilizar", sync_status[\s\S]*?execute function public\.capture_factura_accounting_intent_v3\(\)/i,
+  );
+});
+
+test("prepare contable fija request antes de Netagro y exige alta confirmada en el mismo TEST", () => {
+  const prepare = accountingFunctionBody("prepare_factura_recibida_accounting_v3");
+  assert.match(prepare, /from public\.erp_targets[\s\S]*?for share/i);
+  assert.match(prepare, /not v_target\.active/i);
+  assert.match(
+    prepare,
+    /v_target\.dataset_epoch is distinct from p_dataset_epoch/i,
+  );
+  assert.match(
+    prepare,
+    /v_target\.accounting_mode not in \('official', 'sql_test'\)/i,
+  );
+  assert.match(prepare, /v_current\.sync_status <> 'sent'/i);
+  assert.match(prepare, /v_current\.erp_reference_status <> 'valid'/i);
+  assert.match(prepare, /v_current\.erp_target_id is distinct from p_target_id/i);
+  assert.match(
+    prepare,
+    /v_current\.erp_dataset_epoch is distinct from p_dataset_epoch/i,
+  );
+  assert.match(
+    prepare,
+    /coalesce\(v_current\.remote_frr_id, v_current\."FRR_id", 0\) <= 0/i,
+  );
+  assert.match(prepare, /if not v_current\.accounting_requested/i);
+  assert.match(
+    prepare,
+    /accounting_request_id is not null[\s\S]*?accounting_status in \('requested', 'pending', 'unknown'\)[\s\S]*?IDEMPOTENCY_CONFLICT/i,
+  );
+
+  const persistRequest = prepare.indexOf("accounting_request_id = p_request_id");
+  const pendingRevision = prepare.indexOf("'accounting_pending'");
+  assert.ok(persistRequest >= 0, "prepare debe persistir el request contable");
+  assert.ok(
+    pendingRevision > persistRequest,
+    "el request debe quedar fijado antes de registrar el intento pendiente",
+  );
+});
+
+test("record contable solo confirma un readback exacto, visible y cuadrado", () => {
+  const record = accountingFunctionBody("record_factura_recibida_accounting_v3");
+  for (const status of ["pending", "created", "error", "unknown"]) {
+    assert.match(record, new RegExp(`'${status}'`, "i"));
+  }
+  for (const identity of [
+    "accounting_request_id is distinct from p_request_id",
+    "erp_target_id is distinct from p_target_id",
+    "erp_dataset_epoch is distinct from p_dataset_epoch",
+  ]) {
+    assert.match(record, new RegExp(identity, "i"));
+  }
+  for (const field of [
+    "contract_version",
+    "operation",
+    "request_id",
+    "target_id",
+    "dataset_epoch",
+    "factura_id",
+    "payload_hash",
+    "invoice_fingerprint",
+    "eligible",
+    "readback_confirmed",
+  ]) {
+    assert.match(record, new RegExp(`p_response->>?'${field}'`, "i"));
+  }
+  assert.match(record, /jsonb_array_length\(v_lines\) = 0/i);
+  assert.match(record, /v_accounting->'balanced' is distinct from 'true'::jsonb/i);
+  assert.match(record, /abs\(v_total_debit - v_total_credit\) > 0\.01/i);
+  assert.match(
+    record,
+    /insert into public\.facturasrecibidas_asientos[\s\S]*?insert into public\.facturasrecibidas_asiento_apuntes[\s\S]*?set accounting_status = 'created'/i,
+  );
+  assert.match(record, /"FRR_IdAsientoNet" = v_technical_id/i);
+  assert.match(record, /"FRR_Contabilizar" = 'S'/i);
+  assert.match(record, /accounting_verified_at = now\(\)/i);
+});
+
+test("RPC contables quedan reservadas a service_role", () => {
+  for (const [name, signature] of [
+    [
+      "prepare_factura_recibida_accounting_v3",
+      "uuid, uuid, text, uuid, uuid",
+    ],
+    [
+      "record_factura_recibida_accounting_v3",
+      "uuid, uuid, text, uuid, text, jsonb, text, text, text, uuid",
+    ],
+  ]) {
+    assert.match(
+      accountingMigration,
+      new RegExp(
+        `revoke execute on function public\\.${name}\\([\\s\\S]*?${signature.replaceAll(" ", "\\s*")}\\s*\\)[\\s\\S]*?from public, anon, authenticated`,
+        "i",
+      ),
+    );
+    assert.match(
+      accountingMigration,
+      new RegExp(
+        `grant execute on function public\\.${name}\\([\\s\\S]*?${signature.replaceAll(" ", "\\s*")}\\s*\\)[\\s\\S]*?to service_role`,
+        "i",
+      ),
+    );
+  }
+});
+
+test("Edge de gestion conserva el gate contable pero no orquesta asientos", () => {
+  const functionsRoot = join(supabaseRoot, "functions");
+  const send = readFileSync(
+    join(functionsRoot, "factura-recibida-send-erp", "index.ts"),
+    "utf8",
+  );
+  const runtime = readFileSync(
+    join(functionsRoot, "facturas-recibidas-erp-runtime", "index.ts"),
+    "utf8",
+  );
+
+  const accountingGate = send.indexOf("!runtime.accounting_ready_for_commit");
+  const managementBegin = send.indexOf('"begin_factura_recibida_sync_v3"');
+  assert.ok(accountingGate >= 0);
+  assert.ok(
+    managementBegin > accountingGate,
+    "el gate contable debe cerrar antes de abrir el writer de gestion",
+  );
+  assert.match(
+    send.slice(Math.max(0, accountingGate - 250), accountingGate + 500),
+    /requestedOperation === "commit"[\s\S]*?accountingRequested[\s\S]*?\["official", "sql_test"\][\s\S]*?localTarget[\s\S]*?accounting_mode/i,
+  );
+  assert.match(
+    runtime,
+    /\["official", "sql_test"\]\.includes\(localAccountingMode\)[\s\S]*?localAccountingMode === upstream\.accounting_mode[\s\S]*?upstream\.accounting_ready_for_commit[\s\S]*?upstream\.capabilities\.accounting_commit/i,
+  );
+  assert.doesNotMatch(send, /callNetagroAccountingV3/i);
+  assert.doesNotMatch(send, /buildAccountingContractV3/i);
+  assert.doesNotMatch(send, /prepare_factura_recibida_accounting_v3/i);
+  assert.doesNotMatch(send, /record_factura_recibida_accounting_v3/i);
+  assert.match(
+    send,
+    /finalize_factura_recibida_sync_v3[\s\S]*?activeWriterOpened = false[\s\S]*?return jsonResponse/i,
+  );
+});
+
+test("una Edge contable separada, si existe, conserva los mismos gates e identidad", () => {
+  const functionsRoot = join(supabaseRoot, "functions");
+  const candidates = readdirSync(functionsRoot).filter((name) =>
+    /^factura-recibida-(?:account|contabil)/i.test(name)
+  );
+  for (const name of candidates) {
+    const source = readFileSync(join(functionsRoot, name, "index.ts"), "utf8");
+    assert.match(source, /accounting_ready_for_commit/i);
+    assert.match(source, /\["official", "sql_test"\]/i);
+    assert.match(source, /prepare_factura_recibida_accounting_v3/i);
+    assert.match(source, /record_factura_recibida_accounting_v3/i);
+    assert.match(source, /callNetagroAccountingV3/i);
+    assert.match(source, /validateNetagroAccountingResponseV3/i);
+    assert.doesNotMatch(source, /callNetagroWriteV3/i);
+  }
+});
+
+test("Edge contable solo reanuda pending antes de un claim atomico de commit", () => {
+  const source = readFileSync(
+    join(
+      supabaseRoot,
+      "functions",
+      "factura-recibida-account-erp",
+      "index.ts",
+    ),
+    "utf8",
+  );
+  const stickyBranch = source.indexOf("if (UNCERTAIN_STATUSES.has(accountingStatus))");
+  const runtimeCall = source.indexOf("runtime = await fetchNetagroRuntime()", stickyBranch);
+  const prepareCall = source.indexOf('"prepare_factura_recibida_accounting_v3"');
+  const validateCall = source.indexOf('accountingPayload("validate")');
+  const commitCall = source.indexOf('accountingPayload("commit")');
+  const commitClaim = source.indexOf(
+    '"begin_factura_recibida_accounting_commit_v3"',
+  );
+
+  assert.ok(stickyBranch >= 0);
+  assert.ok(runtimeCall > stickyBranch);
+  assert.ok(prepareCall > stickyBranch);
+  assert.ok(validateCall > stickyBranch);
+  assert.ok(commitCall > stickyBranch);
+  assert.ok(commitClaim > validateCall);
+  assert.ok(commitCall > commitClaim);
+  assert.match(source, /const UNCERTAIN_STATUSES = new Set\(\["unknown"\]\)/);
+  assert.match(source, /const RESUMABLE_STATUSES = new Set\(\["pending"\]\)/);
+  assert.match(
+    source.slice(stickyBranch, runtimeCall),
+    /storedRequestId !== requestId[\s\S]*?idempotency_conflict[\s\S]*?status:\s*202[\s\S]*?ambiguous_commit[\s\S]*?reconciliationRequired:\s*true/i,
+  );
+  assert.match(source, /structuredCommitError\?\.code === "idempotency_in_progress"/);
+  assert.match(source, /structured\?\.code === "idempotency_in_progress"/);
+  assert.match(
+    source,
+    /safePayloadHash = isSha256\(payloadHash\)[\s\S]*?safeInvoiceFingerprint = isSha256\(invoiceFingerprint\)/,
+  );
+  assert.match(
+    source.slice(commitClaim, commitCall),
+    /commit_authorized !== true[\s\S]*?reconciliation_required === true[\s\S]*?ambiguous_commit/,
+  );
+  assert.match(
+    source.slice(commitClaim, commitCall + 250),
+    /commitOpened = true[\s\S]*?callNetagroAccountingV3/,
+  );
+});
+
+test("migracion correctiva hace sticky la incertidumbre y cierra accounting con el target", () => {
+  assert.match(
+    accountingSafetyMigration,
+    /v_current\.accounting_status in \('pending', 'unknown'\)[\s\S]*?accounting_request_id is distinct from p_request_id[\s\S]*?reconciliation_required', true[\s\S]*?update public\.facturasrecibidas/i,
+  );
+  assert.match(
+    accountingSafetyMigration,
+    /old\.accounting_status = 'unknown'[\s\S]*?new\.accounting_status not in \('unknown', 'created', 'stale'\)[\s\S]*?ACCOUNTING_RECONCILIATION_REQUIRED/i,
+  );
+  assert.match(
+    accountingSafetyMigration,
+    /new\.accounting_mode := 'unavailable'[\s\S]*?before update of write_mode, dataset_epoch, snapshot_at/i,
+  );
+  assert.match(
+    accountingSafetyMigration,
+    /new\.write_mode <> 'management'[\s\S]*?new\.dataset_epoch is distinct from old\.dataset_epoch[\s\S]*?new\.snapshot_at is distinct from old\.snapshot_at/i,
+  );
+});
+
+test("la rotacion y activacion quedan bloqueadas por contabilidad no resuelta", () => {
+  assert.match(
+    accountingResumeMigration,
+    /accounting_status in \('requested', 'pending', 'unknown'\)/i,
+  );
+  assert.match(
+    accountingResumeMigration,
+    /attempt\.circuit = 'accounting'[\s\S]*?attempt\.status in \('in_progress', 'unknown'\)[\s\S]*?attempt\.reconciliation_required/i,
+  );
+  assert.match(
+    accountingResumeMigration,
+    /new\.dataset_epoch is distinct from old\.dataset_epoch[\s\S]*?new\.write_mode in \('blocked', 'management'\)[\s\S]*?new\.accounting_mode in \('official', 'sql_test'\)/i,
+  );
+
+  const rotationStart = accountingResumeMigration.indexOf(
+    "create or replace function private.rotate_erp_target_epoch_v3_impl(",
+  );
+  assert.ok(rotationStart >= 0);
+  const rotation = accountingResumeMigration.slice(rotationStart);
+  const guard = rotation.indexOf(
+    "private.assert_no_unresolved_factura_accounting_v3(p_target_id, null)",
+  );
+  const staleMutation = rotation.indexOf("with stale_references as");
+  const targetMutation = rotation.indexOf("update public.erp_targets");
+  assert.ok(guard >= 0);
+  assert.ok(staleMutation > guard);
+  assert.ok(targetMutation > staleMutation);
+  assert.match(
+    rotation.slice(targetMutation, targetMutation + 500),
+    /write_mode = 'disabled'[\s\S]*?accounting_mode = 'unavailable'/i,
+  );
+});
+
+test("pending reanuda validate o el mismo commit solo con identidad demostrable", () => {
+  const start = accountingResumeMigration.indexOf(
+    "create or replace function public.prepare_factura_recibida_accounting_v3(",
+  );
+  const end = accountingResumeMigration.indexOf(
+    "create or replace function public.begin_factura_recibida_accounting_commit_v3(",
+    start,
+  );
+  const prepare = accountingResumeMigration.slice(start, end);
+
+  assert.match(
+    prepare,
+    /phase = 'commit'[\s\S]*?v_commit\.status = 'in_progress'[\s\S]*?accounting_payload_hash is not distinct from v_commit\.payload_hash[\s\S]*?accounting_invoice_fingerprint[\s\S]*?business_fingerprint[\s\S]*?resume_phase', 'commit'[\s\S]*?reconciliation_required', false/i,
+  );
+  assert.match(
+    prepare,
+    /phase = 'validate'[\s\S]*?accounting_status = 'pending'[\s\S]*?status not in \('in_progress', 'succeeded'\)/i,
+  );
+  assert.match(
+    prepare,
+    /v_validate\.status = 'succeeded'[\s\S]*?then 'precommit'[\s\S]*?else 'validate'/i,
+  );
+  assert.doesNotMatch(prepare, /insert into public\.facturasrecibidas_sync_attempts[\s\S]*?'commit'/i);
+});
+
+test("el claim de commit es unico; solo in_progress exacto admite replay", () => {
+  const start = accountingResumeMigration.indexOf(
+    "create or replace function public.begin_factura_recibida_accounting_commit_v3(",
+  );
+  const end = accountingResumeMigration.indexOf(
+    "create or replace function private.rotate_erp_target_epoch_v3_impl(",
+    start,
+  );
+  const beginCommit = accountingResumeMigration.slice(start, end);
+
+  assert.match(
+    beginCommit,
+    /v_validate\.status <> 'succeeded'[\s\S]*?v_validate\.reconciliation_required[\s\S]*?payload_hash is distinct from p_payload_hash[\s\S]*?business_fingerprint is distinct from p_invoice_fingerprint/i,
+  );
+  assert.match(
+    beginCommit,
+    /phase = 'commit'[\s\S]*?for update[\s\S]*?if found then[\s\S]*?v_commit\.status = 'in_progress'[\s\S]*?not v_commit\.reconciliation_required[\s\S]*?'commit_authorized', true[\s\S]*?'commit_replay', true[\s\S]*?'reconciliation_required', false/i,
+  );
+  assert.match(
+    beginCommit,
+    /'commit_replay', true[\s\S]*?return jsonb_build_object\([\s\S]*?'commit_authorized', false[\s\S]*?'reconciliation_required', true/i,
+  );
+  assert.match(
+    beginCommit,
+    /'commit_claimed', true[\s\S]*?'commit_authorized', true/i,
+  );
+  assert.match(
+    accountingResumeMigration,
+    /new\.request_payload->'commit_claimed' is distinct from 'true'::jsonb[\s\S]*?return null/i,
+  );
+  assert.match(
+    accountingResumeMigration,
+    /revoke execute on function public\.begin_factura_recibida_accounting_commit_v3[\s\S]*?from public, anon, authenticated[\s\S]*?grant execute on function public\.begin_factura_recibida_accounting_commit_v3[\s\S]*?to service_role/i,
+  );
 });

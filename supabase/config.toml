@@ -21,6 +21,9 @@ verify_jwt = true
 [functions.factura-recibida-send-erp]
 verify_jwt = true
 
+[functions.factura-recibida-account-erp]
+verify_jwt = true
+
 [functions.factura-recibida-update]
 verify_jwt = true
 

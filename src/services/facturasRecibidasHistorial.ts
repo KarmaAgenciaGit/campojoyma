@@ -67,6 +67,20 @@ export type PlantillaIvaSugerida = {
   criterio: 'perfil_historico_dominante';
 };
 
+export type PerfilIvaHistoricoTramo = {
+  posicion: FacturaRecibidaIvaTramo['posicion'];
+  porcentaje: number | null;
+  usos_activos: number;
+  confianza_activa: number;
+};
+
+export type PerfilIvaHistorico = {
+  porcentajes: PlantillaIvaSugerida['porcentajes'];
+  usos: number;
+  confianza: number;
+  tramos: PerfilIvaHistoricoTramo[];
+};
+
 export type PerfilesIvaRegimen = {
   regimen_id: number;
   filtros: {
@@ -76,6 +90,9 @@ export type PerfilesIvaRegimen = {
   total_facturas: number;
   estado: EstadoPerfilIva;
   ambiguo: boolean;
+  perfiles: PerfilIvaHistorico[];
+  /** Perfil con mayor frecuencia, aunque no alcance el umbral de dominancia. */
+  perfil_mas_usado: PerfilIvaHistorico | null;
   plantilla_sugerida: PlantillaIvaSugerida | null;
 };
 
@@ -83,6 +100,21 @@ export type ResultadoAplicacionPlantillaIva = {
   aplicada: boolean;
   motivo: 'aplicada' | 'sin_historial' | 'ambigua';
   tramos: FacturaRecibidaIvaTramo[];
+};
+
+export type AplicarPlantillaIvaOptions = {
+  /**
+   * Pensado para hidratar una factura ya existente: completa huecos de la
+   * plantilla, pero no reemplaza ningun porcentaje que ya estuviera informado.
+   */
+  preserveExistingPercentages?: boolean;
+  /**
+   * Al cambiar el régimen de forma explícita, reemplaza las cinco posiciones
+   * por su perfil histórico sin tocar bases ni cuotas.
+   */
+  replaceExistingPercentages?: boolean;
+  /** Permite usar explicitamente el perfil mas frecuente de un resultado ambiguo. */
+  allowMostUsedProfile?: boolean;
 };
 
 const sinHistorial = <T>(): Sugerencia<T> => ({
@@ -144,11 +176,64 @@ const normalizarPlantillaIva = (value: unknown): PlantillaIvaSugerida | null => 
   };
 };
 
+const normalizarPerfilIva = (value: unknown): PerfilIvaHistorico | null => {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.porcentajes) || source.porcentajes.length !== 5) return null;
+  const porcentajes = source.porcentajes.map(normalizarPorcentaje);
+  const usos = enteroPositivoONull(source.usos);
+  const confianza = numeroONull(source.confianza);
+  if (
+    porcentajes.some((porcentaje) => porcentaje === undefined) ||
+    usos === null ||
+    confianza === null ||
+    confianza < 0 ||
+    confianza > 1 ||
+    !Array.isArray(source.tramos) ||
+    source.tramos.length !== 5
+  ) {
+    return null;
+  }
+
+  const tramos = source.tramos.map((valueTramo, index): PerfilIvaHistoricoTramo | null => {
+    if (!valueTramo || typeof valueTramo !== 'object') return null;
+    const tramo = valueTramo as Record<string, unknown>;
+    const posicion = numeroONull(tramo.posicion);
+    const porcentaje = normalizarPorcentaje(tramo.porcentaje);
+    const usosActivos = numeroONull(tramo.usos_activos);
+    const confianzaActiva = numeroONull(tramo.confianza_activa);
+    if (
+      posicion !== index + 1 ||
+      porcentaje === undefined ||
+      usosActivos === null ||
+      !Number.isInteger(usosActivos) ||
+      usosActivos < 0 ||
+      confianzaActiva === null ||
+      confianzaActiva < 0 ||
+      confianzaActiva > 1
+    ) {
+      return null;
+    }
+    return {
+      posicion: posicion as FacturaRecibidaIvaTramo['posicion'],
+      porcentaje,
+      usos_activos: usosActivos,
+      confianza_activa: confianzaActiva,
+    };
+  });
+  if (tramos.some((tramo) => tramo === null)) return null;
+
+  return {
+    porcentajes: porcentajes as PerfilIvaHistorico['porcentajes'],
+    usos,
+    confianza,
+    tramos: tramos as PerfilIvaHistoricoTramo[],
+  };
+};
+
 const normalizarPerfilesIvaRegimen = (
   payload: unknown,
   regimenIdEsperado: number,
-  proveedorIdEsperado: number | null,
-  tipoFacturaEsperado: string | null,
 ): PerfilesIvaRegimen => {
   if (!payload || typeof payload !== 'object') {
     throw new Error('La respuesta del histórico de IVA no es válida.');
@@ -165,8 +250,8 @@ const normalizarPerfilesIvaRegimen = (
   const tipoFacturaRespuesta = textoONull(filtrosSource.tipo_factura)?.toUpperCase() ?? null;
   if (
     regimenId !== regimenIdEsperado ||
-    proveedorIdRespuesta !== proveedorIdEsperado ||
-    tipoFacturaRespuesta !== tipoFacturaEsperado ||
+    proveedorIdRespuesta !== null ||
+    tipoFacturaRespuesta !== null ||
     totalFacturas === null ||
     !Number.isInteger(totalFacturas) ||
     totalFacturas < 0 ||
@@ -175,6 +260,20 @@ const normalizarPerfilesIvaRegimen = (
   ) {
     throw new Error('La respuesta del histórico de IVA no respeta el contrato.');
   }
+
+  if (!Array.isArray(source.perfiles)) {
+    throw new Error('La respuesta del historico de IVA no incluye sus perfiles.');
+  }
+  // El histórico real contiene perfiles aislados corruptos (por ejemplo, un
+  // porcentaje superior al 100 %). Se descartan de la sugerencia sin permitir
+  // que un registro imposible inutilice todos los perfiles válidos del régimen.
+  const perfiles = source.perfiles
+    .map(normalizarPerfilIva)
+    .filter((perfil): perfil is PerfilIvaHistorico => perfil !== null);
+  const perfilMasUsado = perfiles.reduce<PerfilIvaHistorico | null>(
+    (masUsado, perfil) => (masUsado === null || perfil.usos > masUsado.usos ? perfil : masUsado),
+    null,
+  );
 
   const plantilla = normalizarPlantillaIva(source.plantilla_sugerida);
   const esDominante = estado === 'dominante' && source.ambiguo === false;
@@ -191,6 +290,8 @@ const normalizarPerfilesIvaRegimen = (
     total_facturas: totalFacturas,
     estado: estado as EstadoPerfilIva,
     ambiguo: source.ambiguo,
+    perfiles,
+    perfil_mas_usado: perfilMasUsado,
     plantilla_sugerida: plantilla,
   };
 };
@@ -289,48 +390,22 @@ const erpRead = async <T>(consulta: string): Promise<T> => {
 };
 
 /**
- * Consulta el perfil histórico de porcentajes para un régimen.
- *
- * Un proveedor siempre se envía junto a su tipo de factura: el ERP reutiliza
- * identificadores numéricos entre acreedores y agricultores, así que nunca se
- * filtra solo por ID. El tipo también puede limitar por sí solo un perfil global.
+ * Consulta el perfil histórico global de porcentajes para un régimen.
+ * El desglose del régimen no se filtra por proveedor ni por circuito.
  */
 export const obtenerPerfilesIvaRegimen = async ({
   regimenId,
-  proveedorId = null,
-  tipoFactura = null,
 }: {
   regimenId: number;
-  proveedorId?: number | null;
-  tipoFactura?: string | null;
 }): Promise<PerfilesIvaRegimen> => {
   const normalizedRegimenId = enteroPositivoONull(regimenId);
   if (normalizedRegimenId === null) {
     throw new Error('El régimen IVA ERP no es válido.');
   }
-  const normalizedProveedorId = enteroPositivoONull(proveedorId);
-  const normalizedTipoFactura = textoONull(tipoFactura)?.toUpperCase() ?? null;
-  if (normalizedProveedorId !== null && !normalizedTipoFactura) {
-    throw new Error('El tipo de factura es obligatorio al filtrar el histórico por proveedor.');
-  }
-
-  const params = new URLSearchParams();
-  if (normalizedProveedorId !== null) {
-    params.set('proveedor_id', String(normalizedProveedorId));
-  }
-  if (normalizedTipoFactura) {
-    params.set('tipo_factura', normalizedTipoFactura);
-  }
-  const suffix = params.size > 0 ? `?${params.toString()}` : '';
   const payload = await erpRead<unknown>(
-    `regimenes/${encodeURIComponent(String(normalizedRegimenId))}/perfiles-iva${suffix}`,
+    `regimenes/${encodeURIComponent(String(normalizedRegimenId))}/perfiles-iva`,
   );
-  return normalizarPerfilesIvaRegimen(
-    payload,
-    normalizedRegimenId,
-    normalizedProveedorId,
-    normalizedTipoFactura,
-  );
+  return normalizarPerfilesIvaRegimen(payload, normalizedRegimenId);
 };
 
 const IVA_TRAMO_ACTIVE_EPSILON = 0.005;
@@ -340,20 +415,24 @@ const isIvaTramoActive = (tramo: FacturaRecibidaIvaTramo): boolean =>
   Math.abs(tramo.cuota ?? 0) >= IVA_TRAMO_ACTIVE_EPSILON;
 
 /**
- * Aplica los porcentajes de una plantilla dominante solo a los tramos con importe.
- * Los cinco huecos siguen visibles, pero una fila vacía no se convierte en un
- * tramo incompleto por el mero hecho de cambiar el régimen. Bases, cuotas,
- * posición y cualquier otro dato se conservan literalmente.
+ * Aplica los porcentajes de una plantilla dominante por posición. Los huecos sin
+ * porcentaje se completan aunque todavía no tengan importe; un porcentaje ya
+ * informado en una fila inactiva se conserva. Un `null` de la plantilla nunca
+ * borra un valor existente ni se interpreta como 0. Bases, cuotas, posición y
+ * cualquier otro dato se conservan literalmente.
  */
 export const aplicarPlantillaIvaHistorica = (
   tramos: FacturaRecibidaIvaTramo[],
   perfiles: PerfilesIvaRegimen,
+  options: AplicarPlantillaIvaOptions = {},
 ): ResultadoAplicacionPlantillaIva => {
-  if (
-    perfiles.estado !== 'dominante' ||
-    perfiles.ambiguo ||
-    perfiles.plantilla_sugerida === null
-  ) {
+  const perfilAplicable =
+    perfiles.estado === 'dominante' && !perfiles.ambiguo
+      ? perfiles.plantilla_sugerida
+      : options.allowMostUsedProfile
+        ? perfiles.perfil_mas_usado
+        : null;
+  if (perfilAplicable === null) {
     return {
       aplicada: false,
       motivo: perfiles.estado === 'sin_historial' ? 'sin_historial' : 'ambigua',
@@ -361,18 +440,30 @@ export const aplicarPlantillaIvaHistorica = (
     };
   }
 
-  const porcentajes = perfiles.plantilla_sugerida.porcentajes;
+  const porcentajes = perfilAplicable.porcentajes;
   return {
     aplicada: true,
     motivo: 'aplicada',
-    tramos: tramos.map((tramo) =>
-      isIvaTramoActive(tramo)
-        ? {
-            ...tramo,
-            porcentaje: porcentajes[tramo.posicion - 1],
-          }
-        : tramo,
-    ),
+    tramos: tramos.map((tramo) => {
+      const porcentajeSugerido = porcentajes[tramo.posicion - 1];
+      const tienePorcentaje = tramo.porcentaje !== null && tramo.porcentaje !== undefined;
+      const debeConservarExistente =
+        !options.replaceExistingPercentages &&
+        ((options.preserveExistingPercentages && tienePorcentaje) ||
+          (!isIvaTramoActive(tramo) && tienePorcentaje));
+
+      if (
+        porcentajeSugerido === null ||
+        debeConservarExistente
+      ) {
+        return tramo;
+      }
+
+      return {
+        ...tramo,
+        porcentaje: porcentajeSugerido,
+      };
+    }),
   };
 };
 

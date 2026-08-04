@@ -1,6 +1,6 @@
 # Facturas recibidas - Campojoyma
 
-Última actualización: 2026-07-29
+Última actualización: 2026-08-04
 
 La referencia del contrato de escritura es
 [FACTURAS_RECIBIDAS_API_CONTRACT.md](FACTURAS_RECIBIDAS_API_CONTRACT.md). El
@@ -13,27 +13,30 @@ Supabase es la bandeja de revisión y ERP es la autoridad para maestros,
 duplicados y escrituras reales. La pantalla no muestra el histórico completo de
 Netagro.
 
-La creación por API continúa deshabilitada porque falta el mecanismo oficial de
-Netagro. Un dry-run correcto, una respuesta de referencia o una factura validada
-en staging no prueban que se haya creado un asiento. La lectura del diario sí
-puede confirmar asientos históricos existentes; solo ese readback exacto permite
-mostrar el número visible y los apuntes Debe/Haber.
+La API desplegada es la v0.3.9. El 4 de agosto se homologó en el clon persistente
+aislado un perfil SQL contable mínimo (`OT`, régimen `2110`, un único tramo al
+21 %, un gasto, sin retención, CTB, punteos ni cartera). El canario ficticio
+`FRR_id=49723` produjo el asiento técnico `394936`, número visible `53344`, tres
+apuntes cuadrados y el registro de IVA soportado. Esta evidencia autoriza solo
+ese perfil y solo en el clon TEST identificado; no autoriza producción ni una
+ampliación por analogía.
 
-Estado operativo verificado de la API v0.2.4:
+Estado operativo comprobado el 4 de agosto:
 <code>DB_WRITES_ENABLED=false</code>,
+<code>ACCOUNTING_WRITES_ENABLED=false</code>,
 <code>ACCOUNTING_MECHANISM=unavailable</code> y
-<code>ALBMATERIAL_WRITES_ENABLED=false</code>. Activar solo el primer flag no
-habilita ni la contabilización oficial ni los enlaces MA. El primer flag sí
-bloquea todo DML: permanece cerrado porque, aunque la base sea de pruebas, una
-cabecera aislada no equivale al alta completa requerida.
+<code>ALBMATERIAL_WRITES_ENABLED=false</code>. El destino Supabase
+<code>netagro-test-write</code> permanece en
+<code>write_mode=blocked</code>/<code>accounting_mode=unavailable</code>. Por
+tanto, tener el código desplegado no abre ninguna escritura.
 
 La regla viva de empresa 1 propone ejercicio 25, CTB igual a fecha de factura,
 cuenta `60200000001`, concepto `FRA. {proveedor}` y
-`contabilizar_default=N`. El extractor conserva `S` en el borrador para reflejar
-la intención funcional, pero el writer fuerza `N` hasta que exista el servicio
-oficial de asiento. Si se habilita antes la escritura de cabecera para una
-prueba parcial, debe identificarse expresamente como factura no contabilizada y
-sin enlaces MA confirmados.
+`contabilizar_default=N`. La intención de contabilizar se conserva separada en
+Supabase. El alta de gestión siempre escribe primero
+<code>FRR_Contabilizar='N'</code>; solo después de su readback exacto puede
+abrirse la operación contable independiente. El estado <code>created</code> se
+acepta únicamente tras verificar asiento, apuntes, origen, fiscalidad y cuadre.
 
 Supabase incorpora la finalización estricta, punteos no seleccionados por
 defecto, unicidad por circuito y revocación de privilegios de mutación directa
@@ -41,7 +44,8 @@ para <code>authenticated</code>/<code>anon</code> sobre cabecera, CTB y
 punteos. Los clientes conservan lectura; las mutaciones operativas pasan por
 Edge/RPC con <code>service_role</code>.
 
-Las Edge Functions saneadas están desplegadas. El extractor n8n v4 está activo
+Las Edge Functions v3 saneadas están desplegadas con JWT obligatorio. El
+extractor n8n v4 está activo
 en remoto; su exportación canónica local conserva <code>active=false</code> para
 evitar activaciones accidentales al importar. El escritor n8n v2 sigue
 desactivado. El frontend está validado en local y su despliegue externo continúa
@@ -65,13 +69,17 @@ El candidato activo tiene SHA-256
 4. La UI presenta por separado cabecera, gastos, CTB y punteos.
 5. El usuario completa los datos que no cubra una regla aprobada.
 6. Antes del envío, la Edge Function repite el preflight autoritativo.
-7. Solo una respuesta real y verificable del ERP permite declarar creada la
-   factura o su asiento.
+7. El alta de gestión se confirma mediante readback exacto y deja la cabecera
+   sin contabilizar.
+8. Si el usuario lo pidió y el perfil TEST está habilitado, una operación
+   separada crea y verifica el asiento.
+9. Solo el readback exacto permite declarar creada la factura o contabilizada.
 
-Si un commit queda en estado desconocido, la conciliación reutiliza el
-<code>request_id</code> original y el dry-run inmutable. Solo consulta ERP y
-finaliza tras un readback exacto; nunca repite el POST escritor ni elige entre
-candidatos ambiguos.
+Si un commit queda en estado desconocido, la operación queda bloqueada con el
+<code>request_id</code> original. No se permite iniciar otra contabilización ni
+degradar el estado a un error reintentable. Solo una reconciliación de solo
+lectura y un readback exacto podrán cerrarlo como creado; nunca se repite el
+commit a ciegas.
 
 ## Fuentes de datos
 
@@ -185,6 +193,14 @@ El duplicado muestra su candidato para facilitar la revisión. Proveedor
 inexistente, cuenta incoherente, duplicado exacto e indisponibilidad de API son
 errores bloqueantes distintos. El escritor debe repetir las garantías antes de
 cualquier operación real.
+
+La extracción manual, la ingesta autenticada y el guardado vuelven a consultar
+esta clave directamente desde Edge antes de validar punteos. Si Netagro confirma
+un duplicado, se persiste `duplicate_invoice`, los vínculos históricos se
+conservan con `S=false` y se muestran únicamente en modo consulta. En ese caso no
+se exige volver a resolver las referencias MA porque no existe una nueva alta que
+puntear. La evidencia de n8n por sí sola nunca activa esta excepción. Una caída
+temporal al revalidar una clave ya confirmada conserva el bloqueo anterior.
 
 ## Separación de bloques
 

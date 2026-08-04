@@ -196,6 +196,47 @@ describe('FacturaPunteosTable', () => {
     expect(onSelectionChange).not.toHaveBeenCalled();
   });
 
+  it('presenta los vínculos de un duplicado ERP en modo de consulta', () => {
+    const onSelectionChange = vi.fn();
+    renderTable({
+      punteos: [{
+        ...punteo,
+        source_table: 'albmaterial',
+        source_id: 23210,
+        albaran_id: 23210,
+        origen: 'MA',
+        albaran: 2108,
+        seleccionado: false,
+      }],
+      readOnly: false,
+      existingERPLinks: true,
+      selectedCount: 1,
+      selectedTotal: 87.4,
+      onSelectionChange,
+    });
+
+    expect(screen.getByRole('columnheader', { name: 'Vínculo ERP' })).toBeInTheDocument();
+    expect(screen.getByTitle('Vínculo recuperado del registro ERP existente')).toHaveTextContent('Vinculado');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByText('Albaranes vinculados: 1')).toBeInTheDocument();
+    expect(screen.getByText(/Importe:/)).toHaveTextContent('87,40');
+    expect(screen.queryByText(/Vínculos recuperados/)).not.toBeInTheDocument();
+    expect(onSelectionChange).not.toHaveBeenCalled();
+  });
+
+  it('explica cuando el duplicado ERP no tiene vínculos', () => {
+    renderTable({
+      punteos: [],
+      existingERPLinks: true,
+      selectedCount: 0,
+      selectedTotal: 0,
+    });
+
+    expect(
+      screen.getByText('El registro ERP existente no tiene albaranes ni gastos vinculados.'),
+    ).toBeInTheDocument();
+  });
+
   it('no confunde un albarán MA sin source_id válido con una cabecera de entrada GE', () => {
     const loadEntryLines = vi.fn().mockResolvedValue([line]);
     const loadMaterialLines = vi.fn().mockResolvedValue([]);

@@ -3,7 +3,7 @@
 Versiones vigentes:
 
 - extracción e ingestión: `contract_version=2`;
-- validación y alta de gestión ERP: `contract_version=3`.
+- validación, alta de gestión y contabilización ERP: `contract_version=3`.
 
 Esta especificación define el intercambio entre frontend, Supabase/Edge Functions,
 n8n y la FastAPI de la copia de Netagro. Su objetivo es conservar la factura sin
@@ -22,9 +22,10 @@ Referencias:
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
 - [Agente de extracción v4 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
 
-El OpenAPI v0.3.2 es la fuente verificable del runtime actual. Los ficheros
-v0.3.1, v0.3.0 y v0.2.0, junto con el runbook v2, se conservan como evidencia histórica
-y no deben usarse para activar escrituras. La resolución canónica del proveedor, la lectura de
+El OpenAPI v0.3.9 de `KarmaAgenciaGit/api-campojoyma` es la fuente verificable
+del runtime actual. Los ficheros v0.3.2, v0.3.1, v0.3.0 y v0.2.0 de este
+repositorio, junto con el runbook v2, se conservan como evidencia histórica y no
+deben usarse para activar escrituras. La resolución canónica del proveedor, la lectura de
 albaranes GE y la búsqueda exacta de facturas sin conocer previamente el
 ejercicio continúan formando parte del contrato vigente.
 
@@ -46,10 +47,15 @@ ejercicio continúan formando parte del contrato vigente.
 - Las filas `FRC_*` son el desglose CTB real. No se fabrican a partir de los gastos.
 - Un asiento es el conjunto verificable de apuntes Debe/Haber del diario oficial.
 - `FRR_IdAsientoNet` es solo el identificador técnico. No es el número visible.
-- La copia actual permite leer el diario y verificar asientos históricos, pero no
-  contiene el mecanismo oficial para crear un asiento nuevo. `created` solo es
-  válido tras readback exacto; el POST escritor sigue bloqueando
-  `FRR_Contabilizar="S"`.
+- El clon TEST persistente permite leer el diario y, para el perfil mínimo
+  homologado, crear el asiento mediante DML exacto y transaccional con una
+  identidad MariaDB de mínimo privilegio.
+- `created` solo es válido tras readback exacto. La capacidad permanece apagada
+  por defecto y no se admite fuera de `netagro-test-write` ni para perfiles no
+  homologados.
+- La retirada de la prohibición general de SQL contable fue una decisión interna
+  del proyecto. Siguen prohibidos DDL, `DELETE`, producción, grants amplios y
+  cualquier SQL distinto del perfil probado.
 
 ## Alta o preflight
 
@@ -88,7 +94,9 @@ las referencias MA documentadas son exactas, únicas, completas, pendientes,
 coherentes con empresa/acreedor y uno-a-uno, con un máximo de 25. Cualquier
 respuesta parcial, ambigua o discordante deja todos los candidatos sin
 seleccionar. Los vínculos de una factura ya existente son evidencia de lectura
-y tampoco se vuelven a seleccionar.
+y tampoco se vuelven a seleccionar. Esta excepción solo se aplica después de que
+Edge confirme el duplicado exacto directamente contra ERP; una marca procedente
+de la extracción no es suficiente.
 
 Por compatibilidad, la FastAPI aún acepta el parámetro query `dry_run` y el contrato
 v1 sin los campos nuevos. En v2, `dry_run` del cuerpo tiene prioridad. Todo consumidor
@@ -151,13 +159,15 @@ FRR_HoraLog
 FRR_IdfacturaRec
 ```
 
-Los valores no vacíos se rechazan y estos campos se eliminan del payload antes de
-generar la propuesta. `FRR_id` y `FRR_numero` los genera la API; el identificador de
-asiento solo puede devolverlo el mecanismo oficial del ERP.
+Los valores no vacíos se rechazan y estos campos se eliminan del payload antes
+de generar la propuesta. `FRR_id` y `FRR_numero` los genera la operación de alta
+de gestión; `FRR_IdAsientoNet` solo puede proceder de la operación contable y de
+su readback exacto.
 
-Mientras el mecanismo oficial no esté disponible, un request v2 con
-`FRR_Contabilizar="S"` se bloquea durante el dry-run. No se crea una factura que
-quede falsamente presentada como contabilizada.
+El contrato v3 separa la intención de contabilizar del alta de gestión. Esta
+última siempre inserta `FRR_Contabilizar="N"`. Solo después de confirmarla se
+puede invocar `POST /facturasrecibidas/{id}/contabilizar` con el mismo target y
+epoch. Si la capacidad contable no está habilitada, no se abre el commit.
 
 ### CTB
 
@@ -618,14 +628,17 @@ Estados admitidos:
 | Estado | Significado |
 |---|---|
 | `not_requested` | La factura no solicita contabilización. |
-| `pending` | Reservado para un mecanismo oficial que haya aceptado el trabajo pero aún no lo confirme. |
+| `requested` | El usuario solicitó contabilización; todavía no se ha abierto el commit. |
+| `pending` | La operación ha sido reclamada por una única solicitud y no admite otra ejecución concurrente. |
 | `created` | Asiento del diario leído, origen `FR` coincidente y Debe/Haber cuadrado. |
 | `reference_only` | Existe ID técnico, pero no diario para verificar número visible ni Debe/Haber. |
 | `unavailable` | Se solicitó contabilización, pero el mecanismo oficial no está disponible. |
-| `error` | El mecanismo oficial devolvió un error confirmado. |
+| `unknown` | El commit pudo ejecutarse; queda bloqueado hasta reconciliación de solo lectura. |
+| `error` | La operación falló antes del commit o devolvió un rechazo terminal confirmado. |
 
-La copia puede devolver `created=true` para asientos históricos verificados. Esto
-no implica que la API pueda crear asientos nuevos.
+La copia puede devolver `created=true` para asientos históricos verificados. La
+creación de asientos nuevos solo existe en el perfil SQL TEST homologado y con
+los gates de activación cerrados por defecto.
 
 ## Listados, búsqueda y catálogos
 
@@ -731,12 +744,13 @@ esté activa.
 
 ## Estado operativo trazado
 
-- API v3 vigente: FastAPI 0.3.2 en `karma-box:8001`, expuesta al VPS por
+- API v3 vigente: FastAPI 0.3.9 en `karma-box:8001`, expuesta al VPS por
   `18001` y por el gateway HTTPS autenticado. El runtime mantiene
   `write_mode=disabled` y `accounting_mode=unavailable`.
-- Release activa: `29effcccaccf` sobre el cambio funcional `060484b`, verificada
-  con 196 pruebas y OpenAPI de 46 rutas/47 operaciones. La release 0.3.1 se
-  conserva como rollback inmediato.
+- Release activa:
+  `/home/karma/releases/api-campojoyma-v0.3.9-20260804T071204Z-accounting-clock-fix`,
+  verificada con 295 pruebas correctas y una omitida. Los writers se apagaron al
+  cerrar la ventana del canario.
 - La búsqueda contable 0.3.2 limita `q` a cuenta/descripción y reserva `nif`
   para el parámetro explícito; el smoke `q=603` devolvió 10 resultados sin
   CANALEX.
@@ -752,11 +766,13 @@ esté activa.
   continua.
 - Escritura MA deshabilitada por falta de grants mínimos y por
   `ALBMATERIAL_WRITES_ENABLED=false`.
-- Contabilización v2 bloqueada por ausencia del mecanismo oficial de creación
-  del asiento. El diario sí permite readback de asientos históricos.
+- Perfil contable TEST `ot-2110-single-21-v1` homologado mediante el canario
+  `FRR_id=49723`: asiento técnico `394936`, número visible `53344`, tres apuntes
+  y Debe/Haber de `121,00`. La capacidad continúa desactivada y no autoriza
+  producción ni otros perfiles.
 - Producción no se ha modificado.
 
-El estado de la API 0.3.2 fue verificado el 31/07/2026. Los estados de n8n y la
+El estado de la API 0.3.9 fue verificado el 04/08/2026. Los estados de n8n y la
 evidencia de altas de prueba de los puntos siguientes proceden de las tareas
 del 29/07/2026 y se conservan como historia, no como habilitación del writer.
 
