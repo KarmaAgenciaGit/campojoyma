@@ -319,4 +319,100 @@ describe('CuentaContableCombobox', () => {
     });
     expect(screen.getAllByText('Servicios exteriores')).toHaveLength(1);
   });
+
+  it('muestra las cuentas usadas anteriormente y permite elegir una vigente', async () => {
+    const onChange = vi.fn();
+    render(
+      <CuentaContableCombobox
+        empresaId={1}
+        value={null}
+        onChange={onChange}
+        previouslyUsed={[
+          {
+            cuenta: '60200000001',
+            descripcion: 'COMPRAS ENVASES Y EMBALAJES',
+            usosFacturas: 12,
+            usosLineas: 14,
+            porcentajeFacturas: 0.8,
+            importeNetoTotal: '1000.00',
+            importeAbsolutoTotal: '1000.00',
+            primeraFechaUso: '2025-01-01',
+            ultimaFechaUso: '2026-06-30',
+            existeEnCatalogo: true,
+            bloqueoFacturas: 'N',
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.focus(screen.getByRole('combobox'));
+
+    expect(
+      await screen.findByText('Más usadas con este proveedor'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('60200000001')).toBeInTheDocument();
+    expect(screen.getByText('COMPRAS ENVASES Y EMBALAJES')).toBeInTheDocument();
+    expect(screen.getByText('Usada en 12 facturas')).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('60200000001'));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('60200000001'));
+  });
+
+  it('conserva cuentas desaparecidas o bloqueadas como informativas', async () => {
+    const onChange = vi.fn();
+    render(
+      <CuentaContableCombobox
+        empresaId={1}
+        value={null}
+        onChange={onChange}
+        previouslyUsed={[
+          {
+            cuenta: '69999999999',
+            descripcion: 'Cuenta antigua',
+            usosFacturas: 3,
+            usosLineas: 3,
+            porcentajeFacturas: 0.3,
+            importeNetoTotal: '300.00',
+            importeAbsolutoTotal: '300.00',
+            primeraFechaUso: '2024-01-01',
+            ultimaFechaUso: '2024-04-01',
+            existeEnCatalogo: false,
+            bloqueoFacturas: null,
+          },
+          {
+            cuenta: '60200000009',
+            descripcion: 'Cuenta bloqueada',
+            usosFacturas: 2,
+            usosLineas: 2,
+            porcentajeFacturas: 0.2,
+            importeNetoTotal: '200.00',
+            importeAbsolutoTotal: '200.00',
+            primeraFechaUso: '2025-01-01',
+            ultimaFechaUso: '2025-02-01',
+            existeEnCatalogo: true,
+            bloqueoFacturas: 's',
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.focus(screen.getByRole('combobox'));
+
+    expect(await screen.findByText('Cuenta antigua')).toBeInTheDocument();
+    expect(screen.getByText('Cuenta bloqueada')).toBeInTheDocument();
+    expect(screen.getAllByText(/Ya no disponible/)).toHaveLength(2);
+    const unavailable = screen
+      .getByText('69999999999')
+      .closest('[cmdk-item]');
+    const blocked = screen
+      .getByText('60200000009')
+      .closest('[cmdk-item]');
+    expect(unavailable).toHaveAttribute('aria-disabled', 'true');
+    expect(blocked).toHaveAttribute('aria-disabled', 'true');
+
+    fireEvent.click(screen.getByText('69999999999'));
+    fireEvent.click(screen.getByText('60200000009'));
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

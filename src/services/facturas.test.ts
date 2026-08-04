@@ -21,6 +21,7 @@ import {
   buildPunteosUpdatePayload,
   fetchAlbaranEntradaLineas,
   fetchAlbaranMaterialLineas,
+  fetchFacturaCuentasGastoHistoricas,
   fetchFacturaPunteables,
   fetchFacturaPunteosLive,
   fetchFacturaTiposIva,
@@ -176,6 +177,144 @@ describe('errores de Edge Functions', () => {
       message: 'La consulta a Netagro ha tardado demasiado. Puede volver a intentarlo.',
     });
     expect(isRetryableFacturaERPReadError(result)).toBe(true);
+  });
+});
+
+describe('cuentas de gasto historicas', () => {
+  it('consulta por empresa, proveedor y tipo y normaliza el ranking', async () => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          filtros: {
+            empresa_id: 1,
+            proveedor_id: 17,
+            proveedor_tipo: 'acreedor',
+          },
+          total_facturas_con_gasto: 5,
+          items: [
+            {
+              cuenta: '60200000001',
+              descripcion: 'COMPRAS ENVASES Y EMBALAJES',
+              usos_facturas: 4,
+              usos_lineas: 5,
+              porcentaje_facturas: 0.8,
+              importe_neto_total: '42341.52',
+              importe_absoluto_total: '42341.52',
+              primera_fecha_uso: '2025-01-10',
+              ultima_fecha_uso: '2026-06-30',
+              existe_en_catalogo: true,
+              bloqueo_facturas: 'N',
+            },
+            {
+              cuenta: '69999999999',
+              descripcion: null,
+              usos_facturas: 1,
+              usos_lineas: 1,
+              porcentaje_facturas: 0.2,
+              importe_neto_total: '100.00',
+              importe_absoluto_total: '100.00',
+              primera_fecha_uso: '2024-01-01',
+              ultima_fecha_uso: '2024-01-01',
+              existe_en_catalogo: false,
+              bloqueo_facturas: null,
+            },
+          ],
+        },
+      },
+      error: null,
+    } as never);
+
+    await expect(
+      fetchFacturaCuentasGastoHistoricas({
+        empresaId: 1,
+        proveedorId: 17,
+        proveedorTipo: 'acreedor',
+        limit: 10,
+      }),
+    ).resolves.toEqual([
+      {
+        cuenta: '60200000001',
+        descripcion: 'COMPRAS ENVASES Y EMBALAJES',
+        usosFacturas: 4,
+        usosLineas: 5,
+        porcentajeFacturas: 0.8,
+        importeNetoTotal: '42341.52',
+        importeAbsolutoTotal: '42341.52',
+        primeraFechaUso: '2025-01-10',
+        ultimaFechaUso: '2026-06-30',
+        existeEnCatalogo: true,
+        bloqueoFacturas: 'N',
+      },
+      {
+        cuenta: '69999999999',
+        descripcion: null,
+        usosFacturas: 1,
+        usosLineas: 1,
+        porcentajeFacturas: 0.2,
+        importeNetoTotal: '100.00',
+        importeAbsolutoTotal: '100.00',
+        primeraFechaUso: '2024-01-01',
+        ultimaFechaUso: '2024-01-01',
+        existeEnCatalogo: false,
+        bloqueoFacturas: null,
+      },
+    ]);
+    expect(invokeMock).toHaveBeenCalledWith('facturas-recibidas-erp-read', {
+      body: expect.objectContaining({
+        contract_version: 2,
+        consulta:
+          'facturasrecibidas/cuentas-gasto-historicas?empresa_id=1&proveedor_id=17&proveedor_tipo=acreedor&limit=10',
+      }),
+    });
+  });
+
+  it('falla antes de consultar cuando la identidad del proveedor no es valida', async () => {
+    await expect(
+      fetchFacturaCuentasGastoHistoricas({
+        empresaId: 1,
+        proveedorId: 0,
+        proveedorTipo: 'acreedor',
+      }),
+    ).rejects.toThrow('El proveedor ERP no es valido');
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['otra empresa', { empresa_id: 2, proveedor_id: 17, proveedor_tipo: 'acreedor' }],
+    ['otro proveedor', { empresa_id: 1, proveedor_id: 18, proveedor_tipo: 'acreedor' }],
+    ['otro tipo', { empresa_id: 1, proveedor_id: 17, proveedor_tipo: 'agricultor' }],
+    ['sin filtros', null],
+  ])('rechaza un ranking que pertenece a %s', async (_case, filtros) => {
+    invokeMock.mockResolvedValueOnce({
+      data: {
+        contract_version: 2,
+        ok: true,
+        data: {
+          ...(filtros ? { filtros } : {}),
+          total_facturas_con_gasto: 1,
+          items: [
+            {
+              cuenta: '60200000001',
+              usos_facturas: 1,
+              existe_en_catalogo: true,
+            },
+          ],
+        },
+      },
+      error: null,
+    } as never);
+
+    await expect(
+      fetchFacturaCuentasGastoHistoricas({
+        empresaId: 1,
+        proveedorId: 17,
+        proveedorTipo: 'acreedor',
+      }),
+    ).rejects.toThrow(
+      'El historico de cuentas no corresponde a la empresa y proveedor solicitados.',
+    );
   });
 });
 

@@ -102,6 +102,7 @@ import type {
 import type { AgroIrisAcreedor } from '../services/agroirisAcreedores';
 import { useConfirmacion } from '../hooks/useConfirmacion';
 import { useToast } from '../hooks/use-toast';
+import { useFacturaCuentasGastoHistoricas } from '../hooks/useFacturaCuentasGastoHistoricas';
 import {
   aplicarPlantillaIvaHistorica,
   calcularSugerencias,
@@ -1154,6 +1155,17 @@ const Facturas = () => {
     draft?.match_evidence,
     draft?.proveedor_codigo,
   );
+  const resolvedTipoFactura = tipoFacturaRadioValue(
+    draft?.fr_sufa,
+    draft?.match_evidence,
+    draft?.proveedor_codigo,
+  );
+  const historicalProviderKind =
+    resolvedTipoFactura === 'GE'
+      ? 'agricultor'
+      : resolvedTipoFactura === 'OT'
+        ? 'acreedor'
+        : null;
   const activeDraftId = draft?.id ?? null;
   const accountingBreakdownScope = draft?.id ?? (draft ? 'new' : 'none');
   const activeRemoteFacturaId = (() => {
@@ -1201,6 +1213,16 @@ const Facturas = () => {
     const parsed = Number(draft?.fr_alm ?? '');
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }, [draft?.fr_alm]);
+  const { items: cuentasGastoHistoricas } =
+    useFacturaCuentasGastoHistoricas({
+      empresaId,
+      proveedorId: proveedorErpId,
+      proveedorTipo: historicalProviderKind,
+      enabled:
+        Boolean(draft) &&
+        !detailIsReadOnly &&
+        historicalProviderKind !== null,
+    });
 
   useEffect(() => {
     const runId = historialRunRef.current + 1;
@@ -3828,6 +3850,7 @@ const Facturas = () => {
                                 <CuentaContableCombobox
                                   empresaId={empresaId}
                                   value={linea.descripcion}
+                                  previouslyUsed={cuentasGastoHistoricas}
                                   disabled={isReadOnlyDetail}
                                   className={detailTableInputClass}
                                   onChange={(value) =>

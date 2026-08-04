@@ -2083,6 +2083,18 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
       "cuota5",
     ]),
   },
+  {
+    path: /^facturasrecibidas\/cuentas-gasto-historicas$/,
+    keys: new Set([
+      "schema",
+      "empresa_id",
+      "proveedor_id",
+      "proveedor_tipo",
+      "fecha_desde",
+      "fecha_hasta",
+      "limit",
+    ]),
+  },
   { path: /^facturasrecibidas\/\d+$/, keys: new Set(["schema"]) },
   { path: /^facturasrecibidas\/\d+\/ctb$/, keys: new Set(["schema"]) },
   {

@@ -3,6 +3,7 @@ import { Check, Loader2, Search } from 'lucide-react';
 
 import {
   fetchFacturaCuentas,
+  type FacturaCuentaGastoHistorica,
   type FacturaCuentaOption,
 } from '@/services/facturas';
 import { cn } from '@/lib/utils';
@@ -28,7 +29,10 @@ type CuentaContableComboboxProps = {
   disabled?: boolean;
   className?: string;
   searchLimit?: number;
+  previouslyUsed?: readonly FacturaCuentaGastoHistorica[];
 };
+
+const EMPTY_PREVIOUSLY_USED: readonly FacturaCuentaGastoHistorica[] = [];
 
 const normalizeSearch = (value: string) =>
   value
@@ -49,6 +53,12 @@ const historicalOption = (value: string): FacturaCuentaOption => ({
   nif: null,
 });
 
+const isSelectableHistoricalAccount = (
+  option: FacturaCuentaGastoHistorica,
+) =>
+  option.existeEnCatalogo &&
+  option.bloqueoFacturas?.trim().toUpperCase() !== 'S';
+
 export function CuentaContableCombobox({
   empresaId,
   value,
@@ -57,6 +67,7 @@ export function CuentaContableCombobox({
   disabled = false,
   className,
   searchLimit = 25,
+  previouslyUsed = EMPTY_PREVIOUSLY_USED,
 }: CuentaContableComboboxProps) {
   const rootRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -269,24 +280,70 @@ export function CuentaContableCombobox({
     );
   }, [editingSearch, options, search]);
 
+  const visiblePreviouslyUsed = React.useMemo(() => {
+    const query = editingSearch ? normalizeSearch(search) : '';
+    const unique = new Map<string, FacturaCuentaGastoHistorica>();
+    previouslyUsed.forEach((option) => {
+      const account = option.cuenta.trim();
+      if (!account || unique.has(account)) return;
+      if (
+        query &&
+        (isAccountPrefixSearch(query)
+          ? !normalizeSearch(account).startsWith(query)
+          : !normalizeSearch(`${account} ${option.descripcion ?? ''}`).includes(
+              query,
+            ))
+      ) {
+        return;
+      }
+      unique.set(account, { ...option, cuenta: account });
+    });
+    return Array.from(unique.values());
+  }, [editingSearch, previouslyUsed, search]);
+
+  const visiblePreviouslyUsedValues = React.useMemo(
+    () => new Set(visiblePreviouslyUsed.map((option) => option.cuenta)),
+    [visiblePreviouslyUsed],
+  );
+  const visibleCatalogOptions = React.useMemo(
+    () =>
+      filteredOptions.filter(
+        (option) => !visiblePreviouslyUsedValues.has(option.value),
+      ),
+    [filteredOptions, visiblePreviouslyUsedValues],
+  );
+  const selectableOptions = React.useMemo<FacturaCuentaOption[]>(() => {
+    const historical = visiblePreviouslyUsed
+      .filter(isSelectableHistoricalAccount)
+      .map((option) => ({
+        value: option.cuenta,
+        label: option.descripcion
+          ? `${option.cuenta} - ${option.descripcion}`
+          : option.cuenta,
+        description: option.descripcion,
+        nif: null,
+      }));
+    return [...historical, ...visibleCatalogOptions];
+  }, [visibleCatalogOptions, visiblePreviouslyUsed]);
+
   React.useEffect(() => {
-    if (!open || loading || filteredOptions.length === 0) {
+    if (!open || loading || selectableOptions.length === 0) {
       setActiveValue(null);
       return;
     }
     setActiveValue((current) => {
-      if (current && filteredOptions.some((option) => option.value === current)) {
+      if (current && selectableOptions.some((option) => option.value === current)) {
         return current;
       }
       if (
         normalizedValue &&
-        filteredOptions.some((option) => option.value === normalizedValue)
+        selectableOptions.some((option) => option.value === normalizedValue)
       ) {
         return normalizedValue;
       }
-      return filteredOptions[0].value;
+      return selectableOptions[0].value;
     });
-  }, [filteredOptions, loading, normalizedValue, open]);
+  }, [loading, normalizedValue, open, selectableOptions]);
 
   React.useEffect(() => {
     if (activeValue) {
@@ -314,20 +371,20 @@ export function CuentaContableCombobox({
   };
 
   const moveActiveOption = (direction: 1 | -1) => {
-    if (filteredOptions.length === 0) return;
+    if (selectableOptions.length === 0) return;
     setActiveValue((current) => {
-      const currentIndex = filteredOptions.findIndex(
+      const currentIndex = selectableOptions.findIndex(
         (option) => option.value === current,
       );
       if (currentIndex < 0) {
         return direction > 0
-          ? filteredOptions[0].value
-          : filteredOptions[filteredOptions.length - 1].value;
+          ? selectableOptions[0].value
+          : selectableOptions[selectableOptions.length - 1].value;
       }
       const nextIndex =
-        (currentIndex + direction + filteredOptions.length) %
-        filteredOptions.length;
-      return filteredOptions[nextIndex].value;
+        (currentIndex + direction + selectableOptions.length) %
+        selectableOptions.length;
+      return selectableOptions[nextIndex].value;
     });
   };
 
@@ -363,6 +420,7 @@ export function CuentaContableCombobox({
             )}
             onClick={() => {
               if (disabled) return;
+              if (previouslyUsed.length > 0) setOpen(true);
               window.setTimeout(() => {
                 inputRef.current?.focus();
                 if (!editingSearch) inputRef.current?.select();
@@ -389,24 +447,27 @@ export function CuentaContableCombobox({
               disabled={disabled}
               placeholder={placeholder}
               className="h-full min-w-0 flex-1 bg-transparent pl-7 pr-3 font-[inherit] text-inherit outline-none placeholder:text-slate-400 disabled:cursor-not-allowed dark:placeholder:text-slate-500"
+              onFocus={() => {
+                if (!disabled && previouslyUsed.length > 0) setOpen(true);
+              }}
               onChange={(event) => {
                 const nextSearch = event.target.value;
                 setEditingSearch(true);
                 setSearch(nextSearch);
                 setActiveValue(null);
-                setOpen(Boolean(nextSearch.trim()));
+                setOpen(Boolean(nextSearch.trim()) || previouslyUsed.length > 0);
                 if (!nextSearch && normalizedValue) onChange(null);
               }}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                  if (!editingSearch || !search.trim()) return;
+                  if (selectableOptions.length === 0) return;
                   event.preventDefault();
                   setOpen(true);
                   moveActiveOption(event.key === 'ArrowDown' ? 1 : -1);
                   return;
                 }
                 if (event.key === 'Enter' && open && activeValue) {
-                  const active = filteredOptions.find(
+                  const active = selectableOptions.find(
                     (option) => option.value === activeValue,
                   );
                   if (active) {
@@ -446,23 +507,84 @@ export function CuentaContableCombobox({
             value={activeValue ?? ''}
             onValueChange={(nextValue) => {
               if (
-                filteredOptions.some((option) => option.value === nextValue)
+                selectableOptions.some((option) => option.value === nextValue)
               ) {
                 setActiveValue(nextValue);
               }
             }}
           >
             <CommandList ref={setListboxRef}>
+              {visiblePreviouslyUsed.length > 0 ? (
+                <CommandGroup heading="Más usadas con este proveedor">
+                  {visiblePreviouslyUsed.map((option) => {
+                    const selectable = isSelectableHistoricalAccount(option);
+                    const accountOption: FacturaCuentaOption = {
+                      value: option.cuenta,
+                      label: option.descripcion
+                        ? `${option.cuenta} - ${option.descripcion}`
+                        : option.cuenta,
+                      description: option.descripcion,
+                      nif: null,
+                    };
+                    return (
+                      <CommandItem
+                        ref={(node) => {
+                          if (node && selectable) {
+                            optionRefs.current.set(option.cuenta, node);
+                          } else {
+                            optionRefs.current.delete(option.cuenta);
+                          }
+                        }}
+                        key={option.cuenta}
+                        value={option.cuenta}
+                        disabled={!selectable}
+                        aria-disabled={!selectable}
+                        onSelect={() => {
+                          if (selectable) selectOption(accountOption);
+                        }}
+                      >
+                        <Check
+                          className={cn(
+                            'mr-2 h-4 w-4 shrink-0',
+                            normalizedValue === option.cuenta
+                              ? 'opacity-100'
+                              : 'opacity-0',
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium">{option.cuenta}</p>
+                          {option.descripcion ? (
+                            <p className="truncate text-xs text-muted-foreground">
+                              {option.descripcion}
+                            </p>
+                          ) : null}
+                          <p className="truncate text-xs text-muted-foreground">
+                            {option.usosFacturas === 1
+                              ? 'Usada en 1 factura'
+                              : `Usada en ${option.usosFacturas.toLocaleString('es-ES')} facturas`}
+                            {!selectable ? ' · Ya no disponible' : ''}
+                          </p>
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ) : null}
               {loading ? (
                 <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Consultando cuentas…
                 </div>
-              ) : filteredOptions.length === 0 ? (
+              ) : visibleCatalogOptions.length === 0 &&
+                visiblePreviouslyUsed.length === 0 ? (
                 <CommandEmpty>{emptyMessage}</CommandEmpty>
-              ) : (
-                <CommandGroup>
-                  {filteredOptions.map((option) => (
+              ) : visibleCatalogOptions.length > 0 ? (
+                <CommandGroup
+                  heading={
+                    visiblePreviouslyUsed.length > 0 ? 'Resultados' : undefined
+                  }
+                >
+                  {visibleCatalogOptions.map((option) => (
                     <CommandItem
                       ref={(node) => {
                         if (node) optionRefs.current.set(option.value, node);
@@ -491,8 +613,8 @@ export function CuentaContableCombobox({
                     </CommandItem>
                   ))}
                 </CommandGroup>
-              )}
-              {!loading && filteredOptions.length > 0 && hasMore ? (
+              ) : null}
+              {!loading && visibleCatalogOptions.length > 0 && hasMore ? (
                 <div className="border-t p-2">
                   <button
                     type="button"
@@ -511,7 +633,9 @@ export function CuentaContableCombobox({
                   </button>
                 </div>
               ) : null}
-              {errorMessage && filteredOptions.length > 0 ? (
+              {errorMessage &&
+              (visibleCatalogOptions.length > 0 ||
+                visiblePreviouslyUsed.length > 0) ? (
                 <p
                   role="status"
                   className="border-t px-3 py-2 text-xs text-destructive"

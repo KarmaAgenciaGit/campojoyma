@@ -92,6 +92,27 @@ export type FacturaCuentaOption = {
   nif: string | null;
 };
 
+export type FacturaCuentaGastoHistorica = {
+  cuenta: string;
+  descripcion: string | null;
+  usosFacturas: number;
+  usosLineas: number;
+  porcentajeFacturas: number | null;
+  importeNetoTotal: string | null;
+  importeAbsolutoTotal: string | null;
+  primeraFechaUso: string | null;
+  ultimaFechaUso: string | null;
+  existeEnCatalogo: boolean;
+  bloqueoFacturas: string | null;
+};
+
+export type FetchFacturaCuentasGastoHistoricasOptions = {
+  empresaId: number;
+  proveedorId: number;
+  proveedorTipo: FacturaProveedorERPKind;
+  limit?: number;
+};
+
 export type FacturaTipoIvaOption = {
   value: string;
   porcentaje: number;
@@ -2408,6 +2429,89 @@ export const fetchFacturaCuentas = async (
         : null;
     })
     .filter((item): item is FacturaCuentaOption => Boolean(item));
+};
+
+export const fetchFacturaCuentasGastoHistoricas = async ({
+  empresaId,
+  proveedorId,
+  proveedorTipo,
+  limit = 10,
+}: FetchFacturaCuentasGastoHistoricasOptions): Promise<
+  FacturaCuentaGastoHistorica[]
+> => {
+  const normalizedEmpresaId = Math.trunc(Number(empresaId));
+  const normalizedProveedorId = Math.trunc(Number(proveedorId));
+  if (!Number.isSafeInteger(normalizedEmpresaId) || normalizedEmpresaId < 1) {
+    throw new Error('La empresa ERP no es valida para consultar cuentas anteriores.');
+  }
+  if (!Number.isSafeInteger(normalizedProveedorId) || normalizedProveedorId < 1) {
+    throw new Error('El proveedor ERP no es valido para consultar cuentas anteriores.');
+  }
+  if (proveedorTipo !== 'acreedor' && proveedorTipo !== 'agricultor') {
+    throw new Error('El tipo de proveedor ERP no es valido.');
+  }
+
+  const params = new URLSearchParams({
+    empresa_id: String(normalizedEmpresaId),
+    proveedor_id: String(normalizedProveedorId),
+    proveedor_tipo: proveedorTipo,
+    limit: String(Math.min(Math.max(1, Math.trunc(limit)), 20)),
+  });
+  const response = await erpRead<
+    ERPReadListResponse<ERPReadGenericRow> | ERPReadGenericRow[]
+  >(`facturasrecibidas/cuentas-gasto-historicas?${params.toString()}`);
+  const responseRecord = asRecord(response);
+  const responseFilters = asRecord(responseRecord.filtros);
+  if (
+    responseFilters.empresa_id !== normalizedEmpresaId ||
+    responseFilters.proveedor_id !== normalizedProveedorId ||
+    responseFilters.proveedor_tipo !== proveedorTipo
+  ) {
+    throw new Error(
+      'El historico de cuentas no corresponde a la empresa y proveedor solicitados.',
+    );
+  }
+
+  return responseItems(response)
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as ERPReadGenericRow;
+      const cuenta = readText(record, ['cuenta'], null);
+      const usosFacturas = readNumber(record, ['usos_facturas'], null);
+      if (!cuenta || usosFacturas === null || usosFacturas < 1) return null;
+
+      const porcentajeFacturas = readNumber(
+        record,
+        ['porcentaje_facturas'],
+        null,
+      );
+      return {
+        cuenta,
+        descripcion: readText(record, ['descripcion'], null),
+        usosFacturas,
+        usosLineas:
+          readNumber(record, ['usos_lineas'], usosFacturas) ?? usosFacturas,
+        porcentajeFacturas:
+          porcentajeFacturas !== null &&
+          porcentajeFacturas >= 0 &&
+          porcentajeFacturas <= 1
+            ? porcentajeFacturas
+            : null,
+        importeNetoTotal: readText(record, ['importe_neto_total'], null),
+        importeAbsolutoTotal: readText(
+          record,
+          ['importe_absoluto_total'],
+          null,
+        ),
+        primeraFechaUso: readText(record, ['primera_fecha_uso'], null),
+        ultimaFechaUso: readText(record, ['ultima_fecha_uso'], null),
+        // Ausencia o tipos inesperados se interpretan de forma conservadora:
+        // la cuenta sigue siendo informativa, pero no se puede seleccionar.
+        existeEnCatalogo: record.existe_en_catalogo === true,
+        bloqueoFacturas: readText(record, ['bloqueo_facturas'], null),
+      } satisfies FacturaCuentaGastoHistorica;
+    })
+    .filter((item): item is FacturaCuentaGastoHistorica => Boolean(item));
 };
 
 export const normalizeFacturaTiposIva = (
