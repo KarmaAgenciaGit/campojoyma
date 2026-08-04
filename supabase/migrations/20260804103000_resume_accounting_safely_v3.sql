@@ -48,6 +48,69 @@ begin
 end;
 $$;
 
+-- Supersede the deployed sticky guard. An uncertain commit cannot be hidden as
+-- stale (or any other state) and then reopened under a fresh request. The only
+-- terminal transition is an exact created readback already persisted by the
+-- privileged accounting recorder for the same request and hashes.
+create or replace function public.keep_unknown_factura_accounting_sticky_v3()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if old.accounting_status <> 'unknown'
+    or new.accounting_status = 'unknown'
+  then
+    return new;
+  end if;
+
+  if new.accounting_status <> 'created' then
+    raise exception
+      'ACCOUNTING_RECONCILIATION_REQUIRED: el resultado contable incierto no puede cambiar de estado sin readback exacto';
+  end if;
+
+  if new.accounting_request_id is null
+    or new.accounting_request_id is distinct from old.accounting_request_id
+    or new.erp_target_id is distinct from old.erp_target_id
+    or new.erp_dataset_epoch is distinct from old.erp_dataset_epoch
+    or new.accounting_payload_hash is null
+    or new.accounting_payload_hash is distinct from old.accounting_payload_hash
+    or new.accounting_invoice_fingerprint is null
+    or new.accounting_invoice_fingerprint
+      is distinct from old.accounting_invoice_fingerprint
+    or new.accounting_verified_at is null
+    or coalesce(new."FRR_IdAsientoNet", 0) <= 0
+    or not exists (
+      select 1
+      from public.facturasrecibidas_sync_attempts attempt
+      join public.facturasrecibidas_asientos asiento
+        on asiento.factura_id = old.id
+       and asiento.request_id = old.accounting_request_id
+      where attempt.factura_id = old.id
+        and attempt.request_id = old.accounting_request_id
+        and attempt.phase = 'commit'
+        and attempt.circuit = 'accounting'
+        and attempt.status = 'succeeded'
+        and not attempt.reconciliation_required
+        and attempt.erp_target_id is not distinct from old.erp_target_id
+        and attempt.erp_dataset_epoch is not distinct from old.erp_dataset_epoch
+        and attempt.payload_hash is not distinct from old.accounting_payload_hash
+        and attempt.business_fingerprint
+          is not distinct from old.accounting_invoice_fingerprint
+        and asiento.technical_id = new."FRR_IdAsientoNet"
+        and asiento.status = 'created'
+        and asiento.balanced
+    )
+  then
+    raise exception
+      'ACCOUNTING_RECONCILIATION_REQUIRED: falta evidencia persistida del readback contable exacto';
+  end if;
+
+  return new;
+end;
+$$;
+
 create or replace function public.guard_erp_target_against_unresolved_accounting_v3()
 returns trigger
 language plpgsql
@@ -55,12 +118,22 @@ security invoker
 set search_path = ''
 as $$
 begin
+  if new.accounting_mode in ('official', 'sql_test')
+    and new.write_mode <> 'management'
+  then
+    raise exception
+      'ACCOUNTING_MODE_REQUIRES_MANAGEMENT: la contabilidad exige escritura de gestion activa';
+  end if;
+
   if new.dataset_epoch is distinct from old.dataset_epoch
     or new.snapshot_at is distinct from old.snapshot_at
   then
     perform private.assert_no_unresolved_factura_accounting_v3(old.id, null);
   elsif new.write_mode is distinct from old.write_mode
-    and new.write_mode in ('blocked', 'management')
+    and (
+      (old.write_mode = 'disabled' and new.write_mode = 'blocked')
+      or (old.write_mode <> 'management' and new.write_mode = 'management')
+    )
   then
     perform private.assert_no_unresolved_factura_accounting_v3(
       old.id,
@@ -156,6 +229,7 @@ begin
   if not found
     or not v_target.active
     or v_target.dataset_epoch is distinct from p_dataset_epoch
+    or v_target.write_mode <> 'management'
     or v_target.accounting_mode not in ('official', 'sql_test')
     or (v_target.accounting_mode = 'sql_test' and v_target.environment <> 'test')
   then
@@ -181,6 +255,11 @@ begin
   end if;
   if not v_current.accounting_requested then
     raise exception 'ACCOUNTING_NOT_REQUESTED: la factura no se marco para contabilizar';
+  end if;
+  if v_current.is_readonly_reference
+    or v_current.source_kind = 'erp_reference'
+  then
+    raise exception 'ACCOUNTING_NOT_READY: la referencia ERP es de solo consulta';
   end if;
 
   if v_current.accounting_status = 'created' then
@@ -210,6 +289,19 @@ begin
       'resume_phase', 'reconcile',
       'reconciliation_required', true
     );
+  end if;
+
+  -- Closed allowlist: imported/stale references and any future state must never
+  -- fall through to the fresh-request path. Pending is handled below only when
+  -- its exact request and precommit evidence can be demonstrated.
+  if v_current.accounting_status not in (
+    'not_requested',
+    'requested',
+    'error',
+    'pending'
+  ) then
+    raise exception
+      'ACCOUNTING_NOT_READY: el estado contable no permite iniciar ni reanudar la operacion';
   end if;
 
   if v_current.accounting_request_id is not null
@@ -480,6 +572,7 @@ begin
   if not found
     or not v_target.active
     or v_target.dataset_epoch is distinct from p_dataset_epoch
+    or v_target.write_mode <> 'management'
     or v_target.accounting_mode not in ('official', 'sql_test')
     or (v_target.accounting_mode = 'sql_test' and v_target.environment <> 'test')
   then
@@ -495,11 +588,19 @@ begin
   if not found then
     raise exception 'NOT_FOUND: factura no encontrada';
   end if;
-  if v_current.accounting_status <> 'pending'
+  if v_current.sync_status <> 'sent'
+    or v_current.erp_reference_status <> 'valid'
+    or v_current.is_readonly_reference
+    or v_current.source_kind = 'erp_reference'
+    or not v_current.accounting_requested
+    or v_current.accounting_status <> 'pending'
     or v_current.accounting_request_id is distinct from p_request_id
     or v_current.erp_target_id is distinct from p_target_id
     or v_current.erp_dataset_epoch is distinct from p_dataset_epoch
     or coalesce(v_current.remote_frr_id, v_current."FRR_id", 0) <= 0
+    or v_current.accounting_payload_hash is distinct from p_payload_hash
+    or v_current.accounting_invoice_fingerprint
+      is distinct from p_invoice_fingerprint
   then
     raise exception 'ACCOUNTING_NOT_READY: la operacion no esta en precommit';
   end if;
@@ -833,6 +934,8 @@ comment on function private.assert_no_unresolved_factura_accounting_v3(
 revoke all on function private.assert_no_unresolved_factura_accounting_v3(
   text, uuid
 ) from public, anon, authenticated, service_role;
+revoke all on function public.keep_unknown_factura_accounting_sticky_v3()
+  from public, anon, authenticated, service_role;
 revoke all on function public.guard_erp_target_against_unresolved_accounting_v3()
   from public, anon, authenticated, service_role;
 revoke all on function public.require_explicit_factura_accounting_commit_claim_v3()

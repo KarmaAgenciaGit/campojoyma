@@ -14,6 +14,7 @@ import {
   buildAccountingContractV3,
   callNetagroAccountingV3,
   fetchNetagroRuntime,
+  getFacturaAccountingResumePlan,
   parseStructuredERPError,
   type StructuredERPError,
   timestampsReferToSameInstant,
@@ -736,187 +737,245 @@ Deno.serve(async (req) => {
         datasetEpoch,
       });
 
-    let validationCall;
-    try {
-      validationCall = await callNetagroAccountingV3(
-        remoteFacturaId,
-        accountingPayload("validate"),
-      );
-    } catch (error) {
-      console.error(
-        "factura-recibida-account-erp validation transport error",
-        error instanceof Error ? error.message : "Error desconocido",
-      );
-      const message = "No se pudo validar la contabilización.";
-      let state: JsonObject = preparedState;
-      try {
-        state = await recordAccounting({ status: "error", error: message });
-      } catch (recordError) {
-        console.error(
-          "factura-recibida-account-erp validation state error",
-          recordError instanceof Error
-            ? recordError.message
-            : "Error desconocido",
-        );
-      }
-      return accountingError({
-        status: 503,
-        code: "upstream_unavailable",
-        category: "transport",
-        userMessage: message,
-        requestId,
-        targetId,
-        datasetEpoch,
-        facturaId,
-        retryable: true,
-        extra: state,
-      });
-    }
-
-    const validationResponse = asObject(validationCall.payload);
-    const validationContract = validateNetagroAccountingResponseV3(
-      validationCall.payload,
-      {
-        operation: "validate",
-        requestId,
-        targetId,
-        datasetEpoch,
-        facturaId: remoteFacturaId,
-      },
-    );
-    const payloadHash = text(validationResponse.payload_hash, null);
-    const invoiceFingerprint = text(
-      validationResponse.invoice_fingerprint,
+    const preparedPayloadHash = text(
+      preparedFactura.accounting_payload_hash,
       null,
     );
-    const safePayloadHash = isSha256(payloadHash) ? payloadHash : null;
-    const safeInvoiceFingerprint = isSha256(invoiceFingerprint)
-      ? invoiceFingerprint
-      : null;
-    if (
-      !validationCall.response.ok ||
-      !validationContract.ok ||
-      validationResponse.eligible !== true ||
-      !isSha256(payloadHash) ||
-      !isSha256(invoiceFingerprint)
-    ) {
-      const structured = !validationCall.response.ok
-        ? parseStructuredERPError(validationCall.payload, {
-          category: "accounting",
-          user_message:
-            "La factura no cumple las condiciones para contabilizarse.",
-          request_id: requestId,
-          target_id: targetId,
-          dataset_epoch: datasetEpoch,
-        })
-        : null;
-      const message = structured?.user_message ??
-        "La factura no cumple las condiciones para contabilizarse.";
-      const uncertain = structured?.reconciliation_required === true ||
-        structured?.code === "ambiguous_commit" ||
-        structured?.code === "idempotency_in_progress";
-      let state: JsonObject = preparedState;
-      try {
-        state = await recordAccounting({
-          status: uncertain ? "unknown" : "error",
-          response: validationCall.payload,
-          payloadHash: safePayloadHash,
-          invoiceFingerprint: safeInvoiceFingerprint,
-          error: message,
-        });
-      } catch (recordError) {
-        console.error(
-          "factura-recibida-account-erp validation record error",
-          recordError instanceof Error
-            ? recordError.message
-            : "Error desconocido",
-        );
-      }
+    const preparedInvoiceFingerprint = text(
+      preparedFactura.accounting_invoice_fingerprint,
+      null,
+    );
+    const resumePlan = getFacturaAccountingResumePlan({
+      resumePhase: preparedState.resume_phase,
+      payloadHash: preparedPayloadHash,
+      invoiceFingerprint: preparedInvoiceFingerprint,
+    });
+
+    // Once Supabase says phase=commit, validation must never run again. A
+    // transport failure there could otherwise downgrade an already-open commit
+    // and make a different request look retryable.
+    if (resumePlan === "reconcile") {
       return accountingError({
-        status: uncertain
-          ? 202
-          : structured?.category === "conflict"
-          ? 409
-          : validationCall.response.status >= 500
-          ? 503
-          : 422,
-        code: uncertain
-          ? "ambiguous_commit"
-          : structured?.code ?? "accounting_validation_failed",
-        category: structured?.category ?? "accounting",
-        userMessage: message,
+        status: 202,
+        code: "ambiguous_commit",
+        category: "accounting",
+        userMessage:
+          "El resultado contable está pendiente de comprobación. No se repetirá automáticamente.",
         requestId,
         targetId,
         datasetEpoch,
         facturaId,
-        retryable: uncertain
-          ? false
-          : structured?.retryable ?? validationCall.response.status >= 500,
-        reconciliationRequired: uncertain,
-        extra: state,
-      });
-    }
-    if (
-      storedRequestId === requestId &&
-      ((storedPayloadHash && storedPayloadHash !== payloadHash) ||
-        (storedInvoiceFingerprint &&
-          storedInvoiceFingerprint !== invoiceFingerprint))
-    ) {
-      let state: JsonObject = preparedState;
-      try {
-        state = await recordAccounting({
-          status: "error",
-          payloadHash: storedPayloadHash,
-          invoiceFingerprint: storedInvoiceFingerprint,
-          error: "La identidad contable cambió para la misma operación.",
-        });
-      } catch (recordError) {
-        console.error(
-          "factura-recibida-account-erp identity state error",
-          recordError instanceof Error
-            ? recordError.message
-            : "Error desconocido",
-        );
-      }
-      return accountingError({
-        status: 409,
-        code: "idempotency_conflict",
-        category: "conflict",
-        userMessage: "La factura cambió durante la operación contable.",
-        requestId,
-        targetId,
-        datasetEpoch,
-        facturaId,
-        extra: state,
+        reconciliationRequired: true,
+        extra: preparedState,
       });
     }
 
-    let pendingState: JsonObject;
-    try {
-      pendingState = await recordAccounting({
-        status: "pending",
-        response: validationCall.payload,
-        payloadHash,
-        invoiceFingerprint,
-      });
-    } catch (recordError) {
-      console.error(
-        "factura-recibida-account-erp pending state error",
-        recordError instanceof Error
-          ? recordError.message
-          : "Error desconocido",
+    let payloadHash: string | null = resumePlan === "commit"
+      ? preparedPayloadHash
+      : null;
+    let invoiceFingerprint: string | null = resumePlan === "commit"
+      ? preparedInvoiceFingerprint
+      : null;
+    let pendingState: JsonObject = preparedState;
+
+    if (resumePlan === "validate") {
+      let validationCall;
+      try {
+        validationCall = await callNetagroAccountingV3(
+          remoteFacturaId,
+          accountingPayload("validate"),
+        );
+      } catch (error) {
+        console.error(
+          "factura-recibida-account-erp validation transport error",
+          error instanceof Error ? error.message : "Error desconocido",
+        );
+        const message = "No se pudo validar la contabilización.";
+        let state: JsonObject = preparedState;
+        try {
+          state = await recordAccounting({ status: "error", error: message });
+        } catch (recordError) {
+          console.error(
+            "factura-recibida-account-erp validation state error",
+            recordError instanceof Error
+              ? recordError.message
+              : "Error desconocido",
+          );
+        }
+        return accountingError({
+          status: 503,
+          code: "upstream_unavailable",
+          category: "transport",
+          userMessage: message,
+          requestId,
+          targetId,
+          datasetEpoch,
+          facturaId,
+          retryable: true,
+          extra: state,
+        });
+      }
+
+      const validationResponse = asObject(validationCall.payload);
+      const validationContract = validateNetagroAccountingResponseV3(
+        validationCall.payload,
+        {
+          operation: "validate",
+          requestId,
+          targetId,
+          datasetEpoch,
+          facturaId: remoteFacturaId,
+        },
       );
+      payloadHash = text(validationResponse.payload_hash, null);
+      invoiceFingerprint = text(
+        validationResponse.invoice_fingerprint,
+        null,
+      );
+      const safePayloadHash = isSha256(payloadHash) ? payloadHash : null;
+      const safeInvoiceFingerprint = isSha256(invoiceFingerprint)
+        ? invoiceFingerprint
+        : null;
+      if (
+        !validationCall.response.ok ||
+        !validationContract.ok ||
+        validationResponse.eligible !== true ||
+        !isSha256(payloadHash) ||
+        !isSha256(invoiceFingerprint)
+      ) {
+        const structured = !validationCall.response.ok
+          ? parseStructuredERPError(validationCall.payload, {
+            category: "accounting",
+            user_message:
+              "La factura no cumple las condiciones para contabilizarse.",
+            request_id: requestId,
+            target_id: targetId,
+            dataset_epoch: datasetEpoch,
+          })
+          : null;
+        const message = structured?.user_message ??
+          "La factura no cumple las condiciones para contabilizarse.";
+        const uncertain = structured?.reconciliation_required === true ||
+          structured?.code === "ambiguous_commit" ||
+          structured?.code === "idempotency_in_progress";
+        let state: JsonObject = preparedState;
+        try {
+          state = await recordAccounting({
+            status: uncertain ? "unknown" : "error",
+            response: validationCall.payload,
+            payloadHash: safePayloadHash,
+            invoiceFingerprint: safeInvoiceFingerprint,
+            error: message,
+          });
+        } catch (recordError) {
+          console.error(
+            "factura-recibida-account-erp validation record error",
+            recordError instanceof Error
+              ? recordError.message
+              : "Error desconocido",
+          );
+        }
+        return accountingError({
+          status: uncertain
+            ? 202
+            : structured?.category === "conflict"
+            ? 409
+            : validationCall.response.status >= 500
+            ? 503
+            : 422,
+          code: uncertain
+            ? "ambiguous_commit"
+            : structured?.code ?? "accounting_validation_failed",
+          category: structured?.category ?? "accounting",
+          userMessage: message,
+          requestId,
+          targetId,
+          datasetEpoch,
+          facturaId,
+          retryable: uncertain
+            ? false
+            : structured?.retryable ?? validationCall.response.status >= 500,
+          reconciliationRequired: uncertain,
+          extra: state,
+        });
+      }
+      if (
+        storedRequestId === requestId &&
+        ((storedPayloadHash && storedPayloadHash !== payloadHash) ||
+          (storedInvoiceFingerprint &&
+            storedInvoiceFingerprint !== invoiceFingerprint))
+      ) {
+        let state: JsonObject = preparedState;
+        try {
+          state = await recordAccounting({
+            status: "error",
+            payloadHash: storedPayloadHash,
+            invoiceFingerprint: storedInvoiceFingerprint,
+            error: "La identidad contable cambió para la misma operación.",
+          });
+        } catch (recordError) {
+          console.error(
+            "factura-recibida-account-erp identity state error",
+            recordError instanceof Error
+              ? recordError.message
+              : "Error desconocido",
+          );
+        }
+        return accountingError({
+          status: 409,
+          code: "idempotency_conflict",
+          category: "conflict",
+          userMessage: "La factura cambió durante la operación contable.",
+          requestId,
+          targetId,
+          datasetEpoch,
+          facturaId,
+          extra: state,
+        });
+      }
+
+      try {
+        pendingState = await recordAccounting({
+          status: "pending",
+          response: validationCall.payload,
+          payloadHash,
+          invoiceFingerprint,
+        });
+      } catch (recordError) {
+        console.error(
+          "factura-recibida-account-erp pending state error",
+          recordError instanceof Error
+            ? recordError.message
+            : "Error desconocido",
+        );
+        return accountingError({
+          status: 503,
+          code: "upstream_unavailable",
+          category: "transport",
+          userMessage: "No se pudo preparar la contabilización.",
+          requestId,
+          targetId,
+          datasetEpoch,
+          facturaId,
+          retryable: true,
+          extra: preparedState,
+        });
+      }
+    }
+
+    if (!isSha256(payloadHash) || !isSha256(invoiceFingerprint)) {
       return accountingError({
-        status: 503,
-        code: "upstream_unavailable",
-        category: "transport",
-        userMessage: "No se pudo preparar la contabilización.",
+        status: 202,
+        code: "ambiguous_commit",
+        category: "accounting",
+        userMessage:
+          "El resultado contable está pendiente de comprobación. No se repetirá automáticamente.",
         requestId,
         targetId,
         datasetEpoch,
         facturaId,
-        retryable: true,
-        extra: preparedState,
+        reconciliationRequired: true,
+        extra: pendingState,
       });
     }
 
@@ -954,7 +1013,7 @@ Deno.serve(async (req) => {
         code: "ambiguous_commit",
         category: "accounting",
         userMessage:
-          "El resultado contable estÃ¡ pendiente de comprobaciÃ³n. No se repetirÃ¡ automÃ¡ticamente.",
+          "El resultado contable está pendiente de comprobación. No se repetirá automáticamente.",
         requestId,
         targetId,
         datasetEpoch,

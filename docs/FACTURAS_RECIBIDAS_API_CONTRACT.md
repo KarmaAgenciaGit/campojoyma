@@ -22,7 +22,7 @@ Referencias:
 - [Workflow n8n write v2 desactivado](n8n/campojoyma-facturas-recibidas-write-v2.disabled.json)
 - [Agente de extracción v4 y regeneración segura](n8n/FACTURA_RECIBIDA_EXTRACTION_AGENT_V3.md)
 
-El OpenAPI v0.3.9 de `KarmaAgenciaGit/api-campojoyma` es la fuente verificable
+El OpenAPI v0.3.10 de `KarmaAgenciaGit/api-campojoyma` es la fuente verificable
 del runtime actual. Los ficheros v0.3.2, v0.3.1, v0.3.0 y v0.2.0 de este
 repositorio, junto con el runbook v2, se conservan como evidencia histórica y no
 deben usarse para activar escrituras. La resolución canónica del proveedor, la lectura de
@@ -629,7 +629,7 @@ Estados admitidos:
 |---|---|
 | `not_requested` | La factura no solicita contabilización. |
 | `requested` | El usuario solicitó contabilización; todavía no se ha abierto el commit. |
-| `pending` | La operación ha sido reclamada por una única solicitud y no admite otra ejecución concurrente. |
+| `pending` | La operación conserva una única identidad. Solo puede reanudarse con el mismo `request_id`, destino, generación y huellas; una identidad distinta se rechaza. |
 | `created` | Asiento del diario leído, origen `FR` coincidente y Debe/Haber cuadrado. |
 | `reference_only` | Existe ID técnico, pero no diario para verificar número visible ni Debe/Haber. |
 | `unavailable` | Se solicitó contabilización, pero el mecanismo oficial no está disponible. |
@@ -639,6 +639,17 @@ Estados admitidos:
 La copia puede devolver `created=true` para asientos históricos verificados. La
 creación de asientos nuevos solo existe en el perfil SQL TEST homologado y con
 los gates de activación cerrados por defecto.
+
+La reanudación de `pending` distingue la fase alcanzada sin inventar una nueva
+solicitud. Si todavía no existen huellas de commit, vuelve a validar con el mismo
+`request_id`; si el commit ya fue reclamado como `in_progress`, solo puede repetir
+la llamada idempotente con las mismas huellas para que FastAPI resuelva el replay
+desde su almacén externo. `unknown` y cualquier intento marcado con
+`reconciliation_required=true` son estados sticky: nunca reabren el commit y
+solo admiten reconciliación de lectura. La rotación de `dataset_epoch` y la
+activación de `write_mode` o `accounting_mode` se rechazan mientras existan
+facturas contables `requested`/`pending`/`unknown` o intentos contables en curso,
+inciertos o pendientes de reconciliación.
 
 ## Listados, búsqueda y catálogos
 
@@ -744,13 +755,28 @@ esté activa.
 
 ## Estado operativo trazado
 
-- API v3 vigente: FastAPI 0.3.9 en `karma-box:8001`, expuesta al VPS por
+- API v3 vigente: FastAPI 0.3.10 en `karma-box:8001`, expuesta al VPS por
   `18001` y por el gateway HTTPS autenticado. El runtime mantiene
-  `write_mode=disabled` y `accounting_mode=unavailable`.
+  `write_mode=disabled`, `accounting_write_mode=disabled` y
+  `accounting_mode=unavailable`.
 - Release activa:
-  `/home/karma/releases/api-campojoyma-v0.3.9-20260804T071204Z-accounting-clock-fix`,
-  verificada con 295 pruebas correctas y una omitida. Los writers se apagaron al
-  cerrar la ventana del canario.
+  `/home/karma/releases/api-campojoyma-v0.3.10-20260804T081145Z-test-identity-r2`,
+  verificada con 302 pruebas correctas y una omitida. La anterior
+  `api-campojoyma-v0.3.9-20260804T071204Z-accounting-clock-fix` queda como
+  rollback; ambos writers siguen apagados.
+- El gate contable prueba físicamente el destino antes de cualquier DML: exige
+  `NETAGRO_ENVIRONMENT=test`, `NETAGRO_TARGET_ID=netagro-test-write`, host
+  exclusivamente loopback, puerto `3307`, esquema
+  `netagrocomer_test_write`, mapeo `1:contabilidad` y
+  `@@datadir=/home/karma/.local/share/netagro-test-write/data/`. La consulta de
+  `@@datadir` es de solo lectura; cualquier diferencia cierra la conexión sin
+  intentar escribir ni corregir MariaDB.
+- Supabase tiene aplicada la migración `20260804083547
+  resume_accounting_safely_v3`. La Edge `factura-recibida-account-erp` v3 está
+  activa con JWT obligatorio y SHA-256
+  `804b0751e42b402e56d36555e25d81910df271389969336dfe3c429624ba802f`.
+  La aplicación no alteró el target: continúa en
+  `write_mode=blocked`/`accounting_mode=unavailable`.
 - La búsqueda contable 0.3.2 limita `q` a cuenta/descripción y reserva `nif`
   para el parámetro explícito; el smoke `q=603` devolvió 10 resultados sin
   CANALEX.
@@ -772,7 +798,7 @@ esté activa.
   producción ni otros perfiles.
 - Producción no se ha modificado.
 
-El estado de la API 0.3.9 fue verificado el 04/08/2026. Los estados de n8n y la
+El estado de la API 0.3.10 fue verificado el 04/08/2026. Los estados de n8n y la
 evidencia de altas de prueba de los puntos siguientes proceden de las tareas
 del 29/07/2026 y se conservan como historia, no como habilitación del writer.
 

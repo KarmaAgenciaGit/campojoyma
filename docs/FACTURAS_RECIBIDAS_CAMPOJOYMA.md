@@ -13,7 +13,7 @@ Supabase es la bandeja de revisión y ERP es la autoridad para maestros,
 duplicados y escrituras reales. La pantalla no muestra el histórico completo de
 Netagro.
 
-La API desplegada es la v0.3.9. El 4 de agosto se homologó en el clon persistente
+La API desplegada es la v0.3.10. El 4 de agosto se homologó en el clon persistente
 aislado un perfil SQL contable mínimo (`OT`, régimen `2110`, un único tramo al
 21 %, un gasto, sin retención, CTB, punteos ni cartera). El canario ficticio
 `FRR_id=49723` produjo el asiento técnico `394936`, número visible `53344`, tres
@@ -29,6 +29,15 @@ Estado operativo comprobado el 4 de agosto:
 <code>netagro-test-write</code> permanece en
 <code>write_mode=blocked</code>/<code>accounting_mode=unavailable</code>. Por
 tanto, tener el código desplegado no abre ninguna escritura.
+
+La v0.3.10 incorpora un gate físico adicional para el SQL contable. Antes de
+aceptar esa capacidad exige entorno `test`, destino `netagro-test-write`, host
+resuelto exclusivamente a loopback, puerto `3307`, esquema de gestión
+`netagrocomer_test_write`, mapeo contable `1:contabilidad` y coincidencia exacta
+de `@@datadir` con `/home/karma/.local/share/netagro-test-write/data/`. La
+comprobación de `@@datadir` es de solo lectura y se ejecuta antes de revisar
+grants o abrir cualquier DML. No modifica permisos, tablas ni configuración de
+MariaDB; una discrepancia cierra la conexión y falla de forma segura.
 
 La regla viva de empresa 1 propone ejercicio 25, CTB igual a fecha de factura,
 cuenta `60200000001`, concepto `FRA. {proveedor}` y
@@ -50,6 +59,14 @@ en remoto; su exportación canónica local conserva <code>active=false</code> pa
 evitar activaciones accidentales al importar. El escritor n8n v2 sigue
 desactivado. El frontend está validado en local y su despliegue externo continúa
 pendiente.
+
+La corrección de reanudación contable quedó aplicada en Supabase como migración
+`20260804083547 resume_accounting_safely_v3`. La Edge
+`factura-recibida-account-erp` está activa en su versión 3, con JWT obligatorio
+y SHA-256 de despliegue
+`804b0751e42b402e56d36555e25d81910df271389969336dfe3c429624ba802f`.
+Tras aplicarla, el destino conservó `write_mode=blocked` y
+`accounting_mode=unavailable`; no se abrió ninguna escritura a Netagro.
 
 La sustitución remota final se realizó mediante
 <code>n8n import:workflow</code> y se verificó con 32 nodos, cinco
@@ -80,6 +97,17 @@ Si un commit queda en estado desconocido, la operación queda bloqueada con el
 degradar el estado a un error reintentable. Solo una reconciliación de solo
 lectura y un readback exacto podrán cerrarlo como creado; nunca se repite el
 commit a ciegas.
+
+Un estado contable <code>pending</code> no genera una identidad nueva. La Edge
+reanuda únicamente la misma operación con idénticos <code>request_id</code>,
+destino, generación y huellas; si el commit ya fue reclamado, repite esa llamada
+idempotente para que el almacén externo de FastAPI devuelva el resultado
+persistido o confirme que continúa en curso. En cambio,
+<code>unknown</code> y cualquier intento con
+<code>reconciliation_required=true</code> permanecen bloqueados para
+reconciliación de solo lectura. Tampoco se puede rotar la generación del destino
+ni activar la escritura de gestión o contable mientras exista una operación
+contable pendiente o incierta.
 
 ## Fuentes de datos
 

@@ -1,14 +1,43 @@
 import {
   FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION,
   integerValue,
+  type JsonObject,
   parseJsonResponse,
   sha256Text,
   text,
-  type JsonObject,
 } from "./facturas-recibidas-erp.ts";
 
 export type NetagroWriteOperation = "validate" | "commit";
 export type NetagroAccountingOperation = "validate" | "commit";
+export type FacturaAccountingResumePlan = "validate" | "commit" | "reconcile";
+
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+
+export const getFacturaAccountingResumePlan = ({
+  resumePhase,
+  payloadHash,
+  invoiceFingerprint,
+}: {
+  resumePhase: unknown;
+  payloadHash: unknown;
+  invoiceFingerprint: unknown;
+}): FacturaAccountingResumePlan => {
+  const phase = text(resumePhase, "validate")?.toLowerCase() ?? "validate";
+  const hash = text(payloadHash, null);
+  const fingerprint = text(invoiceFingerprint, null);
+  const hasPersistedIdentity = Boolean(
+    hash &&
+      fingerprint &&
+      SHA256_HEX_PATTERN.test(hash) &&
+      SHA256_HEX_PATTERN.test(fingerprint),
+  );
+
+  if (phase === "commit") {
+    return hasPersistedIdentity ? "commit" : "reconcile";
+  }
+  if (phase === "precommit" && hasPersistedIdentity) return "commit";
+  return "validate";
+};
 
 export type NetagroRuntime = {
   service: string | null;
@@ -33,7 +62,12 @@ export type NetagroRuntime = {
 
 export type StructuredERPError = {
   code: string;
-  category: "validation" | "environment" | "conflict" | "transport" | "accounting";
+  category:
+    | "validation"
+    | "environment"
+    | "conflict"
+    | "transport"
+    | "accounting";
   user_message: string;
   technical_details: JsonObject;
   retryable: boolean;
@@ -168,10 +202,14 @@ export const getNetagroApiConfig = (): NetagroApiConfig => {
   try {
     baseUrl = new URL(rawBaseUrl.endsWith("/") ? rawBaseUrl : `${rawBaseUrl}/`);
   } catch {
-    throw new Error("ERP_API_CONFIGURATION_INVALID: URL del API Netagro no valida");
+    throw new Error(
+      "ERP_API_CONFIGURATION_INVALID: URL del API Netagro no valida",
+    );
   }
   if (baseUrl.protocol !== "https:") {
-    throw new Error("ERP_API_CONFIGURATION_INVALID: el API Netagro debe usar HTTPS");
+    throw new Error(
+      "ERP_API_CONFIGURATION_INVALID: el API Netagro debe usar HTTPS",
+    );
   }
   if (baseUrl.username || baseUrl.password) {
     throw new Error(
@@ -218,9 +256,10 @@ export const parseStructuredERPError = (
   return {
     code: text(error.code, fallback.code ?? "upstream_unavailable")!,
     category: (
-      ["validation", "environment", "conflict", "transport", "accounting"].includes(
-          category ?? "",
-        )
+      ["validation", "environment", "conflict", "transport", "accounting"]
+          .includes(
+            category ?? "",
+          )
         ? category
         : fallback.category ?? "transport"
     ) as StructuredERPError["category"],
@@ -255,7 +294,10 @@ export const fetchNetagroRuntime = async (): Promise<NetagroRuntime> => {
   }
   const runtime = asObject(payload);
   const capabilities = asObject(runtime.capabilities);
-  const writeContractVersion = integerValue(runtime.write_contract_version, null);
+  const writeContractVersion = integerValue(
+    runtime.write_contract_version,
+    null,
+  );
   if (writeContractVersion !== FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION) {
     throw new Error(
       `ERP_CONTRACT_MISMATCH: Netagro no anuncia contract_version=${FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION}`,
@@ -443,7 +485,10 @@ export const validateNetagroAccountingResponseV3 = (
     errors.push("factura_id no coincide");
   }
   if (response.ok !== true) errors.push("ok=true no confirmado");
-  if (expected.payloadHash && text(response.payload_hash, null) !== expected.payloadHash) {
+  if (
+    expected.payloadHash &&
+    text(response.payload_hash, null) !== expected.payloadHash
+  ) {
     errors.push("payload_hash no coincide");
   }
   if (

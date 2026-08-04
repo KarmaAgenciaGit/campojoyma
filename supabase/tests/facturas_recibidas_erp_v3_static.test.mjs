@@ -1034,6 +1034,8 @@ test("Edge contable solo reanuda pending antes de un claim atomico de commit", (
   const prepareCall = source.indexOf('"prepare_factura_recibida_accounting_v3"');
   const validateCall = source.indexOf('accountingPayload("validate")');
   const commitCall = source.indexOf('accountingPayload("commit")');
+  const resumePlan = source.indexOf("getFacturaAccountingResumePlan({");
+  const validateBranch = source.indexOf('if (resumePlan === "validate")');
   const commitClaim = source.indexOf(
     '"begin_factura_recibida_accounting_commit_v3"',
   );
@@ -1041,12 +1043,23 @@ test("Edge contable solo reanuda pending antes de un claim atomico de commit", (
   assert.ok(stickyBranch >= 0);
   assert.ok(runtimeCall > stickyBranch);
   assert.ok(prepareCall > stickyBranch);
+  assert.ok(resumePlan > prepareCall);
+  assert.ok(validateBranch > resumePlan);
+  assert.ok(validateCall > validateBranch);
   assert.ok(validateCall > stickyBranch);
   assert.ok(commitCall > stickyBranch);
   assert.ok(commitClaim > validateCall);
   assert.ok(commitCall > commitClaim);
   assert.match(source, /const UNCERTAIN_STATUSES = new Set\(\["unknown"\]\)/);
   assert.match(source, /const RESUMABLE_STATUSES = new Set\(\["pending"\]\)/);
+  assert.match(
+    source.slice(resumePlan, validateBranch),
+    /resumePlan === "reconcile"[\s\S]*?return accountingError\(\{[\s\S]*?status:\s*202/,
+  );
+  assert.match(
+    source.slice(resumePlan, validateCall),
+    /resumePlan === "commit"[\s\S]*?preparedPayloadHash[\s\S]*?preparedInvoiceFingerprint/,
+  );
   assert.match(
     source.slice(stickyBranch, runtimeCall),
     /storedRequestId !== requestId[\s\S]*?idempotency_conflict[\s\S]*?status:\s*202[\s\S]*?ambiguous_commit[\s\S]*?reconciliationRequired:\s*true/i,
@@ -1074,7 +1087,7 @@ test("migracion correctiva hace sticky la incertidumbre y cierra accounting con 
   );
   assert.match(
     accountingSafetyMigration,
-    /old\.accounting_status = 'unknown'[\s\S]*?new\.accounting_status not in \('unknown', 'created', 'stale'\)[\s\S]*?ACCOUNTING_RECONCILIATION_REQUIRED/i,
+    /create or replace function public\.keep_unknown_factura_accounting_sticky_v3/i,
   );
   assert.match(
     accountingSafetyMigration,
@@ -1083,6 +1096,37 @@ test("migracion correctiva hace sticky la incertidumbre y cierra accounting con 
   assert.match(
     accountingSafetyMigration,
     /new\.write_mode <> 'management'[\s\S]*?new\.dataset_epoch is distinct from old\.dataset_epoch[\s\S]*?new\.snapshot_at is distinct from old\.snapshot_at/i,
+  );
+});
+
+test("unknown no puede convertirse en stale y solo cierra con readback exacto persistido", () => {
+  const start = accountingResumeMigration.indexOf(
+    "create or replace function public.keep_unknown_factura_accounting_sticky_v3(",
+  );
+  const end = accountingResumeMigration.indexOf(
+    "create or replace function public.guard_erp_target_against_unresolved_accounting_v3(",
+    start,
+  );
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  const sticky = accountingResumeMigration.slice(start, end);
+
+  assert.match(
+    sticky,
+    /old\.accounting_status <> 'unknown'[\s\S]*?new\.accounting_status = 'unknown'[\s\S]*?return new/i,
+  );
+  assert.match(
+    sticky,
+    /new\.accounting_status <> 'created'[\s\S]*?ACCOUNTING_RECONCILIATION_REQUIRED/i,
+  );
+  assert.doesNotMatch(sticky, /new\.accounting_status[^;]*?'stale'/i);
+  assert.match(
+    sticky,
+    /accounting_request_id is distinct from old\.accounting_request_id[\s\S]*?accounting_payload_hash is distinct from old\.accounting_payload_hash[\s\S]*?accounting_invoice_fingerprint[\s\S]*?old\.accounting_invoice_fingerprint/i,
+  );
+  assert.match(
+    sticky,
+    /attempt\.phase = 'commit'[\s\S]*?attempt\.status = 'succeeded'[\s\S]*?not attempt\.reconciliation_required[\s\S]*?asiento\.technical_id = new\."FRR_IdAsientoNet"[\s\S]*?asiento\.balanced/i,
   );
 });
 
@@ -1097,7 +1141,11 @@ test("la rotacion y activacion quedan bloqueadas por contabilidad no resuelta", 
   );
   assert.match(
     accountingResumeMigration,
-    /new\.dataset_epoch is distinct from old\.dataset_epoch[\s\S]*?new\.write_mode in \('blocked', 'management'\)[\s\S]*?new\.accounting_mode in \('official', 'sql_test'\)/i,
+    /new\.dataset_epoch is distinct from old\.dataset_epoch[\s\S]*?old\.write_mode = 'disabled' and new\.write_mode = 'blocked'[\s\S]*?old\.write_mode <> 'management' and new\.write_mode = 'management'[\s\S]*?new\.accounting_mode in \('official', 'sql_test'\)/i,
+  );
+  assert.match(
+    accountingResumeMigration,
+    /new\.accounting_mode in \('official', 'sql_test'\)[\s\S]*?new\.write_mode <> 'management'[\s\S]*?ACCOUNTING_MODE_REQUIRES_MANAGEMENT/i,
   );
 
   const rotationStart = accountingResumeMigration.indexOf(
@@ -1129,6 +1177,39 @@ test("pending reanuda validate o el mismo commit solo con identidad demostrable"
   );
   const prepare = accountingResumeMigration.slice(start, end);
 
+  const unknownBranch = prepare.indexOf(
+    "if v_current.accounting_status = 'unknown'",
+  );
+  const allowlistStart = prepare.indexOf(
+    "if v_current.accounting_status not in (",
+  );
+  const allowlistEnd = prepare.indexOf(") then", allowlistStart);
+  const freshRequest = prepare.indexOf("v_request_payload := jsonb_build_object");
+  assert.ok(unknownBranch >= 0);
+  assert.ok(allowlistStart > unknownBranch);
+  assert.ok(allowlistEnd > allowlistStart);
+  assert.ok(freshRequest > allowlistEnd);
+  const allowlist = prepare.slice(allowlistStart, allowlistEnd);
+  for (const status of ["not_requested", "requested", "error", "pending"]) {
+    assert.match(allowlist, new RegExp(`'${status}'`));
+  }
+  for (const status of [
+    "stale",
+    "reference_unverified",
+    "reference_only",
+    "unavailable",
+  ]) {
+    assert.doesNotMatch(allowlist, new RegExp(`'${status}'`));
+  }
+  assert.match(
+    prepare.slice(allowlistStart, freshRequest),
+    /ACCOUNTING_NOT_READY: el estado contable no permite iniciar ni reanudar la operacion/i,
+  );
+  assert.match(
+    prepare,
+    /is_readonly_reference[\s\S]*?source_kind = 'erp_reference'[\s\S]*?ACCOUNTING_NOT_READY/i,
+  );
+
   assert.match(
     prepare,
     /phase = 'commit'[\s\S]*?v_commit\.status = 'in_progress'[\s\S]*?accounting_payload_hash is not distinct from v_commit\.payload_hash[\s\S]*?accounting_invoice_fingerprint[\s\S]*?business_fingerprint[\s\S]*?resume_phase', 'commit'[\s\S]*?reconciliation_required', false/i,
@@ -1157,6 +1238,10 @@ test("el claim de commit es unico; solo in_progress exacto admite replay", () =>
   assert.match(
     beginCommit,
     /v_validate\.status <> 'succeeded'[\s\S]*?v_validate\.reconciliation_required[\s\S]*?payload_hash is distinct from p_payload_hash[\s\S]*?business_fingerprint is distinct from p_invoice_fingerprint/i,
+  );
+  assert.match(
+    beginCommit,
+    /v_current\.sync_status <> 'sent'[\s\S]*?erp_reference_status <> 'valid'[\s\S]*?is_readonly_reference[\s\S]*?source_kind = 'erp_reference'[\s\S]*?not v_current\.accounting_requested[\s\S]*?accounting_status <> 'pending'[\s\S]*?accounting_payload_hash is distinct from p_payload_hash[\s\S]*?accounting_invoice_fingerprint[\s\S]*?p_invoice_fingerprint/i,
   );
   assert.match(
     beginCommit,
