@@ -1982,6 +1982,64 @@ Deno.test("readback coincide con cabecera, CTB posicional y punteos enviados", (
   ]);
 });
 
+Deno.test("readback CTB acepta el cero ERP solo para departamento y subdepartamento no informados", () => {
+  const base = {
+    remoteFacturaId: 49766,
+    cabecera: {
+      FRR_Idempresa: 1,
+      FRR_numerofactura: "DEMO-READBACK-NULL",
+    },
+    ctb: [{
+      FRC_Cuenta: "60200000001",
+      FRC_Importe: 3430.75,
+      FRC_IdActividad: 1,
+      FRC_Idseccion: 1,
+      FRC_Iddepartamento: null,
+      FRC_Idsubdepartamento: null,
+    }],
+    punteos: [],
+    readback: {
+      factura: {
+        FRR_id: 49766,
+        FRR_Idempresa: 1,
+        FRR_numerofactura: "DEMO-READBACK-NULL",
+      },
+      ctb: [{
+        FRC_Cuenta: "60200000001",
+        FRC_Importe: 3430.75,
+        FRC_IdActividad: 1,
+        FRC_Idseccion: 1,
+        FRC_Iddepartamento: 0,
+        FRC_Idsubdepartamento: 0,
+      }],
+      punteos: [],
+    },
+  };
+
+  assertEquals(validateERPReadbackAgainstWrite(base).ok, true);
+
+  const explicitMismatch = validateERPReadbackAgainstWrite({
+    ...base,
+    ctb: [{ ...base.ctb[0], FRC_Iddepartamento: 7 }],
+  });
+  assertEquals(explicitMismatch.ok, false);
+  assertEquals(explicitMismatch.errors.map((issue) => issue.field), [
+    "ctb.0.FRC_Iddepartamento",
+  ]);
+
+  const unexpectedNonZero = validateERPReadbackAgainstWrite({
+    ...base,
+    readback: {
+      ...base.readback,
+      ctb: [{ ...base.readback.ctb[0], FRC_Idsubdepartamento: 9 }],
+    },
+  });
+  assertEquals(unexpectedNonZero.ok, false);
+  assertEquals(unexpectedNonZero.errors.map((issue) => issue.field), [
+    "ctb.0.FRC_Idsubdepartamento",
+  ]);
+});
+
 Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados", () => {
   const allowed = [
     "acreedores?nif=B04243655&limit=10",

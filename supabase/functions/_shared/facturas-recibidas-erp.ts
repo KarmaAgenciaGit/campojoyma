@@ -1444,12 +1444,23 @@ export const validateERPReadbackAgainstWrite = ({
     "FRC_Iddepartamento",
     "FRC_Idsubdepartamento",
   ] as const;
+  const ctbZeroDefaultKeys = new Set<string>([
+    "FRC_Iddepartamento",
+    "FRC_Idsubdepartamento",
+  ]);
   for (let index = 0; index < Math.min(ctb.length, actualCtb.length); index += 1) {
     const expectedLine = toERPCtbPayload(ctb[index], index + 1);
     const actualLine = toERPCtbPayload(actualCtb[index], index + 1);
     for (const key of ctbKeys) {
+      const expected = expectedLine[key];
+      const actual = actualLine[key];
+      if (
+        ctbZeroDefaultKeys.has(key) &&
+        (expected === null || expected === undefined) &&
+        (actual === null || actual === undefined || actual === 0)
+      ) continue;
       const tolerance = key === "FRC_Importe" ? 0.01 : 0;
-      if (erpReadbackValueMatches(expectedLine[key], actualLine[key], tolerance)) continue;
+      if (erpReadbackValueMatches(expected, actual, tolerance)) continue;
       errors.push({
         field: `ctb.${index}.${key}`,
         message: `La linea CTB ${index + 1} no coincide en ${key}.`,
