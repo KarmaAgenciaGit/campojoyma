@@ -87,6 +87,10 @@ import {
 
 const ACCOUNTING_TEST_HASH = "a".repeat(64);
 const ACCOUNTING_TEST_FINGERPRINT = "b".repeat(64);
+const ERP_TEST_TARGET = {
+  id: "netagro-test-write",
+  dataset_epoch: "33333333-3333-4333-8333-333333333333",
+};
 
 const requestWithToken = (token?: string, header = "x-agent-token") =>
   new Request("https://edge.invalid/factura-recibida-ingest", {
@@ -1250,12 +1254,20 @@ Deno.test("Edge selecciona MA solo tras verificar referencia exacta y unica", as
       Ref: "OTRA",
     },
   ];
-  const consulta = buildFacturaERPExactMAPunteoConsulta(factura, punteos[0]);
+  const consulta = buildFacturaERPExactMAPunteoConsulta(
+    factura,
+    punteos[0],
+    ERP_TEST_TARGET,
+  );
   assert(consulta);
   assert(isAllowedERPConsulta(consulta));
+  const query = new URL(consulta, "https://erp.invalid/").searchParams;
+  assertEquals(query.get("target_id"), ERP_TEST_TARGET.id);
+  assertEquals(query.get("dataset_epoch"), ERP_TEST_TARGET.dataset_epoch);
   const result = await verifyFacturaERPExactMAPunteos(
     factura,
     punteos,
+    ERP_TEST_TARGET,
     () =>
       Promise.resolve({
         items: [{
@@ -1299,6 +1311,7 @@ Deno.test("referencias documentadas solo se resuelven con punteos revalidados po
   const verification = await verifyFacturaERPExactMAPunteos(
     factura,
     requested,
+    ERP_TEST_TARGET,
     () =>
       Promise.resolve({
         items: [{
@@ -1434,6 +1447,7 @@ Deno.test("verificacion MA es atomica ante referencia ambigua o discordante", as
   const result = await verifyFacturaERPExactMAPunteos(
     factura,
     punteos,
+    ERP_TEST_TARGET,
     (consulta) => {
       const url = new URL(consulta, "https://erp.invalid/");
       const referencia = url.searchParams.get("referencia");
@@ -2063,7 +2077,7 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "regimenes/2110/perfiles-iva",
     "regimenes/2110/perfiles-iva?proveedor_id=17&tipo_factura=OT",
     "regimenes/2110/perfiles-iva?tipo_factura=GE&schema=agroiris",
-    "albaranes-gastos/punteables?empresa_id=1&proveedor_id=17&solo_pendientes=true&source_table=albmaterial&include_lines=true",
+    "albaranes-gastos/punteables?empresa_id=1&proveedor_id=17&solo_pendientes=true&source_table=albmaterial&include_lines=true&target_id=netagro-test-write&dataset_epoch=33333333-3333-4333-8333-333333333333",
     "albaranes/entrada?limit=25&offset=0",
     "albaranes/entrada?fecha_desde=2026-07-01&fecha_hasta=2026-07-31&agricultor_id=1680&serie=A26&numero=8436",
     "albaranes/entrada/82548/lineas",
@@ -2099,6 +2113,7 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "regimenes/2110/perfiles-iva?limit=1",
     "regimenes/2110/perfiles-iva/delete",
     "albaranes-gastos/punteables?sql=drop",
+    "acreedores/17?target_id=netagro-test-write&dataset_epoch=33333333-3333-4333-8333-333333333333",
     "albaranes/entrada?proveedor_id=1680",
     "albaranes/entrada/no-numerico/lineas",
     "albaranes/entrada/0/lineas",

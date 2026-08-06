@@ -15,6 +15,7 @@ import {
   mergeValidationIssues,
   integerValue,
   jsonResponse,
+  loadActiveFacturaERPTarget,
   loadArchivoPdfBase64,
   pick,
   prepareFacturaExtractionPersistence,
@@ -399,17 +400,19 @@ Deno.serve(async (req) => {
         punteos_edge_verification: existingPunteoLinks.evidence,
       };
     } else if (extractionPersistence.punteos !== null) {
-        const punteoVerification = await verifyFacturaERPExactMAPunteos(
-          resolvedFrr,
-          normalized.punteos,
-          fetchERPReadConsulta,
-        );
-        extractionPersistence.punteos = punteoVerification.punteos;
-        punteoVerificationIssues = punteoVerification.issues;
-        resolvedMatchEvidence = {
-          ...resolvedMatchEvidence,
-          punteos_edge_verification: punteoVerification.evidence,
-        };
+      const erpTarget = await loadActiveFacturaERPTarget(serviceClient);
+      const punteoVerification = await verifyFacturaERPExactMAPunteos(
+        resolvedFrr,
+        normalized.punteos,
+        erpTarget,
+        fetchERPReadConsulta,
+      );
+      extractionPersistence.punteos = punteoVerification.punteos;
+      punteoVerificationIssues = punteoVerification.issues;
+      resolvedMatchEvidence = {
+        ...resolvedMatchEvidence,
+        punteos_edge_verification: punteoVerification.evidence,
+      };
     }
     const documentedReferenceIssues = getFacturaERPDocumentedReferenceIssues({
       factura: resolvedFrr,

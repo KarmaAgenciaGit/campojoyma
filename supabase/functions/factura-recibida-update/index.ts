@@ -11,6 +11,7 @@ import {
   getValidationErrorsForFactura,
   integerValue,
   jsonResponse,
+  loadActiveFacturaERPTarget,
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
   normalizeFrcPayload,
@@ -119,9 +120,11 @@ Deno.serve(async (req) => {
         punteos_edge_verification: existingPunteoLinks.evidence,
       };
     } else if (punteos !== null) {
+      const erpTarget = await loadActiveFacturaERPTarget(auth.serviceClient);
       const punteoVerification = await verifyFacturaERPExactMAPunteos(
         accountingRules.factura,
         punteos,
+        erpTarget,
         fetchERPReadConsulta,
       );
       punteos = punteoVerification.punteos;

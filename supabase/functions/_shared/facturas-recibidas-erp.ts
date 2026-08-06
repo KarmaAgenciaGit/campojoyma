@@ -32,6 +32,11 @@ export type JsonValue =
 
 export type JsonObject = Record<string, unknown>;
 
+export type FacturaERPTargetIdentity = {
+  id: string;
+  dataset_epoch: string;
+};
+
 export const FACTURAS_RECIBIDAS_CONTRACT_VERSION = 2;
 export const FACTURAS_RECIBIDAS_WRITE_CONTRACT_VERSION = 3;
 export const FACTURAS_RECIBIDAS_PDF_BUCKET = "facturas-recibidas-pdf";
@@ -55,6 +60,31 @@ export const createServiceClient = () => {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
   return createClient<EdgeDatabase>(supabaseUrl, serviceRoleKey);
+};
+
+export const loadActiveFacturaERPTarget = async (
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<FacturaERPTargetIdentity> => {
+  const { data, error } = await supabase
+    .from("erp_targets")
+    .select("id, dataset_epoch")
+    .eq("active", true)
+    .not("dataset_epoch", "is", null)
+    .limit(2);
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length !== 1) {
+    throw new Error(
+      "ERP_TARGET_UNAVAILABLE: debe existir un unico target ERP activo con dataset vigente.",
+    );
+  }
+  const id = text(data[0]?.id, null);
+  const datasetEpoch = text(data[0]?.dataset_epoch, null);
+  if (!id || id.length > 128 || !isValidRequestId(datasetEpoch)) {
+    throw new Error(
+      "ERP_TARGET_INVALID: la identidad del target ERP activo no es valida.",
+    );
+  }
+  return { id, dataset_epoch: datasetEpoch };
 };
 
 export const createAuthClient = (authHeader: string) => {
@@ -2146,6 +2176,8 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
       "fecha_hasta",
       "solo_pendientes",
       "include_lines",
+      "target_id",
+      "dataset_epoch",
     ]),
   },
   {
@@ -2829,6 +2861,7 @@ export const getFacturaERPDocumentedReferenceIssues = ({
 export const buildFacturaERPExactMAPunteoConsulta = (
   factura: JsonObject,
   punteo: JsonObject,
+  erpTarget: FacturaERPTargetIdentity,
 ): string | null => {
   if (resolveFacturaProveedorTipo(factura) !== "acreedor") return null;
   const empresaId = positiveIdentityInteger(factura.FRR_Idempresa);
@@ -2836,13 +2869,18 @@ export const buildFacturaERPExactMAPunteoConsulta = (
   const sourceTable = text(punteo.source_table, null)?.toLowerCase() ?? null;
   const sourceId = positiveIdentityInteger(punteo.source_id);
   const referencia = text(punteo.Ref, null);
+  const targetId = text(erpTarget.id, null);
+  const datasetEpoch = text(erpTarget.dataset_epoch, null);
   if (
     !empresaId ||
     !proveedorId ||
     sourceTable !== "albmaterial" ||
     !sourceId ||
     !referencia ||
-    referencia.length > 255
+    referencia.length > 255 ||
+    !targetId ||
+    targetId.length > 128 ||
+    !isValidRequestId(datasetEpoch)
   ) {
     return null;
   }
@@ -2855,6 +2893,8 @@ export const buildFacturaERPExactMAPunteoConsulta = (
     solo_pendientes: "true",
     limit: "2",
     offset: "0",
+    target_id: targetId,
+    dataset_epoch: datasetEpoch,
   });
   return `albaranes-gastos/punteables?${params.toString()}`;
 };
@@ -2867,6 +2907,7 @@ export const buildFacturaERPExactMAPunteoConsulta = (
 export const verifyFacturaERPExactMAPunteos = async (
   factura: JsonObject,
   requestedPunteos: JsonObject[],
+  erpTarget: FacturaERPTargetIdentity,
   readERP: (consulta: string) => Promise<unknown>,
 ): Promise<FacturaERPExactMAPunteoVerification> => {
   const sanitized = sanitizeUntrustedPunteoSelections(requestedPunteos);
@@ -2927,7 +2968,11 @@ export const verifyFacturaERPExactMAPunteos = async (
   }> = [];
   for (const index of requestedIndexes) {
     const punteo = requestedPunteos[index];
-    const consulta = buildFacturaERPExactMAPunteoConsulta(factura, punteo);
+    const consulta = buildFacturaERPExactMAPunteoConsulta(
+      factura,
+      punteo,
+      erpTarget,
+    );
     const sourceId = positiveIdentityInteger(punteo.source_id);
     const referencia = text(punteo.Ref, null);
     if (!consulta || !sourceId || !referencia) {

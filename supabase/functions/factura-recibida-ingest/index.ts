@@ -16,6 +16,7 @@ import {
   integerValue,
   isValidRequestId,
   jsonResponse,
+  loadActiveFacturaERPTarget,
   requireAgentToken,
   requestHasServiceRoleCredential,
   resolveFacturaIngestAuthority,
@@ -331,9 +332,11 @@ Deno.serve(async (req) => {
               punteos_edge_verification: existingPunteoLinks.evidence,
             };
           } else {
+            const erpTarget = await loadActiveFacturaERPTarget(supabase);
             const punteoVerification = await verifyFacturaERPExactMAPunteos(
               normalized.frr,
               normalized.requestedPunteos,
+              erpTarget,
               fetchERPReadConsulta,
             );
             persistedPunteos = punteoVerification.punteos;
