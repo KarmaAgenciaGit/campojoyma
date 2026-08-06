@@ -89,17 +89,6 @@ const formatMoney = (value?: number | null) =>
         currency: 'EUR',
       }).format(value);
 
-const formatDateTime = (value?: string | null) => {
-  if (!value) return '-';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? value
-    : new Intl.DateTimeFormat('es-ES', {
-        dateStyle: 'short',
-        timeStyle: 'short',
-      }).format(parsed);
-};
-
 const parsePositiveInteger = (value: string, label: string) => {
   if (!value.trim()) return null;
   const parsed = Number(value);
@@ -571,17 +560,6 @@ function AlbaranDetail({
             )}
           </DetailSection>
 
-          <DetailSection title="Trazabilidad">
-            <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
-              <ReadonlyField
-                label="Origen"
-                value={albaran.sourceKind === 'front_draft' ? 'Subido desde la aplicación' : albaran.sourceKind}
-              />
-              <ReadonlyField label="Estado" value={estado} />
-              <ReadonlyField label="Enviado al ERP" value={formatDateTime(albaran.erpSentAt)} />
-              <ReadonlyField label="Última lectura ERP" value={formatDateTime(albaran.erpLastReadAt)} />
-            </div>
-          </DetailSection>
         </section>
       </div>
     </div>
