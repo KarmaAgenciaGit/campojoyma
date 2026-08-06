@@ -510,19 +510,33 @@ const proveedorDraftFromERPOption = (proveedor: AgroIrisAcreedor | null): Pick<
   };
 };
 
-const applyProveedorERPDetail = (
+export const applyProveedorERPDetail = (
   factura: FacturaDraft,
   proveedor: FacturaProveedorERPDetail,
-): FacturaDraft => ({
-  ...factura,
-  proveedor_codigo: String(proveedor.codigo),
-  proveedor_nombre: proveedor.nombre,
-  proveedor_nif: proveedor.nif,
-  proveedor_cuenta: proveedor.cuenta,
-  cta_cartera: proveedor.cuentaCartera,
-  forma_pago: proveedor.formaPagoId !== null ? String(proveedor.formaPagoId) : null,
-  banco: proveedor.bancoId !== null ? String(proveedor.bancoId) : null,
-});
+): FacturaDraft => {
+  const generaCartera =
+    (cleanOptionalString(factura.genera_cartera) ?? 'N').toUpperCase() === 'S';
+
+  return {
+    ...factura,
+    proveedor_codigo: String(proveedor.codigo),
+    proveedor_nombre: proveedor.nombre,
+    proveedor_nif: proveedor.nif,
+    proveedor_cuenta: proveedor.cuenta,
+    // Los datos de pago del maestro solo forman parte de la factura cuando se
+    // solicita cartera. Con Genera cartera = No deben permanecer vacios para
+    // que el perfil contable TEST no reciba una cartera contradictoria.
+    cta_cartera: generaCartera ? proveedor.cuentaCartera : null,
+    forma_pago:
+      generaCartera && proveedor.formaPagoId !== null
+        ? String(proveedor.formaPagoId)
+        : null,
+    banco:
+      generaCartera && proveedor.bancoId !== null
+        ? String(proveedor.bancoId)
+        : null,
+  };
+};
 
 const facturaProviderScopeKey = (factura: FacturaDraft | null | undefined) =>
   [

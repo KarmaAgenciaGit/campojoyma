@@ -167,7 +167,7 @@ vi.mock('../services/facturas', async () => {
   };
 });
 
-import FacturasRecibidas from './FacturasRecibidas';
+import FacturasRecibidas, { applyProveedorERPDetail } from './FacturasRecibidas';
 
 const factura: FacturaRecibida = {
   id: 'factura-ejido',
@@ -383,5 +383,48 @@ describe('FacturasRecibidas — modo consulta y edición', () => {
     expect(screen.getByRole('button', { name: 'Editar' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Guardar' })).not.toBeInTheDocument();
     expect(mocks.saveFactura).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyProveedorERPDetail', () => {
+  const proveedor = {
+    codigo: 209,
+    nombre: 'MONTAJES Y MATERIAL AUXILIAR, S.L.',
+    nif: 'B04112942',
+    cuenta: '41000000209',
+    cuentaGasto: '60200000001',
+    cuentaCartera: '41100000209',
+    porcentajeIva: 21,
+    formaPagoId: 100,
+    bancoId: 1,
+    raw: {},
+  };
+
+  it('no materializa datos de cartera cuando Genera cartera es No', () => {
+    const resolved = applyProveedorERPDetail(
+      {
+        ...factura,
+        genera_cartera: 'N',
+        cta_cartera: '41100000999',
+        forma_pago: '9',
+        banco: '8',
+      },
+      proveedor,
+    );
+
+    expect(resolved.cta_cartera).toBeNull();
+    expect(resolved.forma_pago).toBeNull();
+    expect(resolved.banco).toBeNull();
+  });
+
+  it('aplica los datos de pago del maestro cuando Genera cartera es Si', () => {
+    const resolved = applyProveedorERPDetail(
+      { ...factura, genera_cartera: 'S' },
+      proveedor,
+    );
+
+    expect(resolved.cta_cartera).toBe('41100000209');
+    expect(resolved.forma_pago).toBe('100');
+    expect(resolved.banco).toBe('1');
   });
 });
