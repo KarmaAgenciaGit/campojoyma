@@ -2095,6 +2095,18 @@ const erpReadRouteRules: Array<{ path: RegExp; keys: ReadonlySet<string> }> = [
       "limit",
     ]),
   },
+  {
+    path: /^facturasrecibidas\/cuentas-iva-historicas$/,
+    keys: new Set([
+      "schema",
+      "empresa_id",
+      "ejercicio",
+      "regimen_id",
+      "tipo_factura",
+      "porcentaje",
+      "proveedor_id",
+    ]),
+  },
   { path: /^facturasrecibidas\/\d+$/, keys: new Set(["schema"]) },
   { path: /^facturasrecibidas\/\d+\/ctb$/, keys: new Set(["schema"]) },
   {
@@ -2255,6 +2267,13 @@ export type FacturaERPAccountingRuleResolution = {
 
 export type FacturaERPAccountingRuleDependencies = {
   readERP?: (consulta: string) => Promise<unknown>;
+};
+
+export type FacturaERPIVAProfileResolution = {
+  factura: JsonObject;
+  applied: JsonObject;
+  issues: FacturaValidationIssue[];
+  evidence: JsonObject;
 };
 
 export type FacturaERPProviderTypeConfirmation = {
@@ -3556,6 +3575,317 @@ type AccountingRuleField = {
 const positiveRuleInteger = (value: unknown) => {
   const parsed = integerValue(value, null);
   return parsed !== null && parsed > 0 ? parsed : null;
+};
+
+type FacturaERPIVAProfileCandidate = {
+  porcentajes: [
+    number | null,
+    number | null,
+    number | null,
+    number | null,
+    number | null,
+  ];
+  usos: number;
+  confianza: number;
+  source: "dominant" | "most_used";
+};
+
+type FacturaERPIVAProfileParseResult = {
+  profile: FacturaERPIVAProfileCandidate | null;
+  status: "dominant" | "most_used" | "ambiguous" | "no_history";
+};
+
+const normalizeFacturaERPIVAPercentages = (
+  value: unknown,
+): FacturaERPIVAProfileCandidate["porcentajes"] | null => {
+  if (!Array.isArray(value) || value.length !== 5) return null;
+  const normalized = value.map((percentage) => {
+    if (percentage === null) return null;
+    if (
+      percentage === undefined ||
+      (typeof percentage === "string" && percentage.trim() === "")
+    ) {
+      return undefined;
+    }
+    const parsed = numberValue(percentage, null);
+    return parsed !== null && parsed >= 0 && parsed <= 100
+      ? parsed
+      : undefined;
+  });
+  if (normalized.some((percentage) => percentage === undefined)) return null;
+  return normalized as FacturaERPIVAProfileCandidate["porcentajes"];
+};
+
+const normalizeFacturaERPIVADominantProfileCandidate = (
+  value: unknown,
+): FacturaERPIVAProfileCandidate | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const profile = value as JsonObject;
+  const porcentajes = normalizeFacturaERPIVAPercentages(profile.porcentajes);
+  const usos = numberValue(profile.usos, null);
+  const confianza = numberValue(profile.confianza, null);
+  if (
+    !porcentajes ||
+    usos === null ||
+    !Number.isInteger(usos) ||
+    usos <= 0 ||
+    confianza === null ||
+    confianza < 0 ||
+    confianza > 1
+  ) {
+    return null;
+  }
+  if (profile.criterio !== "perfil_historico_dominante") {
+    return null;
+  }
+  return { porcentajes, usos, confianza, source: "dominant" };
+};
+
+const normalizeFacturaERPIVAHistoricalProfileCandidate = (
+  value: unknown,
+): FacturaERPIVAProfileCandidate | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const profile = value as JsonObject;
+  const porcentajes = normalizeFacturaERPIVAPercentages(profile.porcentajes);
+  const usos = numberValue(profile.usos, null);
+  const confianza = numberValue(profile.confianza, null);
+  const tramos = profile.tramos;
+  if (
+    !porcentajes ||
+    usos === null ||
+    !Number.isInteger(usos) ||
+    usos <= 0 ||
+    confianza === null ||
+    confianza < 0 ||
+    confianza > 1 ||
+    !Array.isArray(tramos) ||
+    tramos.length !== 5
+  ) {
+    return null;
+  }
+
+  const tramoPercentages = normalizeFacturaERPIVAPercentages(
+    tramos.map((item: unknown) =>
+      item && typeof item === "object" && !Array.isArray(item)
+        ? (item as JsonObject).porcentaje
+        : undefined
+    ),
+  );
+  if (!tramoPercentages) return null;
+
+  const validTramos = tramos.every((valueTramo: unknown, index: number) => {
+    if (!valueTramo || typeof valueTramo !== "object" || Array.isArray(valueTramo)) {
+      return false;
+    }
+    const tramo = valueTramo as JsonObject;
+    const posicion = numberValue(tramo.posicion, null);
+    const porcentaje = tramoPercentages[index];
+    const usosActivos = numberValue(tramo.usos_activos, null);
+    const confianzaActiva = numberValue(tramo.confianza_activa, null);
+    const profilePercentage = porcentajes[index];
+    const samePercentage = porcentaje === profilePercentage ||
+      (porcentaje !== null &&
+        porcentaje !== undefined &&
+        profilePercentage !== null &&
+        Math.abs(porcentaje - profilePercentage) < 0.0005);
+    return posicion === index + 1 &&
+      porcentaje !== undefined &&
+      samePercentage &&
+      usosActivos !== null &&
+      Number.isInteger(usosActivos) &&
+      usosActivos >= 0 &&
+      confianzaActiva !== null &&
+      confianzaActiva >= 0 &&
+      confianzaActiva <= 1;
+  });
+  if (!validTramos) return null;
+
+  return { porcentajes, usos, confianza, source: "most_used" };
+};
+
+const parseFacturaERPIVAProfileResponse = (
+  payload: unknown,
+  expectedRegimenId: number,
+): FacturaERPIVAProfileParseResult | undefined => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const response = payload as JsonObject;
+  const filters = response.filtros;
+  if (!filters || typeof filters !== "object" || Array.isArray(filters)) {
+    return undefined;
+  }
+  const filterValues = filters as JsonObject;
+  const regimenId = numberValue(response.regimen_id, null);
+  const totalFacturas = numberValue(response.total_facturas, null);
+  const estado = text(response.estado, null);
+  if (
+    regimenId !== expectedRegimenId ||
+    !Number.isInteger(regimenId) ||
+    totalFacturas === null ||
+    !Number.isInteger(totalFacturas) ||
+    totalFacturas < 0 ||
+    positiveRuleInteger(filterValues.proveedor_id) !== null ||
+    text(filterValues.tipo_factura, null) !== null ||
+    typeof response.ambiguo !== "boolean" ||
+    !["sin_historial", "dominante", "ambiguo"].includes(estado ?? "") ||
+    !Array.isArray(response.perfiles)
+  ) {
+    return undefined;
+  }
+
+  if (estado === "sin_historial") {
+    return { profile: null, status: "no_history" };
+  }
+  if (estado === "dominante" && response.ambiguo === false) {
+    const profile = normalizeFacturaERPIVADominantProfileCandidate(
+      response.plantilla_sugerida,
+    );
+    return profile ? { profile, status: "dominant" } : undefined;
+  }
+  if (estado === "ambiguo" && response.ambiguo === true) {
+    const profile = response.perfiles
+      .map(normalizeFacturaERPIVAHistoricalProfileCandidate)
+      .filter((candidate): candidate is FacturaERPIVAProfileCandidate =>
+        candidate !== null
+      )
+      .reduce<FacturaERPIVAProfileCandidate | null>(
+        (mostUsed, candidate) =>
+          mostUsed === null || candidate.usos > mostUsed.usos
+            ? candidate
+            : mostUsed,
+        null,
+      );
+    return profile
+      ? { profile, status: "most_used" }
+      : { profile: null, status: "ambiguous" };
+  }
+  return undefined;
+};
+
+const isFacturaERPIVAProfileMissingPosition = (
+  factura: JsonObject,
+  position: number,
+) => {
+  const rate = factura[`FRR_iva${position}`];
+  if (!hasUsableValue(rate)) return true;
+  if (numberValue(rate, null) !== 0) return false;
+
+  const base = numberValue(factura[`FRR_base${position}`], 0) ?? 0;
+  const quota = numberValue(factura[`FRR_cuota${position}`], 0) ?? 0;
+  return Math.abs(base) < IVA_ACTIVE_AMOUNT_EPSILON &&
+    Math.abs(quota) < IVA_ACTIVE_AMOUNT_EPSILON;
+};
+
+/**
+ * Completa los porcentajes IVA que el agente no haya informado antes del alta.
+ * La plantilla es global para el regimen, igual que en la consulta del frontend;
+ * nunca reemplaza un porcentaje ya extraido ni modifica bases o cuotas.
+ */
+export const loadAndApplyFacturaERPIVAProfileForInsert = async (
+  factura: JsonObject,
+  readERP: (consulta: string) => Promise<unknown> = fetchERPReadConsulta,
+): Promise<FacturaERPIVAProfileResolution> => {
+  const resolved = { ...factura };
+  const applied: JsonObject = {};
+  const regimenId = positiveRuleInteger(resolved.FRR_idregimen);
+  const missingPositions = [1, 2, 3, 4, 5].filter(
+    (position) => isFacturaERPIVAProfileMissingPosition(resolved, position),
+  );
+  const baseEvidence: JsonObject = {
+    source: "erp_regimen_iva_profile",
+    regimen_id: regimenId,
+    applied_positions: [],
+  };
+
+  if (!regimenId) {
+    return {
+      factura: resolved,
+      applied,
+      issues: [],
+      evidence: { ...baseEvidence, status: "skipped_missing_regimen" },
+    };
+  }
+  if (missingPositions.length === 0) {
+    return {
+      factura: resolved,
+      applied,
+      issues: [],
+      evidence: { ...baseEvidence, status: "skipped_complete" },
+    };
+  }
+
+  let profileResult: FacturaERPIVAProfileParseResult | undefined;
+  try {
+    profileResult = parseFacturaERPIVAProfileResponse(
+      await readERP(`regimenes/${regimenId}/perfiles-iva`),
+      regimenId,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error desconocido";
+    return {
+      factura: resolved,
+      applied,
+      issues: [{
+        field: "iva_tramos",
+        message:
+          `No se pudo consultar el perfil historico de IVA antes de guardar (${message}).`,
+        severity: "warning",
+      }],
+      evidence: { ...baseEvidence, status: "unavailable" },
+    };
+  }
+
+  if (profileResult === undefined) {
+    return {
+      factura: resolved,
+      applied,
+      issues: [{
+        field: "iva_tramos",
+        message:
+          "El perfil historico de IVA no respeta el contrato y no se ha aplicado.",
+        severity: "warning",
+      }],
+      evidence: { ...baseEvidence, status: "invalid_response" },
+    };
+  }
+  if (profileResult.profile === null) {
+    return {
+      factura: resolved,
+      applied,
+      issues: [],
+      evidence: { ...baseEvidence, status: profileResult.status },
+    };
+  }
+  const profile = profileResult.profile;
+
+  const appliedPositions: number[] = [];
+  for (const position of missingPositions) {
+    const percentage = profile.porcentajes[position - 1];
+    if (percentage === null) continue;
+    const field = `FRR_iva${position}`;
+    resolved[field] = percentage;
+    applied[field] = percentage;
+    appliedPositions.push(position);
+  }
+
+  return {
+    factura: resolved,
+    applied,
+    issues: [],
+    evidence: {
+      ...baseEvidence,
+      status: appliedPositions.length > 0 ? "applied" : "no_applicable_percentages",
+      profile_source: profile.source,
+      profile_percentages: profile.porcentajes,
+      usos: profile.usos,
+      confianza: profile.confianza,
+      applied_positions: appliedPositions,
+      preserved_positions: [1, 2, 3, 4, 5].filter(
+        (position) => !missingPositions.includes(position),
+      ),
+    },
+  };
 };
 
 const normalizedDefaultExpenseAccount = (value: unknown) => {

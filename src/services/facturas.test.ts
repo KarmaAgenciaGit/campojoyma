@@ -609,6 +609,43 @@ describe('modelo reversible de facturas recibidas', () => {
     });
   });
 
+  it('muestra solo los porcentajes completados por el perfil historico cuando no hay importes', () => {
+    const factura = mapFacturaToUi({
+      id: 'factura-perfil-iva',
+      estado: 'validada',
+      FRR_base2: 0,
+      FRR_iva2: 10,
+      FRR_cuota2: 0,
+      FRR_base5: 0,
+      FRR_iva5: 0,
+      FRR_cuota5: 0,
+      match_evidence: {
+        iva_profile: {
+          source: 'erp_regimen_iva_profile',
+          status: 'applied',
+          applied_positions: [2, 3, 4, 5],
+        },
+      },
+      validation_errors: [],
+      asientos: [],
+      ctb: [],
+      punteos: [],
+    } as never);
+
+    expect(factura.iva_tramos?.[1]).toEqual({
+      posicion: 2,
+      base: null,
+      porcentaje: 10,
+      cuota: null,
+    });
+    expect(factura.iva_tramos?.[4]).toEqual({
+      posicion: 5,
+      base: null,
+      porcentaje: 0,
+      cuota: null,
+    });
+  });
+
   it('usa la identidad canónica del agricultor y conserva la evidencia del albarán GE', () => {
     const factura = mapRemoteFacturaToUi(
       {

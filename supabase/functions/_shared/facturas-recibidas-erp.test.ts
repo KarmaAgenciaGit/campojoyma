@@ -30,6 +30,7 @@ import {
   isFacturaERPReadOnlyReference,
   isRouteSetAuthorized,
   type JsonObject,
+  loadAndApplyFacturaERPIVAProfileForInsert,
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
   normalizeAccountingReadback,
@@ -1997,6 +1998,8 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "facturasrecibidas/buscar?empresa_id=1&ejercicio=25&proveedor_id=17&numero_factura=A-00748886&tipo_factura=OT",
     "facturasrecibidas/cuentas-gasto-historicas?empresa_id=1&proveedor_id=17&proveedor_tipo=acreedor&limit=5",
     "facturasrecibidas/cuentas-gasto-historicas?schema=agroiris&empresa_id=1&proveedor_id=1680&proveedor_tipo=agricultor&fecha_desde=2025-01-01&fecha_hasta=2026-08-04&limit=10",
+    "facturasrecibidas/cuentas-iva-historicas?empresa_id=1&ejercicio=25&regimen_id=2110&tipo_factura=OT&porcentaje=21",
+    "facturasrecibidas/cuentas-iva-historicas?schema=agroiris&empresa_id=1&ejercicio=25&regimen_id=2110&tipo_factura=OT&porcentaje=21&proveedor_id=17",
     "facturasrecibidas/49305/punteos?include_lines=true&limit=100",
     "facturasrecibidas/49305/asiento",
     "regimenes/2110/perfiles-iva",
@@ -2032,6 +2035,8 @@ Deno.test("allowlist ERP acepta solo paths y query keys de lectura documentados"
     "facturasrecibidas/buscar?empresa_id=1&tipo_factura=OT&otra_clave=1",
     "facturasrecibidas/cuentas-gasto-historicas?empresa_id=1&proveedor_id=17&proveedor_tipo=acreedor&account_schema=netagrocomer",
     "facturasrecibidas/cuentas-gasto-historicas?empresa_id=1&proveedor_id=17&proveedor_tipo=acreedor&sql=drop",
+    "facturasrecibidas/cuentas-iva-historicas?empresa_id=1&ejercicio=25&regimen_id=2110&tipo_factura=OT&porcentaje=21&account_schema=contabilidad",
+    "facturasrecibidas/cuentas-iva-historicas?empresa_id=1&ejercicio=25&regimen_id=2110&tipo_factura=OT&porcentaje=21&sql=drop",
     "regimenes/0/perfiles-iva",
     "regimenes/2110/perfiles-iva?limit=1",
     "regimenes/2110/perfiles-iva/delete",
@@ -4559,6 +4564,320 @@ Deno.test("la sincronizacion conserva erp_accounting previo y enumera solo campo
     pending_fields: ["FRR_tipofactura", "FRR_idregimen"],
   });
   assertEquals(synchronized.erp_accounting, existingAccounting);
+});
+
+const perfilIvaTramosValidos = (
+  porcentajes: Array<number | null>,
+  usos: number,
+) => porcentajes.map((porcentaje, index) => ({
+  posicion: index + 1,
+  porcentaje,
+  usos_activos: porcentaje === null ? 0 : usos,
+  confianza_activa: porcentaje === null ? 0 : 1,
+}));
+
+Deno.test("los slots IVA tecnicos 0/0/0 se completan antes del alta", async () => {
+  const factura = {
+    FRR_idregimen: 2110,
+    FRR_base1: 100,
+    FRR_iva1: 21,
+    FRR_cuota1: 21,
+    FRR_base2: 0,
+    FRR_iva2: 0,
+    FRR_cuota2: 0,
+    FRR_base3: 0,
+    FRR_iva3: 0,
+    FRR_cuota3: 0,
+    FRR_base4: 0,
+    FRR_iva4: 0,
+    FRR_cuota4: 0,
+    FRR_base5: 0,
+    FRR_iva5: 0,
+    FRR_cuota5: 0,
+  };
+  const original = structuredClone(factura);
+  const consultas: string[] = [];
+
+  const result = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async (consulta) => {
+      consultas.push(consulta);
+      return {
+        regimen_id: 2110,
+        filtros: { proveedor_id: null, tipo_factura: null },
+        total_facturas: 25,
+        estado: "dominante",
+        ambiguo: false,
+        perfiles: [],
+        plantilla_sugerida: {
+          porcentajes: ["21", "10", "4", "5", "0"],
+          usos: 25,
+          confianza: 1,
+          criterio: "perfil_historico_dominante",
+        },
+      };
+    },
+  );
+
+  assertEquals(consultas, ["regimenes/2110/perfiles-iva"]);
+  assertEquals(factura, original);
+  assertEquals(result.applied, {
+    FRR_iva2: 10,
+    FRR_iva3: 4,
+    FRR_iva4: 5,
+    FRR_iva5: 0,
+  });
+  assertEquals(result.factura, {
+    ...original,
+    ...result.applied,
+  });
+  assertEquals(result.issues, []);
+  assertEquals(result.evidence.status, "applied");
+  assertEquals(result.evidence.applied_positions, [2, 3, 4, 5]);
+  assertEquals(result.evidence.preserved_positions, [1]);
+});
+
+Deno.test("un IVA real al 0 por ciento con base se preserva frente al perfil", async () => {
+  const factura = {
+    FRR_idregimen: 2110,
+    FRR_base1: 100,
+    FRR_iva1: 0,
+    FRR_cuota1: 0,
+    FRR_base2: 0,
+    FRR_iva2: 0,
+    FRR_cuota2: 0,
+    FRR_base3: 0,
+    FRR_iva3: 0,
+    FRR_cuota3: 0,
+    FRR_base4: 0,
+    FRR_iva4: 0,
+    FRR_cuota4: 0,
+    FRR_base5: 0,
+    FRR_iva5: 0,
+    FRR_cuota5: 0,
+  };
+  const result = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async () => ({
+      regimen_id: 2110,
+      filtros: { proveedor_id: null, tipo_factura: null },
+      total_facturas: 25,
+      estado: "dominante",
+      ambiguo: false,
+      perfiles: [],
+      plantilla_sugerida: {
+        porcentajes: [21, 10, 4, 5, 0],
+        usos: 25,
+        confianza: 1,
+        criterio: "perfil_historico_dominante",
+      },
+    }),
+  );
+
+  assertEquals(result.factura.FRR_iva1, 0);
+  assertEquals(result.applied, {
+    FRR_iva2: 10,
+    FRR_iva3: 4,
+    FRR_iva4: 5,
+    FRR_iva5: 0,
+  });
+  assertEquals(result.evidence.status, "applied");
+  assertEquals(result.evidence.applied_positions, [2, 3, 4, 5]);
+  assertEquals(result.evidence.preserved_positions, [1]);
+});
+
+Deno.test("un perfil IVA ambiguo aplica el perfil valido con mas usos", async () => {
+  const factura = {
+    FRR_idregimen: 2110,
+    FRR_base1: 100,
+    FRR_iva1: 21,
+    FRR_cuota1: 21,
+    FRR_base2: 0,
+    FRR_iva2: 0,
+    FRR_cuota2: 0,
+    FRR_base3: 0,
+    FRR_iva3: 0,
+    FRR_cuota3: 0,
+    FRR_base4: 0,
+    FRR_iva4: 0,
+    FRR_cuota4: 0,
+    FRR_base5: 0,
+    FRR_iva5: 0,
+    FRR_cuota5: 0,
+  };
+  const corrupto = [381.82, 10, 4, 5, 0];
+  const ganadorValido = [21, 10, 4, 5, 0];
+  const alternativoValido = [21, 8, 4, 5, 0];
+
+  const result = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async () => ({
+      regimen_id: 2110,
+      filtros: { proveedor_id: null, tipo_factura: null },
+      total_facturas: 20,
+      estado: "ambiguo",
+      ambiguo: true,
+      perfiles: [
+        {
+          porcentajes: corrupto,
+          usos: 10,
+          confianza: 0.5,
+          tramos: perfilIvaTramosValidos(corrupto, 10),
+        },
+        {
+          porcentajes: ganadorValido,
+          usos: 6,
+          confianza: 0.3,
+          tramos: perfilIvaTramosValidos(ganadorValido, 6),
+        },
+        {
+          porcentajes: alternativoValido,
+          usos: 4,
+          confianza: 0.2,
+          tramos: perfilIvaTramosValidos(alternativoValido, 4),
+        },
+      ],
+      plantilla_sugerida: null,
+    }),
+  );
+
+  assertEquals(result.applied, {
+    FRR_iva2: 10,
+    FRR_iva3: 4,
+    FRR_iva4: 5,
+    FRR_iva5: 0,
+  });
+  assertEquals(result.evidence.status, "applied");
+  assertEquals(result.evidence.profile_percentages, ganadorValido);
+  assertEquals(result.evidence.usos, 6);
+  assertEquals(result.evidence.applied_positions, [2, 3, 4, 5]);
+  assert(
+    !Object.values(result.applied).includes(381.82),
+    "el porcentaje corrupto no debe llegar a la factura",
+  );
+});
+
+Deno.test("un perfil IVA corrupto se descarta si no queda alternativa valida", async () => {
+  const factura = {
+    FRR_idregimen: 2110,
+    FRR_base1: 100,
+    FRR_iva1: 21,
+    FRR_cuota1: 21,
+    FRR_base2: 0,
+    FRR_iva2: 0,
+    FRR_cuota2: 0,
+  };
+  const corrupto = [381.82, 10, 4, 5, 0];
+  const result = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async () => ({
+      regimen_id: 2110,
+      filtros: { proveedor_id: null, tipo_factura: null },
+      total_facturas: 10,
+      estado: "ambiguo",
+      ambiguo: true,
+      perfiles: [{
+        porcentajes: corrupto,
+        usos: 10,
+        confianza: 1,
+        tramos: perfilIvaTramosValidos(corrupto, 10),
+      }],
+      plantilla_sugerida: null,
+    }),
+  );
+
+  assertEquals(result.factura, factura);
+  assertEquals(result.applied, {});
+  assert(result.evidence.status !== "applied");
+});
+
+Deno.test("sin historial IVA no se inventan porcentajes durante el alta", async () => {
+  const factura = { FRR_idregimen: 2110, FRR_base1: 100, FRR_cuota1: 21 };
+  const withoutHistory = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async () => ({
+      regimen_id: 2110,
+      filtros: {},
+      total_facturas: 0,
+      estado: "sin_historial",
+      ambiguo: false,
+      perfiles: [],
+      plantilla_sugerida: null,
+    }),
+  );
+
+  assertEquals(withoutHistory.factura, factura);
+  assertEquals(withoutHistory.applied, {});
+  assertEquals(withoutHistory.issues, []);
+  assertEquals(withoutHistory.evidence.status, "no_history");
+});
+
+Deno.test("un perfil IVA invalido o no disponible conserva la extraccion", async () => {
+  const factura = { FRR_idregimen: 2110, FRR_iva1: 21 };
+  const invalid = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async () => ({
+      regimen_id: 9999,
+      filtros: { proveedor_id: null, tipo_factura: null },
+      total_facturas: 1,
+      estado: "dominante",
+      ambiguo: false,
+      perfiles: [],
+      plantilla_sugerida: null,
+    }),
+  );
+  const unavailable = await loadAndApplyFacturaERPIVAProfileForInsert(
+    factura,
+    async () => {
+      throw new Error("timeout");
+    },
+  );
+
+  for (const result of [invalid, unavailable]) {
+    assertEquals(result.factura, factura);
+    assertEquals(result.applied, {});
+    assertEquals(result.issues.length, 1);
+    assertEquals(result.issues[0].severity, "warning");
+  }
+  assertEquals(invalid.evidence.status, "invalid_response");
+  assertEquals(unavailable.evidence.status, "unavailable");
+});
+
+Deno.test("skipped_complete exige cinco porcentajes reales, incluido el 0 con base", async () => {
+  let calls = 0;
+  const readERP = async () => {
+    calls += 1;
+    throw new Error("no debe llamarse");
+  };
+  const missingRegimen = await loadAndApplyFacturaERPIVAProfileForInsert(
+    { FRR_iva1: 21 },
+    readERP,
+  );
+  const complete = await loadAndApplyFacturaERPIVAProfileForInsert(
+    {
+      FRR_idregimen: 2110,
+      FRR_base1: 100,
+      FRR_iva1: 21,
+      FRR_cuota1: 21,
+      FRR_base2: 100,
+      FRR_iva2: 10,
+      FRR_cuota2: 10,
+      FRR_base3: 100,
+      FRR_iva3: 4,
+      FRR_cuota3: 4,
+      FRR_base4: 100,
+      FRR_iva4: 5,
+      FRR_cuota4: 5,
+      FRR_base5: 100,
+      FRR_iva5: 0,
+      FRR_cuota5: 0,
+    },
+    readERP,
+  );
+
+  assertEquals(calls, 0);
+  assertEquals(missingRegimen.evidence.status, "skipped_missing_regimen");
+  assertEquals(complete.evidence.status, "skipped_complete");
 });
 
 Deno.test("la evidencia distingue el ejercicio verificado en factura ERP exacta", () => {

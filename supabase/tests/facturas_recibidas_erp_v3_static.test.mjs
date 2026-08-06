@@ -287,6 +287,77 @@ test("extraccion, ingesta y guardado revalidan duplicado ERP antes de resolver p
   }
 });
 
+test("las dos altas completan el perfil IVA antes de validar y crear", () => {
+  const functionsRoot = join(supabaseRoot, "functions");
+  for (const functionName of [
+    "factura-recibida-extraer",
+    "factura-recibida-ingest",
+  ]) {
+    const source = readFileSync(
+      join(functionsRoot, functionName, "index.ts"),
+      "utf8",
+    );
+    const profileApplication = source.indexOf(
+      "await loadAndApplyFacturaERPIVAProfileForInsert(",
+    );
+    const validation = source.indexOf(
+      "getValidationErrorsForFactura(",
+      profileApplication,
+    );
+    const creation = source.indexOf(
+      '"create_factura_recibida_v2"',
+      profileApplication,
+    );
+    assert.ok(
+      profileApplication >= 0,
+      `${functionName} debe aplicar el perfil IVA en el alta`,
+    );
+    assert.ok(
+      validation > profileApplication,
+      `${functionName} debe completar IVA antes de validar`,
+    );
+    assert.ok(
+      creation > validation,
+      `${functionName} debe completar IVA antes de crear`,
+    );
+    assert.match(source, /iva_profile:\s*ivaProfile\.evidence/);
+    assert.match(source, /\.\.\.\(ivaProfile\?\.issues \?\? \[\]\)/);
+  }
+
+  const extract = readFileSync(
+    join(functionsRoot, "factura-recibida-extraer", "index.ts"),
+    "utf8",
+  );
+  const ingest = readFileSync(
+    join(functionsRoot, "factura-recibida-ingest", "index.ts"),
+    "utf8",
+  );
+  assert.match(extract, /const ivaProfile = facturaId\s*\? null\s*:\s*await/s);
+  assert.match(
+    ingest,
+    /const ivaProfile = normalized\.isERPReference\s*\? null\s*:\s*await/s,
+  );
+  assert.match(extract, /\.\.\.\(ivaProfile\?\.applied \?\? \{\}\)/);
+});
+
+test("las altas convierten punteos no verificables en array vacio", () => {
+  const functionsRoot = join(supabaseRoot, "functions");
+  const extract = readFileSync(
+    join(functionsRoot, "factura-recibida-extraer", "index.ts"),
+    "utf8",
+  );
+  const ingest = readFileSync(
+    join(functionsRoot, "factura-recibida-ingest", "index.ts"),
+    "utf8",
+  );
+
+  assert.match(
+    extract,
+    /p_punteos:\s*extractionPersistence\.punteos\s*\?\?\s*\[\]/,
+  );
+  assert.match(ingest, /p_punteos:\s*persistedPunteos\s*\?\?\s*\[\]/);
+});
+
 test("guardado de duplicado unico relee vinculos ERP y falla sin sustituirlos por vacio", () => {
   const update = readFileSync(
     join(supabaseRoot, "functions", "factura-recibida-update", "index.ts"),

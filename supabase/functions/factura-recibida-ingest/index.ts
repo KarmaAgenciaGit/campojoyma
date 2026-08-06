@@ -10,6 +10,7 @@ import {
   getFacturaERPDocumentedReferenceCount,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
+  loadAndApplyFacturaERPIVAProfileForInsert,
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
   integerValue,
@@ -271,10 +272,20 @@ Deno.serve(async (req) => {
           proveedorTipo,
         );
         normalized.frr = accountingRules.factura;
-        normalized.matchEvidence = syncFacturaERPAccountingMatchEvidence(
-          normalized.matchEvidence,
-          accountingRules,
-        );
+        const ivaProfile = normalized.isERPReference
+          ? null
+          : await loadAndApplyFacturaERPIVAProfileForInsert(
+            normalized.frr,
+            fetchERPReadConsulta,
+          );
+        if (ivaProfile) normalized.frr = ivaProfile.factura;
+        normalized.matchEvidence = {
+          ...syncFacturaERPAccountingMatchEvidence(
+            normalized.matchEvidence,
+            accountingRules,
+          ),
+          ...(ivaProfile ? { iva_profile: ivaProfile.evidence } : {}),
+        };
         let duplicateVerification: Awaited<
           ReturnType<typeof verifyFacturaERPExactDuplicate>
         > = {
@@ -394,6 +405,7 @@ Deno.serve(async (req) => {
         const validationErrors = mergeValidationIssues(
           [
             ...accountingRules.issues,
+            ...(ivaProfile?.issues ?? []),
             ...duplicateVerification.issues,
             ...punteoVerificationIssues,
             ...documentedReferenceIssues,
@@ -431,7 +443,10 @@ Deno.serve(async (req) => {
             validation_errors: validationErrors,
           },
           p_ctb: normalized.ctb,
-          p_punteos: persistedPunteos,
+          // El RPC de alta exige un array. `null` solo significa "preservar lo
+          // existente" en flujos de guardado; durante una ingesta nueva no hay
+          // enlaces locales que preservar.
+          p_punteos: persistedPunteos ?? [],
           p_actor: null,
           p_request_id: requestId,
           p_change_source: normalized.isERPReference ? "erp_import" : "ingest",

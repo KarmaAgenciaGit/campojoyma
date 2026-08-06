@@ -10,6 +10,7 @@ import {
   getFacturaERPDocumentedReferenceCount,
   getFacturaProveedorTipoFromMatchEvidence,
   getValidationErrorsForFactura,
+  loadAndApplyFacturaERPIVAProfileForInsert,
   loadAndResolveFacturaERPAccountingRules,
   mergeValidationIssues,
   integerValue,
@@ -347,12 +348,27 @@ Deno.serve(async (req) => {
       extractionPersistence.factura,
       proveedorTipo,
     );
-    const accountingEvidence = asObject(accountingRules.evidence);
+    const ivaProfile = facturaId
+      ? null
+      : await loadAndApplyFacturaERPIVAProfileForInsert(
+        accountingRules.factura,
+        fetchERPReadConsulta,
+      );
+    const accountingEvidence = {
+      ...asObject(accountingRules.evidence),
+      ...(ivaProfile ? { iva_profile: ivaProfile.evidence } : {}),
+    };
     let resolvedMatchEvidence = syncFacturaERPAccountingMatchEvidence(
       normalizedMatchEvidence,
       accountingRules,
     );
-    const resolvedFrr = accountingRules.factura;
+    if (ivaProfile) {
+      resolvedMatchEvidence = {
+        ...resolvedMatchEvidence,
+        iva_profile: ivaProfile.evidence,
+      };
+    }
+    const resolvedFrr = ivaProfile?.factura ?? accountingRules.factura;
     const duplicateVerification = await verifyFacturaERPExactDuplicate(
       resolvedFrr,
       fetchERPReadConsulta,
@@ -405,11 +421,13 @@ Deno.serve(async (req) => {
     const persistedFrr = {
       ...extractionPersistence.persistedFrr,
       ...accountingRules.applied,
+      ...(ivaProfile?.applied ?? {}),
     };
     const validationBase = await getValidationErrorsForFactura(resolvedFrr);
     const validationErrors = mergeValidationIssues(
       [
         ...accountingRules.issues,
+        ...(ivaProfile?.issues ?? []),
         ...duplicateVerification.issues,
         ...punteoVerificationIssues,
         ...documentedReferenceIssues,
@@ -533,7 +551,12 @@ Deno.serve(async (req) => {
       : {
         p_factura: facturaPayload,
         p_ctb: extractionPersistence.ctb,
-        p_punteos: extractionPersistence.punteos,
+        // En un alta no hay vinculos locales que preservar. El readback de
+        // una factura ya existente en ERP usa `null` para indicar que sus
+        // punteos no son verificables, pero create_factura_recibida_v2 exige
+        // siempre un array. La incidencia queda en validation_errors y el
+        // borrador se crea sin seleccionar enlaces.
+        p_punteos: extractionPersistence.punteos ?? [],
         p_actor: auth.user.id,
         p_request_id: requestId,
         p_change_source: "extract",

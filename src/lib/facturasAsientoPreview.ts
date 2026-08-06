@@ -11,6 +11,11 @@ export type FacturaAsientoPreview = {
   balanced: boolean;
 };
 
+export type FacturaAsientoPreviewOptions = {
+  /** Cuentas ya resueltas por el servidor, indexadas por porcentaje normalizado. */
+  ivaAccountsByPercentage?: Readonly<Record<string, string | null | undefined>>;
+};
+
 const TOLERANCE = 0.01;
 
 const finiteNumber = (value: unknown): number | null => {
@@ -31,9 +36,55 @@ const debitCredit = (amount: number, naturalSide: 'debe' | 'haber') => {
   };
 };
 
+type PreviewIvaRow = {
+  cuota: number;
+  porcentaje: number | null;
+};
+
+const getPreviewIvaRows = (
+  factura: Partial<FacturaRecibida>,
+): PreviewIvaRow[] => {
+  const ivaRows = (factura.iva_tramos ?? [])
+    .map((tramo) => ({
+      cuota: finiteNumber(tramo.cuota),
+      porcentaje: finiteNumber(tramo.porcentaje),
+    }))
+    .filter(
+      (tramo): tramo is PreviewIvaRow =>
+        tramo.cuota !== null && Math.abs(tramo.cuota) > TOLERANCE,
+    );
+
+  if (ivaRows.length === 0) {
+    const cuota = finiteNumber(factura.iva_importe);
+    if (cuota !== null && Math.abs(cuota) > TOLERANCE) {
+      ivaRows.push({
+        cuota,
+        porcentaje: finiteNumber(factura.iva_porcentaje),
+      });
+    }
+  }
+
+  return ivaRows;
+};
+
+export const facturaIvaPercentageKey = (porcentaje: number): string =>
+  String(Number(porcentaje));
+
+/** Porcentajes con cuota activa que producirán una línea en la vista previa. */
+export const getFacturaAsientoPreviewIvaPercentages = (
+  factura: Partial<FacturaRecibida>,
+): number[] => [
+  ...new Set(
+    getPreviewIvaRows(factura)
+      .map((tramo) => tramo.porcentaje)
+      .filter((porcentaje): porcentaje is number => porcentaje !== null),
+  ),
+];
+
 export const buildFacturaAsientoPreview = (
   factura: Partial<FacturaRecibida>,
   gastos: FacturaRecibidaLinea[],
+  options: FacturaAsientoPreviewOptions = {},
 ): FacturaAsientoPreview => {
   const documento = cleanText(factura.numero_factura);
   const proveedor = cleanText(factura.proveedor_nombre);
@@ -66,25 +117,7 @@ export const buildFacturaAsientoPreview = (
     }
   }
 
-  const ivaRows = (factura.iva_tramos ?? [])
-    .map((tramo) => ({
-      cuota: finiteNumber(tramo.cuota),
-      porcentaje: finiteNumber(tramo.porcentaje),
-    }))
-    .filter(
-      (tramo): tramo is { cuota: number; porcentaje: number | null } =>
-        tramo.cuota !== null && Math.abs(tramo.cuota) > TOLERANCE,
-    );
-
-  if (ivaRows.length === 0) {
-    const cuota = finiteNumber(factura.iva_importe);
-    if (cuota !== null && Math.abs(cuota) > TOLERANCE) {
-      ivaRows.push({
-        cuota,
-        porcentaje: finiteNumber(factura.iva_porcentaje),
-      });
-    }
-  }
+  const ivaRows = getPreviewIvaRows(factura);
 
   const retencion = finiteNumber(factura.retencion_importe) ?? 0;
   const expenseTotal = expenseRows.reduce((sum, gasto) => sum + gasto.importe, 0);
@@ -122,7 +155,14 @@ export const buildFacturaAsientoPreview = (
     const porcentaje = tramo.porcentaje;
     appendLine({
       id: `preview-iva-${index + 1}`,
-      cuenta: null,
+      cuenta:
+        porcentaje === null
+          ? null
+          : cleanText(
+              options.ivaAccountsByPercentage?.[
+                facturaIvaPercentageKey(porcentaje)
+              ],
+            ),
       titulo: porcentaje === null ? 'IVA soportado' : `IVA soportado ${porcentaje} %`,
       descripcion: concepto,
       documento,

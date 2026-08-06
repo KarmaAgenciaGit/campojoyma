@@ -1,4 +1,4 @@
-import { resolveAccessPath } from '@/utils/entityRoutes';
+import { resolveAccessPath, ROUTE_BASES } from '@/utils/entityRoutes';
 
 export type UserRole = 'admin' | 'user';
 export type UserAccess = {
@@ -13,7 +13,7 @@ export const ADMIN_USER_IDS: string[] = [
 export const ROUTE_PERMISSIONS: Record<string, UserRole[]> = {
   '/': ['admin', 'user'],
   '/dashboard': ['admin', 'user'],
-  '/facturas-recibidas': ['admin', 'user'],
+  [ROUTE_BASES.facturasRecibidas]: ['admin', 'user'],
   '/albaranes': ['admin', 'user'],
   '/usuarios': ['admin'],
 };
@@ -33,7 +33,7 @@ export const canAccessPath = (path: string, access: UserAccess) => {
   if (access.role === 'admin') return true;
   if (
     normalized === '/albaranes' &&
-    normalizedAllowed.includes('/facturas-recibidas')
+    normalizedAllowed.includes(ROUTE_BASES.facturasRecibidas)
   ) {
     return true;
   }
@@ -44,7 +44,7 @@ export const getFirstAllowedPath = (access: UserAccess): string | null => {
   if (access.role === 'admin') return '/dashboard';
 
   const normalizedAllowed = access.allowedRoutes?.map(normalizePath);
-  const order = ['/dashboard', '/facturas-recibidas', '/albaranes', '/usuarios'];
+  const order = ['/dashboard', ROUTE_BASES.facturasRecibidas, '/albaranes', '/usuarios'];
 
   if (normalizedAllowed && Array.isArray(normalizedAllowed)) {
     for (const path of order) {

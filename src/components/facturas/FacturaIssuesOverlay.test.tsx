@@ -13,14 +13,19 @@ afterEach(() => {
 });
 
 const blockingIssue: FacturaValidationIssue = {
-  code: null,
-  field: 'erp_duplicate',
-  message: 'La factura ya existe en ERP como entrada 49305 (número ERP 5052); este borrador no puede enviarse de nuevo.',
+  code: 'importe_total_no_cuadra',
+  field: 'FRR_totalfac',
+  message: 'El total de la factura no coincide con sus desgloses.',
   severity: 'error',
-  details: {
-    total: 1,
-    candidates: [{ FRR_id: 49305, FRR_numero: 5052 }],
-  },
+  details: null,
+};
+
+const duplicateIssue: FacturaValidationIssue = {
+  code: 'duplicate_invoice',
+  field: 'erp_duplicate',
+  message: 'La factura ya existe en ERP como entrada 49305 (número ERP 5052).',
+  severity: 'error',
+  details: { candidates: [{ FRR_id: 49305, FRR_numero: 5052 }] },
 };
 
 const warningIssue: FacturaValidationIssue = {
@@ -44,17 +49,6 @@ describe('FacturaIssuesOverlay', () => {
         erpError={'The requested webhook "POST internal-write" is not registered.'}
         errors={[blockingIssue]}
         warnings={[warningIssue]}
-        duplicateCandidate={{
-          frrId: 49305,
-          empresaId: 1,
-          ejercicio: 25,
-          proveedorId: 17,
-          numeroFactura: 'A-00748886',
-          numero: 5052,
-          proveedor: 'ONDUSPAN, S.A',
-          fecha: '2026-06-30',
-          total: 51_233.24,
-        }}
       />,
     );
 
@@ -71,13 +65,29 @@ describe('FacturaIssuesOverlay', () => {
       'motion-reduce:animate-none',
     );
     expect(screen.getByText('Avisos de revisión')).toBeInTheDocument();
-    expect(screen.getByText('Factura ya registrada (5052)')).toBeInTheDocument();
-    expect(screen.getByText('Factura ya registrada (5052)').tagName).toBe('P');
-    expect(screen.getByText('Factura ya registrada (5052)').closest('li')).toBeNull();
-    expect(screen.queryByText(/este borrador no puede enviarse de nuevo/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/FRR_id 49305/)).toBeInTheDocument();
+    expect(screen.getByText(blockingIssue.message)).toBeInTheDocument();
     expect(screen.queryByText(/webhook/i)).not.toBeInTheDocument();
     expect(screen.getByText(/servicio de envío al ERP/i)).toBeInTheDocument();
+  });
+
+  it('nunca presenta una factura ya registrada como alerta roja', () => {
+    const { container, rerender } = render(
+      <FacturaIssuesOverlay errors={[duplicateIssue]} warnings={[]} />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    rerender(
+      <FacturaIssuesOverlay
+        errors={[duplicateIssue, blockingIssue]}
+        warnings={[]}
+      />,
+    );
+
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByText(blockingIssue.message)).toBeInTheDocument();
+    expect(screen.queryByText(/factura ya registrada/i)).not.toBeInTheDocument();
   });
 
   it('mantiene el reintento de catálogos dentro del aviso flotante', () => {

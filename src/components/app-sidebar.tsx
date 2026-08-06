@@ -1,6 +1,7 @@
 import { BarChart3, ChevronRight, FileBox, FileText, LifeBuoy, Settings, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
+import { ROUTE_BASES } from "@/utils/entityRoutes";
 
 type AppSidebarProps = {
   isCollapsed: boolean;
@@ -15,7 +16,7 @@ type NavRoute = {
 };
 
 const facturasRoute: NavRoute = {
-  path: "/facturas-recibidas",
+  path: ROUTE_BASES.facturasRecibidas,
   label: "Facturas",
   Icon: FileText,
 };

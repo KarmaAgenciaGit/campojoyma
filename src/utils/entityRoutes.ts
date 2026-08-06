@@ -6,8 +6,12 @@ export const ROUTE_BASES = {
   pedidos: '/pedidos',
   cambios: '/cambios',
   cuentas: '/cuentas',
-  facturasRecibidas: '/facturas-recibidas',
+  facturasRecibidas: '/facturas',
   albaranes: '/albaranes',
+} as const;
+
+export const LEGACY_ROUTE_BASES = {
+  facturasRecibidas: '/facturas-recibidas',
 } as const;
 
 const DETAIL_ROUTE_BASES = [
@@ -25,7 +29,12 @@ export const normalizeRoutePath = (path: string) => {
 };
 
 export const resolveAccessPath = (path: string) => {
-  const normalized = normalizeRoutePath(path);
+  const normalizedPath = normalizeRoutePath(path);
+  const legacyFacturasPath = LEGACY_ROUTE_BASES.facturasRecibidas;
+  const normalized =
+    normalizedPath === legacyFacturasPath || normalizedPath.startsWith(`${legacyFacturasPath}/`)
+      ? `${ROUTE_BASES.facturasRecibidas}${normalizedPath.slice(legacyFacturasPath.length)}`
+      : normalizedPath;
   const matchedBase = DETAIL_ROUTE_BASES.find(
     (basePath) => normalized === basePath || normalized.startsWith(`${basePath}/`),
   );

@@ -1,7 +1,30 @@
 import { describe, expect, it } from 'vitest';
 
-import { canAccessPath } from './accessControl';
-import { buildAlbaranEntradaDetailPath } from '@/utils/entityRoutes';
+import { canAccessPath, getFirstAllowedPath } from './accessControl';
+import {
+  buildAlbaranEntradaDetailPath,
+  buildFacturaRecibidaDetailPath,
+  resolveAccessPath,
+} from '@/utils/entityRoutes';
+
+describe('ruta de Facturas', () => {
+  it('usa /facturas como ruta publica para listado y detalle', () => {
+    expect(buildFacturaRecibidaDetailPath('factura-1')).toBe('/facturas/factura-1');
+    expect(resolveAccessPath('/facturas/factura-1')).toBe('/facturas');
+  });
+
+  it('mantiene compatibles los permisos y enlaces antiguos', () => {
+    const access = {
+      role: 'user' as const,
+      allowedRoutes: ['/facturas-recibidas'],
+    };
+
+    expect(resolveAccessPath('/facturas-recibidas/factura-1')).toBe('/facturas');
+    expect(canAccessPath('/facturas/factura-1', access)).toBe(true);
+    expect(canAccessPath('/facturas-recibidas/factura-1', access)).toBe(true);
+    expect(getFirstAllowedPath(access)).toBe('/facturas');
+  });
+});
 
 describe('acceso a Albaranes', () => {
   it('reutiliza el permiso existente de Facturas para usuarios ya configurados', () => {

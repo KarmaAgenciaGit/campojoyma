@@ -190,6 +190,24 @@ export const invalidateFacturaERPValidation = <
   erp_business_fingerprint: null,
 });
 
+export const requireFacturaERPCommitRequestId = (
+  factura: FacturaERPValidationSource,
+  expectedRequestId: string,
+): string => {
+  const requestId = cleanText(factura.erp_validation_request_id);
+  if (
+    normalizeToken(factura.erp_validation_status) !== 'valid' ||
+    !requestId ||
+    requestId !== cleanText(expectedRequestId)
+  ) {
+    throw new Error(
+      'El ERP no ha confirmado la revisión previa. No se ha enviado la factura.',
+    );
+  }
+
+  return requestId;
+};
+
 export const facturaERPRegistrationLabels: Record<
   FacturaERPRegistrationState,
   string

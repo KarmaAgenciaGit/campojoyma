@@ -432,7 +432,12 @@
     height: 112px;
     object-fit: contain;
     filter: drop-shadow(0 12px 18px rgb(17 24 39 / 0.22));
+    transition: filter 260ms ease;
     animation: parte-ai-logo-breathe 2.4s ease-in-out infinite;
+  }
+
+  .parte-ai-loader--analyzing .parte-ai-loader__logo {
+    filter: drop-shadow(0 16px 22px rgb(17 24 39 / 0.26));
   }
 
   .parte-ai-loader__halo {
@@ -451,6 +456,8 @@
 
   .parte-ai-loader__scan {
     position: absolute;
+    --parte-ai-scan-start: -24px;
+    --parte-ai-scan-end: 52px;
     left: 20px;
     right: 20px;
     top: 34px;
@@ -459,6 +466,15 @@
     background: linear-gradient(90deg, transparent, hsl(var(--primary)), transparent);
     box-shadow: 0 0 14px hsl(var(--primary) / 0.48);
     animation: parte-ai-scan 1.45s ease-in-out infinite;
+  }
+
+  .parte-ai-loader--analyzing .parte-ai-loader__scan {
+    --parte-ai-scan-start: -52px;
+    --parte-ai-scan-end: 52px;
+    left: 16px;
+    right: 16px;
+    top: 50%;
+    animation-duration: 1.65s;
   }
 
   .parte-ai-loader__document {
@@ -478,12 +494,17 @@
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     box-shadow: 0 16px 28px rgb(15 23 42 / 0.14);
+    transform-origin: 50% 50%;
     opacity: 0;
     transform: translate3d(105px, -78px, 0) rotate(4deg) scale(0.22);
   }
 
   .parte-ai-loader--uploading .parte-ai-loader__document {
     animation: parte-ai-document-send 1.08s cubic-bezier(0.45, 0, 0.2, 1) both;
+  }
+
+  .parte-ai-loader--analyzing .parte-ai-loader__document {
+    animation: none;
   }
 
   .parte-ai-loader__document::before {
@@ -520,6 +541,11 @@
 
   .parte-ai-loader--uploading .parte-ai-loader__path {
     animation: parte-ai-path 1.08s ease-in-out both;
+  }
+
+  .parte-ai-loader--uploading .parte-ai-loader__scan {
+    animation: none;
+    opacity: 0;
   }
 
   .parte-ai-loader__spark {
@@ -574,6 +600,18 @@
   .parte-ai-loader--uploading .parte-ai-loader__progress span {
     width: 100%;
     animation: parte-ai-upload-progress 1.85s ease-out both;
+  }
+
+  html.dark .parte-ai-loader__stage {
+    background:
+      linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--muted) / 0.52) 100%),
+      repeating-linear-gradient(0deg, transparent 0 17px, hsl(var(--border) / 0.56) 18px 19px);
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.06);
+  }
+
+  html.dark .parte-ai-loader__document {
+    background: hsl(var(--card));
+    box-shadow: 0 16px 30px rgb(0 0 0 / 0.34);
   }
 
   @keyframes parte-ai-document-send {
@@ -632,14 +670,14 @@
     0%,
     100% {
       opacity: 0;
-      transform: translate3d(0, -24px, 0);
+      transform: translate3d(0, var(--parte-ai-scan-start), 0);
     }
     20%,
     78% {
       opacity: 1;
     }
     50% {
-      transform: translate3d(0, 52px, 0);
+      transform: translate3d(0, var(--parte-ai-scan-end), 0);
     }
   }
 
@@ -681,6 +719,52 @@
     }
     100% {
       transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @media (max-width: 480px) {
+    .parte-ai-loader__stage {
+      height: 220px;
+    }
+
+    .parte-ai-loader__x-shell {
+      --parte-ai-x-rest-y: -34px;
+      width: 138px;
+      height: 138px;
+    }
+
+    .parte-ai-loader__logo {
+      width: 98px;
+      height: 98px;
+    }
+
+    .parte-ai-loader--analyzing .parte-ai-loader__scan {
+      --parte-ai-scan-start: -46px;
+      --parte-ai-scan-end: 46px;
+      left: 18px;
+      right: 18px;
+      top: 50%;
+    }
+
+    .parte-ai-loader__document {
+      left: 24px;
+      bottom: 24px;
+      width: 68px;
+      height: 82px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .parte-ai-loader__logo,
+    .parte-ai-loader__halo,
+    .parte-ai-loader__scan,
+    .parte-ai-loader__x-shell,
+    .parte-ai-loader__document,
+    .parte-ai-loader__path,
+    .parte-ai-loader__spark,
+    .parte-ai-loader__progress span {
+      animation-duration: 1ms;
+      animation-iteration-count: 1;
     }
   }
 }

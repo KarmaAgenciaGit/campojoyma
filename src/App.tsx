@@ -5,10 +5,14 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Navigate, Routes, Route, useLocation, useParams } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { useAgroirisAuth } from "@/hooks/useAgroirisAuth";
-import { ROUTE_BASES } from "@/utils/entityRoutes";
+import {
+  buildFacturaRecibidaDetailPath,
+  LEGACY_ROUTE_BASES,
+  ROUTE_BASES,
+} from "@/utils/entityRoutes";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
@@ -47,6 +51,21 @@ const routerFutureConfig = {
   v7_relativeSplatPath: true,
 } as const;
 
+const LegacyFacturasRedirect = () => {
+  const { facturaId } = useParams<{ facturaId?: string }>();
+  const location = useLocation();
+  const pathname = facturaId
+    ? buildFacturaRecibidaDetailPath(encodeURIComponent(facturaId))
+    : ROUTE_BASES.facturasRecibidas;
+
+  return (
+    <Navigate
+      to={{ pathname, search: location.search, hash: location.hash }}
+      replace
+    />
+  );
+};
+
 const AppContent = () => {
   // Inicializar autenticación de AgroIris al cargar la app
   useAgroirisAuth();
@@ -79,6 +98,8 @@ const AppContent = () => {
         <Route path={ROUTE_BASES.dashboard} element={<Index />} />
         <Route path={ROUTE_BASES.facturasRecibidas} element={<Index />} />
         <Route path={`${ROUTE_BASES.facturasRecibidas}/:facturaId`} element={<Index />} />
+        <Route path={LEGACY_ROUTE_BASES.facturasRecibidas} element={<LegacyFacturasRedirect />} />
+        <Route path={`${LEGACY_ROUTE_BASES.facturasRecibidas}/:facturaId`} element={<LegacyFacturasRedirect />} />
         <Route path={ROUTE_BASES.albaranes} element={<Index />} />
         <Route path={`${ROUTE_BASES.albaranes}/:albaranId`} element={<Index />} />
         <Route path="/usuarios" element={<Index />} />

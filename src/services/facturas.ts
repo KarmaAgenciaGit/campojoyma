@@ -106,6 +106,54 @@ export type FacturaCuentaGastoHistorica = {
   bloqueoFacturas: string | null;
 };
 
+export type FacturaCuentaIvaHistoricaEstado =
+  | 'resuelta'
+  | 'sin_historial'
+  | 'ambiguo';
+
+export type FacturaCuentaIvaHistoricaAlternativa = {
+  cuenta: string;
+  descripcion: string | null;
+  usosFacturas: number;
+  confianza: number;
+};
+
+export type FacturaCuentaIvaHistoricaCriterio = {
+  minFacturas: number;
+  minConfianza: number;
+  requiereLiderUnico: boolean;
+  origen: 'asientos_reales_enlazados_FR';
+  coincidenciaImporte: 'apunte_472_unico_coincide_con_cuota_iva';
+};
+
+export type FacturaCuentaIvaHistorica = {
+  estado: FacturaCuentaIvaHistoricaEstado;
+  cuenta: string | null;
+  descripcion: string | null;
+  usosFacturas: number;
+  totalFacturas: number;
+  confianza: number | null;
+  criterio: FacturaCuentaIvaHistoricaCriterio;
+  alternativas: FacturaCuentaIvaHistoricaAlternativa[];
+  filtros: {
+    empresaId: number;
+    ejercicio: number;
+    regimenId: number;
+    tipoFactura: string;
+    porcentaje: number;
+    proveedorId: number | null;
+  };
+};
+
+export type FetchFacturaCuentaIvaHistoricaOptions = {
+  empresaId: number;
+  ejercicio: number;
+  regimenId: number;
+  tipoFactura: string;
+  porcentaje: number;
+  proveedorId?: number | null;
+};
+
 export type FetchFacturaCuentasGastoHistoricasOptions = {
   empresaId: number;
   proveedorId: number;
@@ -275,22 +323,47 @@ const asRecordArray = (value: unknown): Array<Record<string, unknown>> =>
     ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     : [];
 
-const buildIvaTramos = (source: Record<string, unknown>): FacturaRecibidaIvaTramo[] =>
-  [1, 2, 3, 4, 5].map((posicion) => {
+const getHistoricalIvaProfilePositions = (source: Record<string, unknown>) => {
+  const matchEvidence = asRecord(source.match_evidence);
+  const profileEvidence = asRecord(matchEvidence.iva_profile);
+  if (
+    profileEvidence.source !== 'erp_regimen_iva_profile' ||
+    profileEvidence.status !== 'applied' ||
+    !Array.isArray(profileEvidence.applied_positions)
+  ) {
+    return new Set<number>();
+  }
+  return new Set(
+    profileEvidence.applied_positions
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 1 && value <= 5),
+  );
+};
+
+const buildIvaTramos = (source: Record<string, unknown>): FacturaRecibidaIvaTramo[] => {
+  const historicalProfilePositions = getHistoricalIvaProfilePositions(source);
+  return [1, 2, 3, 4, 5].map((posicion) => {
     const base = readNumber(source, [`FRR_base${posicion}`, `base${posicion}`], null);
     const porcentaje = readNumber(source, [`FRR_iva${posicion}`, `iva${posicion}`], null);
     const cuota = readNumber(source, [`FRR_cuota${posicion}`, `cuota${posicion}`], null);
-    const isUnusedZeroSlot = [base, porcentaje, cuota].every(
+    const isHistoricalProfilePosition = historicalProfilePositions.has(posicion);
+    const hasTechnicalZeroAmounts = [base, cuota].every(
       (value) => value === null || value === 0,
     );
+    const isUnusedZeroSlot = [base, porcentaje, cuota].every(
+      (value) => value === null || value === 0,
+    ) && !isHistoricalProfilePosition;
+    const hidesHistoricalTechnicalAmounts =
+      isHistoricalProfilePosition && hasTechnicalZeroAmounts;
 
     return {
       posicion: posicion as FacturaRecibidaIvaTramo['posicion'],
-      base: isUnusedZeroSlot ? null : base,
+      base: isUnusedZeroSlot || hidesHistoricalTechnicalAmounts ? null : base,
       porcentaje: isUnusedZeroSlot ? null : porcentaje,
-      cuota: isUnusedZeroSlot ? null : cuota,
+      cuota: isUnusedZeroSlot || hidesHistoricalTechnicalAmounts ? null : cuota,
     };
   });
+};
 
 const buildVencimientos = (source: Record<string, unknown>): FacturaRecibidaVencimiento[] => [
   {
@@ -2512,6 +2585,206 @@ export const fetchFacturaCuentasGastoHistoricas = async ({
       } satisfies FacturaCuentaGastoHistorica;
     })
     .filter((item): item is FacturaCuentaGastoHistorica => Boolean(item));
+};
+
+/**
+ * Resuelve una cuenta de IVA a partir del historial de asientos reales del ERP.
+ * La cuenta solo es utilizable cuando el servidor devuelve `resuelta`; una
+ * respuesta ambigua nunca se convierte en una regla contable en el navegador.
+ */
+export const fetchFacturaCuentaIvaHistorica = async ({
+  empresaId,
+  ejercicio,
+  regimenId,
+  tipoFactura,
+  porcentaje,
+  proveedorId = null,
+}: FetchFacturaCuentaIvaHistoricaOptions): Promise<FacturaCuentaIvaHistorica> => {
+  const normalizedEmpresaId = Math.trunc(Number(empresaId));
+  const normalizedEjercicio = Math.trunc(Number(ejercicio));
+  const normalizedRegimenId = Math.trunc(Number(regimenId));
+  const normalizedTipoFactura = cleanText(tipoFactura)?.toUpperCase() ?? null;
+  const normalizedPorcentaje = Number(porcentaje);
+  const normalizedProveedorId =
+    proveedorId === null || proveedorId === undefined
+      ? null
+      : Math.trunc(Number(proveedorId));
+
+  if (!Number.isSafeInteger(normalizedEmpresaId) || normalizedEmpresaId < 1) {
+    throw new Error('La empresa ERP no es valida para consultar la cuenta de IVA.');
+  }
+  if (!Number.isSafeInteger(normalizedEjercicio) || normalizedEjercicio < 1) {
+    throw new Error('El ejercicio ERP no es valido para consultar la cuenta de IVA.');
+  }
+  if (!Number.isSafeInteger(normalizedRegimenId) || normalizedRegimenId < 1) {
+    throw new Error('El regimen de IVA no es valido para consultar su cuenta.');
+  }
+  if (!normalizedTipoFactura) {
+    throw new Error('El tipo de factura no es valido para consultar la cuenta de IVA.');
+  }
+  if (
+    !Number.isFinite(normalizedPorcentaje) ||
+    normalizedPorcentaje < 0 ||
+    normalizedPorcentaje > 100
+  ) {
+    throw new Error('El porcentaje de IVA no es valido para consultar su cuenta.');
+  }
+  if (
+    normalizedProveedorId !== null &&
+    (!Number.isSafeInteger(normalizedProveedorId) || normalizedProveedorId < 1)
+  ) {
+    throw new Error('El proveedor ERP no es valido para consultar la cuenta de IVA.');
+  }
+
+  const params = new URLSearchParams({
+    empresa_id: String(normalizedEmpresaId),
+    ejercicio: String(normalizedEjercicio),
+    regimen_id: String(normalizedRegimenId),
+    tipo_factura: normalizedTipoFactura,
+    porcentaje: String(normalizedPorcentaje),
+  });
+  if (normalizedProveedorId !== null) {
+    params.set('proveedor_id', String(normalizedProveedorId));
+  }
+
+  const response = await erpRead<unknown>(
+    `facturasrecibidas/cuentas-iva-historicas?${params.toString()}`,
+  );
+  const record = asRecord(response);
+  const filtros = asRecord(record.filtros);
+  const responseEmpresaId = readNumber(filtros, ['empresa_id'], null);
+  const responseEjercicio = readNumber(filtros, ['ejercicio'], null);
+  const responseRegimenId = readNumber(filtros, ['regimen_id'], null);
+  const responseTipoFactura = readText(filtros, ['tipo_factura'], null)?.toUpperCase() ?? null;
+  const responsePorcentaje = readNumber(filtros, ['porcentaje'], null);
+  const responseProveedorId = readNumber(filtros, ['proveedor_id'], null);
+
+  if (
+    responseEmpresaId !== normalizedEmpresaId ||
+    responseEjercicio !== normalizedEjercicio ||
+    responseRegimenId !== normalizedRegimenId ||
+    responseTipoFactura !== normalizedTipoFactura ||
+    responsePorcentaje === null ||
+    Math.abs(responsePorcentaje - normalizedPorcentaje) > 0.000_001 ||
+    responseProveedorId !== normalizedProveedorId
+  ) {
+    throw new Error('La cuenta historica de IVA no corresponde a los filtros solicitados.');
+  }
+
+  const estado = readText(record, ['estado'], null)?.toLowerCase();
+  if (!['resuelta', 'sin_historial', 'ambiguo'].includes(estado ?? '')) {
+    throw new Error('La respuesta de la cuenta historica de IVA no es valida.');
+  }
+
+  const usosFacturas = readNumber(record, ['usos_facturas'], null);
+  const totalFacturas = readNumber(record, ['total_facturas'], null);
+  const confianza = readNumber(record, ['confianza'], null);
+  if (
+    usosFacturas === null ||
+    !Number.isSafeInteger(usosFacturas) ||
+    usosFacturas < 0 ||
+    totalFacturas === null ||
+    !Number.isSafeInteger(totalFacturas) ||
+    totalFacturas < usosFacturas ||
+    (confianza !== null && (confianza < 0 || confianza > 1))
+  ) {
+    throw new Error('La evidencia de la cuenta historica de IVA no es valida.');
+  }
+
+  const cuenta = readText(record, ['cuenta'], null);
+  if (estado === 'resuelta' && (!cuenta || usosFacturas < 1)) {
+    throw new Error('La cuenta historica de IVA resuelta no incluye evidencia suficiente.');
+  }
+
+  const alternativasSource = Array.isArray(record.alternativas)
+    ? record.alternativas
+    : [];
+  const alternativas = alternativasSource
+    .map((value) => {
+      const alternativa = asRecord(value);
+      const alternativaCuenta = readText(alternativa, ['cuenta'], null);
+      const alternativaUsos = readNumber(
+        alternativa,
+        ['usos_facturas'],
+        null,
+      );
+      const alternativaConfianza = readNumber(
+        alternativa,
+        ['confianza'],
+        null,
+      );
+      if (
+        !alternativaCuenta ||
+        alternativaUsos === null ||
+        !Number.isSafeInteger(alternativaUsos) ||
+        alternativaUsos < 1 ||
+        alternativaConfianza === null ||
+        alternativaConfianza < 0 ||
+        alternativaConfianza > 1
+      ) {
+        return null;
+      }
+      return {
+        cuenta: alternativaCuenta,
+        descripcion: readText(alternativa, ['descripcion'], null),
+        usosFacturas: alternativaUsos,
+        confianza: alternativaConfianza,
+      } satisfies FacturaCuentaIvaHistoricaAlternativa;
+    })
+    .filter(
+      (value): value is FacturaCuentaIvaHistoricaAlternativa => value !== null,
+    );
+
+  const criterioSource = asRecord(record.criterio);
+  const minFacturas = readNumber(criterioSource, ['min_facturas'], null);
+  const minConfianza = readNumber(criterioSource, ['min_confianza'], null);
+  const origen = readText(criterioSource, ['origen'], null);
+  const coincidenciaImporte = readText(
+    criterioSource,
+    ['coincidencia_importe'],
+    null,
+  );
+  if (
+    minFacturas === null ||
+    !Number.isSafeInteger(minFacturas) ||
+    minFacturas < 1 ||
+    minConfianza === null ||
+    minConfianza < 0 ||
+    minConfianza > 1 ||
+    criterioSource.requiere_lider_unico !== true ||
+    origen !== 'asientos_reales_enlazados_FR' ||
+    coincidenciaImporte !== 'apunte_472_unico_coincide_con_cuota_iva'
+  ) {
+    throw new Error('El criterio de la cuenta historica de IVA no es valido.');
+  }
+
+  return {
+    estado: estado as FacturaCuentaIvaHistoricaEstado,
+    // No se expone una cuenta candidata como resuelta si el servidor declara
+    // que el historial es ambiguo o insuficiente.
+    cuenta: estado === 'resuelta' ? cuenta : null,
+    descripcion:
+      estado === 'resuelta' ? readText(record, ['descripcion'], null) : null,
+    usosFacturas,
+    totalFacturas,
+    confianza,
+    criterio: {
+      minFacturas,
+      minConfianza,
+      requiereLiderUnico: true,
+      origen,
+      coincidenciaImporte,
+    },
+    alternativas,
+    filtros: {
+      empresaId: normalizedEmpresaId,
+      ejercicio: normalizedEjercicio,
+      regimenId: normalizedRegimenId,
+      tipoFactura: normalizedTipoFactura,
+      porcentaje: normalizedPorcentaje,
+      proveedorId: normalizedProveedorId,
+    },
+  };
 };
 
 export const normalizeFacturaTiposIva = (

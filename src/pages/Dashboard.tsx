@@ -21,8 +21,9 @@ import {
 } from '../lib/facturasSummary';
 import type { FacturaRecibida } from '../services/apiContracts';
 import { fetchFacturasRecibidas } from '../services/facturas';
+import { ROUTE_BASES } from '../utils/entityRoutes';
 
-const FACTURAS_PATH = '/facturas-recibidas';
+const FACTURAS_PATH = ROUTE_BASES.facturasRecibidas;
 
 const formatNumber = (value: number) =>
   Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');

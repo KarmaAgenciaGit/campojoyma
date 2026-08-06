@@ -27,6 +27,47 @@ describe('previsualización del asiento de una factura recibida', () => {
     ]);
   });
 
+  it('muestra una cuenta de IVA resuelta por el servidor sin fijarla por porcentaje', () => {
+    const preview = buildFacturaAsientoPreview(
+      {
+        proveedor_nombre: 'Proveedor de prueba',
+        total: 121,
+        iva_tramos: [
+          { posicion: 1, base: 100, porcentaje: 21, cuota: 21 },
+        ],
+      },
+      [{ posicion: 1, descripcion: '60000000001', importe: 100 }],
+      { ivaAccountsByPercentage: { '21': '47200000008' } },
+    );
+
+    expect(preview.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cuenta: '47200000008',
+          titulo: 'IVA soportado 21 %',
+          debe: 21,
+        }),
+      ]),
+    );
+  });
+
+  it('mantiene la cuenta de IVA vacia si no hay una resolucion inequívoca', () => {
+    const preview = buildFacturaAsientoPreview(
+      { total: 110, iva_importe: 10, iva_porcentaje: 10 },
+      [{ posicion: 1, descripcion: '60000000001', importe: 100 }],
+      { ivaAccountsByPercentage: { '21': '47200000008' } },
+    );
+
+    expect(preview.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          cuenta: null,
+          titulo: 'IVA soportado 10 %',
+        }),
+      ]),
+    );
+  });
+
   it('incluye la retención en el Haber y mantiene el asiento previsto cuadrado', () => {
     const preview = buildFacturaAsientoPreview(
       {

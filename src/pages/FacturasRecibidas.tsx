@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  Database,
+  Edit,
   Filter,
   FileText,
   Loader2,
@@ -25,7 +27,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type MouseEvent,
   type ReactNode,
 } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -40,14 +41,18 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { PdfViewer } from '../components/PdfViewer';
-import { facturaEstadoLabels } from '../lib/facturasSummary';
-import { getFacturaAccountingStatusText } from '../lib/facturasAccountingStatus';
+import {
+  getFacturaERPAlreadyRegisteredNotice,
+  getFacturaERPListPresentation,
+  isFacturaERPDuplicateIssue,
+} from '../lib/facturasDuplicate';
 import { calculateFacturaIvaCuota, isFacturaIvaCuotaOutdated } from '../lib/facturasIva';
 import {
   facturaERPRegistrationLabels,
   getFacturaERPRegistrationState,
   invalidateFacturaERPValidation,
   isFacturaERPLegacyUnscopedError,
+  requireFacturaERPCommitRequestId,
   type FacturaERPRegistrationState,
 } from '../lib/facturasErpStatus';
 import { sanitizeUserFacingErrorMessage } from '../lib/userFacingErrors';
@@ -76,7 +81,6 @@ import {
   getFacturaPdfSignedUrl,
   getPunteoImporte,
   extractFacturaFromPdf,
-  isERPReferenceFactura,
   isERPReadOnlyFactura,
   isFacturaAccountingActionable,
   isRetryableFacturaERPReadError,
@@ -104,6 +108,10 @@ import { useConfirmacion } from '../hooks/useConfirmacion';
 import { useToast } from '../hooks/use-toast';
 import { useFacturaCuentasGastoHistoricas } from '../hooks/useFacturaCuentasGastoHistoricas';
 import {
+  buildFacturaRecibidaDetailPath,
+  ROUTE_BASES,
+} from '../utils/entityRoutes';
+import {
   aplicarPlantillaIvaHistorica,
   calcularSugerencias,
   construirConceptoFactura,
@@ -119,6 +127,11 @@ import {
 } from '../services/facturasRecibidasErpRules';
 
 type FacturaDraft = Partial<FacturaRecibida>;
+type FacturaEditorBaseline = {
+  draft: FacturaDraft;
+  lineas: FacturaRecibidaLinea[];
+  snapshot: string;
+};
 type FacturaFlowFilter = 'todos' | 'enviada_erp' | 'no_enviada_erp';
 
 type FacturaFilters = {
@@ -147,6 +160,8 @@ const FACTURA_CATALOG_LABELS: Record<FacturaCatalogKey, string> = {
   regimenes: 'Regímenes de IVA',
   tipos_iva: 'Tipos de IVA',
 };
+const FACTURA_CATALOG_UNAVAILABLE_MESSAGE =
+  'No se ha podido conectar con el ERP. Algunas opciones pueden no estar disponibles temporalmente. Vuelve a intentarlo.';
 const FACTURA_CATALOG_RETRY_DELAY_MS = 350;
 const PDF_UPLOAD_ANIMATION_MS = 1850;
 
@@ -164,8 +179,6 @@ const estadoOptions: { value: FacturaFlowFilter; label: string }[] = [
   { value: 'enviada_erp', label: 'Confirmado' },
   { value: 'no_enviada_erp', label: 'No confirmado' },
 ];
-
-const estadoLabels = facturaEstadoLabels;
 
 const yesNoOptions: FilterSelectOption[] = [
   { value: 'S', label: 'Sí' },
@@ -523,15 +536,6 @@ const facturaProviderScopeKey = (factura: FacturaDraft | null | undefined) =>
     cleanOptionalString(factura?.proveedor_codigo) ?? 'sin-proveedor',
   ].join(':');
 
-const facturaRegimenIvaProfileScopeKey = (
-  factura: FacturaDraft | null | undefined,
-  regimenOverride?: string | null,
-) =>
-  [
-    factura?.id ?? 'new',
-    cleanOptionalString(regimenOverride ?? factura?.tipo_iva_codigo) ?? 'sin-regimen',
-  ].join(':');
-
 const erpStatusMeta = (state: FacturaERPRegistrationState) => ({
   text: facturaERPRegistrationLabels[state],
   className:
@@ -683,28 +687,35 @@ const replaceFactura = (facturas: FacturaRecibida[], updated: FacturaRecibida) =
 type FacturaListItemProps = {
   factura: FacturaRecibida;
   isSelected: boolean;
-  isReadOnly?: boolean;
-  loadingFacturaId?: string | null;
   onOpen: (factura: FacturaRecibida) => Promise<void> | void;
-  onDelete: (factura: FacturaRecibida) => Promise<void> | void;
 };
 
 function FacturaListItem({
   factura,
   isSelected,
-  isReadOnly = false,
-  loadingFacturaId = null,
   onOpen,
-  onDelete,
 }: FacturaListItemProps) {
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const lineCount = factura.facturas_recibidas_lineas?.length ?? 0;
-  const invoiceErpState = getFacturaERPRegistrationState(factura);
-  const invoiceStatus = erpStatusMeta(invoiceErpState);
+  const validation = partitionFacturaValidationIssues(factura.validation_errors);
+  const listPresentation = getFacturaERPListPresentation(
+    getFacturaERPRegistrationState(factura),
+    validation.issues,
+  );
+  const invoiceErpState = listPresentation.registrationState;
+  const isDuplicateERP = Boolean(listPresentation.alreadyRegisteredNotice);
+  const invoiceStatus = isDuplicateERP
+    ? {
+        text: 'Duplicada',
+        className: 'text-amber-700 dark:text-amber-300',
+      }
+    : erpStatusMeta(invoiceErpState);
   const isSent =
-    invoiceErpState === 'confirmed' || invoiceErpState === 'registered';
+    !isDuplicateERP &&
+    (invoiceErpState === 'confirmed' || invoiceErpState === 'registered');
   const invoiceStatusDotClass =
-    invoiceErpState === 'confirmed' || invoiceErpState === 'registered'
+    isDuplicateERP
+      ? 'bg-amber-500'
+      : invoiceErpState === 'confirmed' || invoiceErpState === 'registered'
       ? 'bg-emerald-500'
       : invoiceErpState === 'error'
         ? 'bg-red-500'
@@ -716,30 +727,22 @@ function FacturaListItem({
                 invoiceErpState === 'uncertain'
               ? 'bg-slate-400'
               : 'bg-amber-500';
-  const validation = partitionFacturaValidationIssues(factura.validation_errors);
   const hasErrors = Boolean(
-    validation.errors.length ||
+    listPresentation.operationalIssues.some((issue) => issue.severity === 'error') ||
     (factura.erp_error && !isFacturaERPLegacyUnscopedError(factura)),
   );
-  const hasWarnings = validation.warnings.length > 0;
-  const isBusy = loadingFacturaId === factura.id;
-
-  const handleDeleteClick = async (event: MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-
-    if (!confirmingDelete) {
-      setConfirmingDelete(true);
-      return;
-    }
-
-    await onDelete(factura);
-    setConfirmingDelete(false);
-  };
+  const hasWarnings = listPresentation.operationalIssues.some(
+    (issue) => issue.severity === 'warning',
+  );
 
   return (
     <article
       className={`group relative rounded-md border transition-colors ${
-        isSent
+        isDuplicateERP
+          ? isSelected
+            ? 'border-amber-400 bg-amber-50 ring-1 ring-amber-200 dark:border-amber-700 dark:bg-amber-950/30 dark:ring-amber-900'
+            : 'border-amber-300 bg-amber-50/70 hover:border-amber-400 dark:border-amber-800 dark:bg-amber-950/20 dark:hover:border-amber-700'
+          : isSent
           ? isSelected
             ? 'border-primary/50 bg-primary/10 ring-1 ring-primary/20 dark:border-primary/60 dark:bg-primary/15'
             : 'border-primary/25 bg-primary/[0.07] hover:border-primary/40 dark:border-primary/35 dark:bg-primary/10 dark:hover:border-primary/50'
@@ -750,12 +753,12 @@ function FacturaListItem({
     >
       <button
         type="button"
-        className={`grid w-full min-w-0 grid-cols-1 gap-4 rounded-md px-4 py-4 text-left outline-none transition-[background-color,padding] duration-150 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 md:grid-cols-[minmax(0,1fr)_minmax(7.5rem,auto)] md:items-center ${
-          isSent
+        className={`grid w-full min-w-0 grid-cols-1 gap-4 rounded-md px-4 py-4 text-left outline-none transition-[background-color,padding] duration-150 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 md:grid-cols-[minmax(0,1fr)_7.5rem] md:items-center ${
+          isDuplicateERP
+            ? 'hover:bg-amber-100/60 dark:hover:bg-amber-950/35'
+            : isSent
             ? 'hover:bg-primary/10 dark:hover:bg-primary/15'
             : 'hover:bg-slate-50/70 dark:hover:bg-slate-900/50'
-        } ${
-          isReadOnly ? '' : confirmingDelete ? 'pr-32 md:pr-36' : 'pr-14 md:pr-16'
         }`}
         onClick={() => void onOpen(factura)}
       >
@@ -795,7 +798,9 @@ function FacturaListItem({
 
         <div
           className={`min-w-0 md:border-l md:pl-5 md:text-right ${
-            isSent
+            isDuplicateERP
+              ? 'md:border-amber-200 dark:md:border-amber-800'
+              : isSent
               ? 'md:border-primary/20 dark:md:border-primary/30'
               : 'md:border-slate-200 dark:md:border-slate-800'
           }`}
@@ -808,24 +813,6 @@ function FacturaListItem({
           </span>
         </div>
       </button>
-
-      {!isReadOnly ? (
-        <button
-          type="button"
-          className={`absolute right-3 top-3 z-10 inline-flex h-9 items-center justify-center gap-2 rounded-md px-2.5 text-xs font-semibold transition-all duration-150 md:top-1/2 md:-translate-y-1/2 ${
-            confirmingDelete
-              ? 'min-w-[104px] bg-red-600 text-white hover:bg-red-700'
-              : 'min-w-9 text-slate-500 hover:bg-red-50 hover:text-red-700 dark:text-slate-400 dark:hover:bg-red-950/35 dark:hover:text-red-200'
-          }`}
-          disabled={isBusy}
-          onClick={(event) => void handleDeleteClick(event)}
-          aria-label={confirmingDelete ? 'Confirmar eliminacion' : 'Eliminar factura'}
-          title={confirmingDelete ? 'Confirmar' : 'Eliminar'}
-        >
-          {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-          {confirmingDelete ? <span>Confirmar</span> : null}
-        </button>
-      ) : null}
     </article>
   );
 }
@@ -1089,7 +1076,6 @@ const Facturas = () => {
   const [historialProveedor, setHistorialProveedor] = useState<FacturaHistorica[]>([]);
   const historialRunRef = useRef(0);
   const regimenIvaRunRef = useRef(0);
-  const regimenIvaHydrationScopeRef = useRef('');
   const { confirmar, dialogo: dialogoConfirmacion } = useConfirmacion();
   const { toast } = useToast();
   const [catalogErrors, setCatalogErrors] = useState<FacturaCatalogErrors>({});
@@ -1099,14 +1085,10 @@ const Facturas = () => {
     () => FACTURA_CATALOG_KEYS.filter((key) => Boolean(catalogErrors[key])),
     [catalogErrors],
   );
-  const catalogError = useMemo(
-    () => failedCatalogKeys.map((key) => catalogErrors[key]).filter(Boolean).join(' '),
-    [catalogErrors, failedCatalogKeys],
-  );
-  const catalogErrorTitle =
-    failedCatalogKeys.length === FACTURA_CATALOG_KEYS.length
-      ? 'Catálogos ERP no disponibles'
-      : 'Catálogos ERP incompletos';
+  const catalogError = failedCatalogKeys.length > 0
+    ? FACTURA_CATALOG_UNAVAILABLE_MESSAGE
+    : null;
+  const catalogErrorTitle = 'Conexión con el ERP';
   const [punteoDifferencePolicy, setPunteoDifferencePolicy] =
     useState<FacturaPunteoDifferencePolicy>('warning');
   const [punteosLoading, setPunteosLoading] = useState(false);
@@ -1115,6 +1097,8 @@ const Facturas = () => {
   const [preflightIssues, setPreflightIssues] = useState<FacturaValidationIssue[]>([]);
   const [duplicateCandidate, setDuplicateCandidate] = useState<FacturaERPDuplicateCandidate | null>(null);
   const [lastSavedEditorSnapshot, setLastSavedEditorSnapshot] = useState<string | null>(null);
+  const [isEditingDetail, setIsEditingDetail] = useState(false);
+  const detailEditBaselineRef = useRef<FacturaEditorBaseline | null>(null);
   const [loadedDetailId, setLoadedDetailId] = useState<string | null>(null);
   const providerDetailRunRef = useRef(0);
   const punteablesRunRef = useRef(0);
@@ -1123,7 +1107,6 @@ const Facturas = () => {
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
   const [accountingERP, setAccountingERP] = useState(false);
-  const [validatingERP, setValidatingERP] = useState(false);
   const [extractingIa, setExtractingIa] = useState(false);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -1134,7 +1117,6 @@ const Facturas = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [showAccountingBreakdown, setShowAccountingBreakdown] = useState(false);
   const [revealedEmptyGastoIndexes, setRevealedEmptyGastoIndexes] = useState<number[]>([]);
-  const [busyFacturaId, setBusyFacturaId] = useState<string | null>(null);
   const [erpRuntime, setErpRuntime] =
     useState<FacturasRecibidasERPRuntime | null>(null);
   const [erpRuntimeChecked, setErpRuntimeChecked] = useState(false);
@@ -1175,14 +1157,27 @@ const Facturas = () => {
   const activePdfPath = draft?.pdf_path ?? null;
   const currentEditorSnapshot = useMemo(() => createEditorSnapshot(draft, lineas), [draft, lineas]);
   const hasUnsavedDetailChanges = Boolean(
-    isDetailMode && lastSavedEditorSnapshot && currentEditorSnapshot !== lastSavedEditorSnapshot,
+    isEditingDetail &&
+      isDetailMode &&
+      lastSavedEditorSnapshot &&
+      currentEditorSnapshot !== lastSavedEditorSnapshot,
   );
   const visibleIssues = useMemo(
     () => normalizeFacturaValidationIssues([...(draft?.validation_errors ?? []), ...preflightIssues]),
     [draft?.validation_errors, preflightIssues],
   );
-  const visibleErrors = visibleIssues.filter((issue) => issue.severity === 'error');
-  const visibleWarnings = visibleIssues.filter((issue) => issue.severity === 'warning');
+  const duplicateNoticeIssues = hasUnsavedDetailChanges
+    ? preflightIssues
+    : visibleIssues;
+  const erpAlreadyRegisteredNotice = getFacturaERPAlreadyRegisteredNotice(
+    duplicateNoticeIssues,
+    duplicateCandidate,
+  );
+  const visibleOperationalIssues = visibleIssues.filter(
+    (issue) => !isFacturaERPDuplicateIssue(issue),
+  );
+  const visibleErrors = visibleOperationalIssues.filter((issue) => issue.severity === 'error');
+  const visibleWarnings = visibleOperationalIssues.filter((issue) => issue.severity === 'warning');
   const pageSizeOptions = PAGE_SIZE_OPTIONS.map((option) => ({ value: option, label: `${option} por pagina` }));
   const regimenOptions = useMemo(
     () => buildRegimenOptions(regimenes, draft?.tipo_iva_codigo),
@@ -1196,6 +1191,7 @@ const Facturas = () => {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }, [draft?.proveedor_codigo]);
   const detailIsReadOnly = isERPReadOnlyFactura(draft);
+  const canEditDraft = !detailIsReadOnly && (!isDetailMode || isEditingDetail);
   const pendingEntryReferenceIdentities = useMemo(
     () =>
       (draft?.punteos ?? [])
@@ -1220,7 +1216,7 @@ const Facturas = () => {
       proveedorTipo: historicalProviderKind,
       enabled:
         Boolean(draft) &&
-        !detailIsReadOnly &&
+        canEditDraft &&
         historicalProviderKind !== null,
     });
 
@@ -1228,7 +1224,7 @@ const Facturas = () => {
     const runId = historialRunRef.current + 1;
     historialRunRef.current = runId;
     setHistorialProveedor([]);
-    if (!proveedorErpId || detailIsReadOnly) return;
+    if (!proveedorErpId || !canEditDraft) return;
     obtenerHistorialProveedor(proveedorErpId)
       .then((historial) => {
         if (historialRunRef.current !== runId) return;
@@ -1239,17 +1235,16 @@ const Facturas = () => {
         if (historialRunRef.current !== runId) return;
         setHistorialProveedor([]);
       });
-  }, [proveedorErpId, detailIsReadOnly]);
+  }, [proveedorErpId, canEditDraft]);
 
   const sugerenciasHistorial = useMemo(
     () => calcularSugerencias(historialProveedor, { iva1: draft?.iva_porcentaje ?? null }),
     [historialProveedor, draft?.iva_porcentaje],
   );
 
-  // Una factura nueva invalida cualquier sugerencia asíncrona de régimen anterior.
+  // Cambiar de factura invalida cualquier sugerencia asíncrona anterior.
   useEffect(() => {
     regimenIvaRunRef.current += 1;
-    regimenIvaHydrationScopeRef.current = '';
   }, [draft?.id]);
 
   const currentProviderScopeKey = facturaProviderScopeKey(draft);
@@ -1459,6 +1454,8 @@ const Facturas = () => {
         setLineas(createEmptyGastos());
         setShowAccountingBreakdown(false);
         setLastSavedEditorSnapshot(null);
+        setIsEditingDetail(false);
+        detailEditBaselineRef.current = null;
         setLoadedDetailId(null);
         setPdfFile(null);
         setPdfUrl(null);
@@ -1481,6 +1478,8 @@ const Facturas = () => {
       setLineas(facturaLineas);
       setShowAccountingBreakdown(shouldOpenAccountingBreakdownFor(facturaToOpen, facturaLineas));
       setLastSavedEditorSnapshot(createEditorSnapshot(facturaToOpen, facturaLineas));
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(facturaToOpen.id);
       setPdfFile(null);
       setPdfUrl(null);
@@ -1500,7 +1499,6 @@ const Facturas = () => {
     setLoadError(null);
 
     if (!factura || isERPReadOnlyFactura(factura)) {
-      setBusyFacturaId(facturaId);
       void fetchFacturaRecibidaById(facturaId)
         .then((detailedFactura) => {
           if (cancelled) return;
@@ -1512,11 +1510,6 @@ const Facturas = () => {
         .catch((error) => {
           if (!cancelled) {
             setLoadError(getErrorMessage(error, 'No se pudo abrir la factura.'));
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setBusyFacturaId(null);
           }
         });
 
@@ -1696,11 +1689,51 @@ const Facturas = () => {
     setPage(1);
   };
 
+  const beginDetailEditing = () => {
+    if (!draft || !isDetailMode || detailIsReadOnly || saving || sending || accountingERP) {
+      return;
+    }
+
+    detailEditBaselineRef.current = {
+      draft: structuredClone(draft),
+      lineas: structuredClone(lineas),
+      snapshot: currentEditorSnapshot,
+    };
+    setLastSavedEditorSnapshot(currentEditorSnapshot);
+    setIsEditingDetail(true);
+    setSaveFeedback(null);
+    setModalMessage(null);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
+    setPunteosLoadError(null);
+  };
+
+  const cancelDetailEditing = () => {
+    if (!isEditingDetail || saving || sending || accountingERP) return;
+
+    const baseline = detailEditBaselineRef.current;
+    if (baseline) {
+      setDraft(structuredClone(baseline.draft));
+      setLineas(structuredClone(baseline.lineas));
+      setLastSavedEditorSnapshot(baseline.snapshot);
+    }
+    setIsEditingDetail(false);
+    detailEditBaselineRef.current = null;
+    setSaveFeedback(null);
+    setModalMessage(null);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
+    setPunteosLoadError(null);
+    setRevealedEmptyGastoIndexes([]);
+  };
+
   const openNewFactura = () => {
     setDraft(createEmptyDraft());
     setLineas(createEmptyGastos());
     setShowAccountingBreakdown(true);
     setLastSavedEditorSnapshot(null);
+    setIsEditingDetail(false);
+    detailEditBaselineRef.current = null;
     setLoadedDetailId(null);
     setPdfFile(null);
     setPdfUrl(null);
@@ -1721,6 +1754,8 @@ const Facturas = () => {
     setLineas(createEmptyGastos());
     setShowAccountingBreakdown(false);
     setLastSavedEditorSnapshot(null);
+    setIsEditingDetail(false);
+    detailEditBaselineRef.current = null;
     setLoadedDetailId(null);
     setPdfFile(null);
     setPdfUrl(null);
@@ -1731,7 +1766,6 @@ const Facturas = () => {
   };
 
   const openFactura = async (factura: FacturaRecibida) => {
-    setBusyFacturaId(factura.id);
     setLoadError(null);
 
     try {
@@ -1741,6 +1775,8 @@ const Facturas = () => {
       setDraft({ ...facturaToOpen });
       setLineas(facturaLineas);
       setLastSavedEditorSnapshot(createEditorSnapshot(facturaToOpen, facturaLineas));
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(facturaToOpen.id);
       setPdfFile(null);
       setPdfUrl(null);
@@ -1748,12 +1784,10 @@ const Facturas = () => {
       setPreflightIssues([]);
       setDuplicateCandidate(null);
       setModalOpen(false);
-      navigate(`/facturas-recibidas/${encodeURIComponent(facturaToOpen.id)}`);
+      navigate(buildFacturaRecibidaDetailPath(encodeURIComponent(facturaToOpen.id)));
       window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
     } catch (error) {
       setLoadError(getErrorMessage(error, 'No se pudo abrir la factura.'));
-    } finally {
-      setBusyFacturaId(null);
     }
   };
 
@@ -1772,6 +1806,8 @@ const Facturas = () => {
     setLineas(createEmptyGastos());
     setShowAccountingBreakdown(false);
     setLastSavedEditorSnapshot(null);
+    setIsEditingDetail(false);
+    detailEditBaselineRef.current = null;
     setLoadedDetailId(null);
     setPdfFile(null);
     setPdfUrl(null);
@@ -1780,10 +1816,11 @@ const Facturas = () => {
     setPreflightIssues([]);
     setDuplicateCandidate(null);
     setModalOpen(false);
-    navigate('/facturas-recibidas');
+    navigate(ROUTE_BASES.facturasRecibidas);
   };
 
   const updateDraft = async <TKey extends keyof FacturaDraft>(key: TKey, value: FacturaDraft[TKey]) => {
+    if (!canEditDraft) return;
     setPreflightIssues([]);
     setDuplicateCandidate(null);
     let clearPunteos = false;
@@ -1841,9 +1878,9 @@ const Facturas = () => {
   };
 
   const changeRegimenIva = async (value: string) => {
+    if (!canEditDraft) return;
     const runId = regimenIvaRunRef.current + 1;
     regimenIvaRunRef.current = runId;
-    regimenIvaHydrationScopeRef.current = facturaRegimenIvaProfileScopeKey(draft, value);
     await updateDraft('tipo_iva_codigo', value);
 
     const regimenId = Number.parseInt(value, 10);
@@ -1874,66 +1911,8 @@ const Facturas = () => {
     }
   };
 
-  useEffect(() => {
-    const facturaActualId = draft?.id;
-    const value = cleanOptionalString(draft?.tipo_iva_codigo);
-    const regimenId = Number.parseInt(value ?? '', 10);
-    if (
-      !facturaActualId ||
-      detailIsReadOnly ||
-      !value ||
-      !Number.isInteger(regimenId) ||
-      regimenId <= 0
-    ) {
-      return;
-    }
-
-    const scope = facturaRegimenIvaProfileScopeKey(draft);
-    if (regimenIvaHydrationScopeRef.current === scope) return;
-    regimenIvaHydrationScopeRef.current = scope;
-
-    const runId = regimenIvaRunRef.current + 1;
-    regimenIvaRunRef.current = runId;
-
-    void obtenerPerfilesIvaRegimen({ regimenId })
-      .then((perfiles) => {
-        if (regimenIvaRunRef.current !== runId) return;
-
-        const perfilAplicable = perfiles.plantilla_sugerida ?? perfiles.perfil_mas_usado;
-        if (perfilAplicable) {
-          setDraft((current) => {
-            if (
-              !current ||
-              current.id !== facturaActualId ||
-              facturaRegimenIvaProfileScopeKey(current) !== scope
-            ) {
-              return current;
-            }
-            const source = current.iva_tramos?.length
-              ? current.iva_tramos
-              : createEmptyDraft().iva_tramos ?? [];
-            const resultado = aplicarPlantillaIvaHistorica(source, perfiles, {
-              preserveExistingPercentages: true,
-              allowMostUsedProfile: true,
-            });
-            const hasChanges = resultado.tramos.some(
-              (tramo, index) =>
-                source[index]?.porcentaje == null && tramo.porcentaje != null,
-            );
-            return hasChanges ? { ...current, iva_tramos: resultado.tramos } : current;
-          });
-        }
-      })
-      .catch(() => {
-        // Si el histórico no está disponible, se conservan los valores actuales.
-      });
-  }, [
-    detailIsReadOnly,
-    draft?.id,
-    draft?.tipo_iva_codigo,
-  ]);
-
   const changeTipoFactura = async (nextTipo: 'GE' | 'OT') => {
+    if (!canEditDraft) return;
     if (
       !draft ||
       tipoFacturaRadioValue(
@@ -1995,6 +1974,7 @@ const Facturas = () => {
   };
 
   const selectProveedorERP = async (proveedor: AgroIrisAcreedor | null) => {
+    if (!canEditDraft) return;
     const providerLabel = providerKind === 'agricultor' ? 'proveedor' : 'acreedor';
     const previousProveedorId = proveedorIdFromDraft(draft);
     const nextProveedorId = proveedor?.acreedorid ?? null;
@@ -2133,6 +2113,7 @@ const Facturas = () => {
     key: TKey,
     value: FacturaRecibidaLinea[TKey],
   ) => {
+    if (!canEditDraft) return;
     setLineas((current) =>
       current.map((linea, currentIndex) => (currentIndex === index ? { ...linea, [key]: value } : linea)),
     );
@@ -2143,6 +2124,7 @@ const Facturas = () => {
     key: 'base' | 'porcentaje' | 'cuota',
     value: number | null,
   ) => {
+    if (!canEditDraft) return;
     regimenIvaRunRef.current += 1;
     setDraft((current) => {
       if (!current) return current;
@@ -2163,6 +2145,7 @@ const Facturas = () => {
   };
 
   const calculateIvaCuota = (tramo: FacturaRecibidaIvaTramo) => {
+    if (!canEditDraft) return;
     const cuota = calculateFacturaIvaCuota(tramo.base, tramo.porcentaje);
     if (cuota === null) return;
     updateIvaTramo(tramo.posicion, 'cuota', cuota);
@@ -2173,6 +2156,7 @@ const Facturas = () => {
     key: 'fecha' | 'importe',
     value: string | number | null,
   ) => {
+    if (!canEditDraft) return;
     setDraft((current) => {
       if (!current) return current;
       const source = current.vencimientos?.length
@@ -2195,6 +2179,7 @@ const Facturas = () => {
     key: TKey,
     value: FacturaRecibidaLinea[TKey],
   ) => {
+    if (!canEditDraft) return;
     setDraft((current) => {
       if (!current) return current;
       const ctbLineas = current.ctb_lineas?.length
@@ -2210,6 +2195,7 @@ const Facturas = () => {
   };
 
   const addCtbLinea = () => {
+    if (!canEditDraft) return;
     setDraft((current) => {
       if (!current) return current;
       const ctbLineas = current.ctb_lineas ?? [];
@@ -2221,6 +2207,7 @@ const Facturas = () => {
   };
 
   const removeCtbLinea = (index: number) => {
+    if (!canEditDraft) return;
     setDraft((current) => {
       if (!current) return current;
       return {
@@ -2233,6 +2220,7 @@ const Facturas = () => {
   };
 
   const updatePunteoSelected = (identity: string, selected: boolean) => {
+    if (!canEditDraft) return;
     setDraft((current) => {
       if (!current) return current;
       return {
@@ -2245,6 +2233,7 @@ const Facturas = () => {
   };
 
   const loadPunteables = async () => {
+    if (!canEditDraft) return;
     if (getVerifiedERPDuplicateId(draft) !== null) {
       setPunteosLoadError(null);
       return;
@@ -2301,6 +2290,7 @@ const Facturas = () => {
   };
 
   const removeLinea = (index: number) => {
+    if (!canEditDraft) return;
     setLineas((current) =>
       current.map((linea, currentIndex) =>
         currentIndex === index ? createEmptyLinea(linea.posicion ?? currentIndex + 1) : linea,
@@ -2350,19 +2340,27 @@ const Facturas = () => {
       setPreflightIssues([]);
       setDuplicateCandidate(null);
       setLastSavedEditorSnapshot(createEditorSnapshot(saved, savedLineas));
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(saved.id);
       setPdfFile(null);
       const savedIssues = normalizeFacturaValidationIssues(saved.validation_errors);
-      const savedHasErrors = savedIssues.some((issue) => issue.severity === 'error');
-      const savedHasWarnings = savedIssues.some((issue) => issue.severity === 'warning');
+      const savedOperationalIssues = savedIssues.filter(
+        (issue) => !isFacturaERPDuplicateIssue(issue),
+      );
+      const savedHasErrors = savedOperationalIssues.some((issue) => issue.severity === 'error');
+      const savedHasWarnings = savedOperationalIssues.some((issue) => issue.severity === 'warning');
+      const savedDuplicateNotice = getFacturaERPAlreadyRegisteredNotice(savedIssues);
       const successMessage: ModalMessage = {
-        type: savedHasErrors ? 'error' : savedHasWarnings ? 'info' : 'success',
+        type: savedHasErrors || savedHasWarnings || savedDuplicateNotice ? 'info' : 'success',
         text: savedHasErrors
-          ? 'Factura guardada con errores bloqueantes de validacion.'
+          ? 'Factura guardada con errores que debes revisar.'
           : savedHasWarnings
-            ? 'Factura guardada con avisos de revision.'
+            ? 'Factura guardada con avisos de revisión.'
+            : savedDuplicateNotice
+              ? 'Factura guardada. Ya está registrada en el ERP.'
             : validar
-              ? 'Factura validada y lista para envio manual.'
+              ? 'Factura preparada para enviar.'
               : 'Factura guardada.',
       };
 
@@ -2373,9 +2371,7 @@ const Facturas = () => {
             ? 'Guardada con errores'
             : savedHasWarnings
               ? 'Guardada con avisos'
-              : validar
-                ? 'Validada'
-                : 'Guardada',
+              : 'Guardada',
         );
       } else {
         setModalMessage(successMessage);
@@ -2390,11 +2386,114 @@ const Facturas = () => {
     }
   };
 
-  const handleSendERP = async (
-    operation: 'validate' | 'commit' = 'commit',
+  const applyFacturaToDetail = (factura: FacturaRecibida) => {
+    setFacturas((current) => replaceFactura(current, factura));
+    const facturaLineas = getLineas(factura);
+    setDraft(factura);
+    setLineas(facturaLineas);
+    setLastSavedEditorSnapshot(createEditorSnapshot(factura, facturaLineas));
+    setIsEditingDetail(false);
+    detailEditBaselineRef.current = null;
+    setLoadedDetailId(factura.id);
+  };
+
+  const commitValidatedFacturaToERP = async (
+    validated: FacturaRecibida,
+    expectedRequestId: string,
   ) => {
-    if (operation === 'validate') setValidatingERP(true);
-    else setSending(true);
+    const commitRequestId = requireFacturaERPCommitRequestId(
+      validated,
+      expectedRequestId,
+    );
+
+    const accountingRequestedOnCommit = validated.contabilizar === 'S';
+    const sent = await sendFacturaRecibidaToERP(
+      validated.id,
+      validated.version,
+      commitRequestId,
+      'commit',
+    );
+    const sendConfirmation = getFacturaERPSendConfirmation(sent);
+    applyFacturaToDetail(sent);
+    setPreflightIssues([]);
+    setDuplicateCandidate(null);
+
+    let completed = sent;
+    if (
+      sendConfirmation === 'confirmed' &&
+      shouldStartFacturaAccountingAfterManagement(
+        sent,
+        accountingRequestedOnCommit,
+      )
+    ) {
+      const accountingRequestId = getFacturaAccountingActionRequestId(sent);
+      try {
+        completed = await accountFacturaRecibidaERP(
+          sent.id,
+          sent.version,
+          accountingRequestId,
+        );
+      } catch (accountingError) {
+        try {
+          completed = (await fetchFacturaRecibidaById(sent.id)) ?? sent;
+        } catch {
+          completed = sent;
+        }
+        applyFacturaToDetail(completed);
+        setModalMessage({
+          type: 'error',
+          text: `Factura registrada en el ERP. No se pudo completar la contabilización: ${getErrorMessage(
+            accountingError,
+            'Revisa el estado contable antes de volver a intentarlo.',
+          )}`,
+        });
+        return;
+      }
+      applyFacturaToDetail(completed);
+    }
+
+    setModalMessage(
+      sendConfirmation === 'confirmed'
+        ? completed.accounting_status === 'created'
+          ? {
+              type: 'success',
+              text: 'Factura registrada y contabilizada.',
+            }
+          : completed.accounting_status === 'error'
+            ? {
+                type: 'info',
+                text: 'Factura registrada. No se pudo completar la contabilización.',
+              }
+            : completed.accounting_status === 'pending'
+              ? {
+                  type: 'info',
+                  text: 'Factura registrada. La contabilización está en curso.',
+                }
+              : completed.accounting_status === 'unknown'
+                ? {
+                    type: 'info',
+                    text: 'Factura registrada. El resultado de la contabilización está pendiente de comprobar.',
+                  }
+                : {
+                    type: 'success',
+                    text: 'Factura registrada en el ERP.',
+                  }
+        : {
+            type: 'info',
+            text: 'El resultado del alta no es concluyente. Queda pendiente de reconciliación y no se repetirá el envío.',
+          },
+    );
+  };
+
+  const handleSendERP = async () => {
+    if (isEditingDetail) {
+      setModalMessage({
+        type: 'info',
+        text: 'Guarda o cancela la edición antes de enviar la factura al ERP.',
+      });
+      return;
+    }
+    setSending(true);
     setModalMessage(null);
     setSaveFeedback(null);
     setPreflightIssues([]);
@@ -2407,7 +2506,7 @@ const Facturas = () => {
       }
 
       const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
-      if (reconciliationRequestId && operation === 'commit') {
+      if (reconciliationRequestId) {
         const reconciled = await sendFacturaRecibidaToERP(
           draft.id,
           draft.version,
@@ -2415,151 +2514,53 @@ const Facturas = () => {
           'reconcile',
         );
         const reconciliationConfirmation = getFacturaERPSendConfirmation(reconciled);
-        setFacturas((current) => replaceFactura(current, reconciled));
-        const reconciledLineas = getLineas(reconciled);
-        setDraft(reconciled);
-        setLineas(reconciledLineas);
-        setLastSavedEditorSnapshot(createEditorSnapshot(reconciled, reconciledLineas));
-        setLoadedDetailId(reconciled.id);
+        applyFacturaToDetail(reconciled);
         setModalMessage(reconciliationConfirmation === 'confirmed'
-          ? { type: 'success', text: 'Reconciliacion completada y escritura confirmada por el ERP.' }
+          ? { type: 'success', text: 'El ERP ha confirmado el envío.' }
           : {
               type: 'info',
-              text: 'El ERP todavia no permite confirmar la escritura. No se ha realizado un segundo envio.',
+              text: 'El ERP todavía no puede confirmar el envío. No se ha enviado de nuevo.',
             });
         return;
       }
 
-      if (operation === 'validate' && !canValidateWithERP) {
+      const hasCurrentERPValidation =
+        draft.erp_validation_status === 'valid' &&
+        Boolean(draft.erp_validation_request_id) &&
+        !hasUnsavedDetailChanges;
+
+      if (!hasCurrentERPValidation && !canValidateWithERP) {
         setModalMessage({
           type: 'info',
           text: erpRuntimeChecked
-            ? 'La validación con ERP no está disponible en el entorno actual.'
-            : 'Espera mientras se comprueban las capacidades del ERP.',
+            ? 'El envío al ERP no está disponible en este momento. Guarda la factura y vuelve a intentarlo más tarde.'
+            : 'Espera mientras se comprueba la conexión con el ERP.',
         });
         return;
       }
 
-      if (operation === 'commit') {
-        if (!canCommitManagement) {
-          setModalMessage({
-            type: 'info',
-            text: erpRuntimeChecked
-              ? 'Las altas de gestión ERP están deshabilitadas en el entorno actual.'
-              : 'Espera mientras se comprueban las capacidades del ERP.',
-          });
-          return;
-        }
+      if (!canCommitManagement) {
+        setModalMessage({
+          type: 'info',
+          text: erpRuntimeChecked
+            ? 'El envío al ERP no está disponible en este momento. Guarda la factura y vuelve a intentarlo más tarde.'
+            : 'Espera mientras se comprueba la conexión con el ERP.',
+        });
+        return;
+      }
 
-        if (
-          draft.erp_validation_status !== 'valid' ||
-          !draft.erp_validation_request_id ||
-          hasUnsavedDetailChanges
-        ) {
-          setModalMessage({
-            type: 'info',
-            text: 'Valida de nuevo la factura antes de enviarla a gestión ERP.',
-          });
-          return;
-        }
+      if (draft.contabilizar === 'S' && !canCommitAccounting) {
+        setModalMessage({
+          type: 'info',
+          text: 'La contabilización no está disponible en este momento. Puedes guardar la factura y enviarla más tarde.',
+        });
+        return;
+      }
 
-        const accountingRequestedOnCommit = draft.contabilizar === 'S';
-        const sent = await sendFacturaRecibidaToERP(
-          draft.id,
-          draft.version,
-          draft.erp_validation_request_id,
-          'commit',
-        );
-        const sendConfirmation = getFacturaERPSendConfirmation(sent);
-        setFacturas((current) => replaceFactura(current, sent));
-        const sentLineas = getLineas(sent);
-        setDraft(sent);
-        setLineas(sentLineas);
-        setPreflightIssues([]);
-        setDuplicateCandidate(null);
-        setLastSavedEditorSnapshot(createEditorSnapshot(sent, sentLineas));
-        setLoadedDetailId(sent.id);
-
-        let completed = sent;
-        if (
-          sendConfirmation === 'confirmed' &&
-          shouldStartFacturaAccountingAfterManagement(
-            sent,
-            accountingRequestedOnCommit,
-          )
-        ) {
-          const accountingRequestId =
-            getFacturaAccountingActionRequestId(sent);
-          try {
-            completed = await accountFacturaRecibidaERP(
-              sent.id,
-              sent.version,
-              accountingRequestId,
-            );
-          } catch (accountingError) {
-            try {
-              completed =
-                (await fetchFacturaRecibidaById(sent.id)) ?? sent;
-            } catch {
-              completed = sent;
-            }
-            setFacturas((current) => replaceFactura(current, completed));
-            const completedLineas = getLineas(completed);
-            setDraft(completed);
-            setLineas(completedLineas);
-            setLastSavedEditorSnapshot(
-              createEditorSnapshot(completed, completedLineas),
-            );
-            setLoadedDetailId(completed.id);
-            setModalMessage({
-              type: 'error',
-              text: `Factura registrada en el ERP. No se pudo completar la contabilización: ${getErrorMessage(
-                accountingError,
-                'Revisa el estado contable antes de volver a intentarlo.',
-              )}`,
-            });
-            return;
-          }
-          setFacturas((current) => replaceFactura(current, completed));
-          const completedLineas = getLineas(completed);
-          setDraft(completed);
-          setLineas(completedLineas);
-          setLastSavedEditorSnapshot(
-            createEditorSnapshot(completed, completedLineas),
-          );
-          setLoadedDetailId(completed.id);
-        }
-
-        setModalMessage(
-          sendConfirmation === 'confirmed'
-            ? completed.accounting_status === 'created'
-              ? {
-                  type: 'success',
-                  text: 'Factura registrada y contabilizada.',
-                }
-              : completed.accounting_status === 'error'
-                ? {
-                    type: 'info',
-                    text: 'Factura registrada. No se pudo completar la contabilización.',
-                  }
-                : completed.accounting_status === 'pending'
-                  ? {
-                      type: 'info',
-                      text: 'Factura registrada. La contabilización está en curso.',
-                    }
-                : completed.accounting_status === 'unknown'
-                  ? {
-                      type: 'info',
-                      text: 'Factura registrada. El resultado de la contabilización está pendiente de comprobar.',
-                    }
-                  : {
-                      type: 'success',
-                      text: 'Factura registrada en el ERP.',
-                    }
-            : {
-                type: 'info',
-                text: 'El resultado del alta no es concluyente. Queda pendiente de reconciliación y no se repetirá el envío.',
-              },
+      if (hasCurrentERPValidation) {
+        await commitValidatedFacturaToERP(
+          draft as FacturaRecibida,
+          draft.erp_validation_request_id as string,
         );
         return;
       }
@@ -2648,13 +2649,20 @@ const Facturas = () => {
       const preflightErrors = allPreflightIssues.filter(
         (issue) => issue.severity === 'error',
       );
+      const preflightOperationalErrors = preflightErrors.filter(
+        (issue) => !isFacturaERPDuplicateIssue(issue),
+      );
       if (preflightErrors.length > 0) {
-        setModalMessage({
-          type: 'error',
-          text: sanitizeUserFacingErrorMessage(
-            preflightErrors.map((issue) => issue.message).join(' '),
-          ),
-        });
+        setModalMessage(
+          preflightOperationalErrors.length > 0
+            ? {
+                type: 'error',
+                text: sanitizeUserFacingErrorMessage(
+                  preflightOperationalErrors.map((issue) => issue.message).join(' '),
+                ),
+              }
+            : null,
+        );
         return;
       }
 
@@ -2664,17 +2672,30 @@ const Facturas = () => {
       }
 
       const saved = await persistFactura(false, facturaForSend, true);
-      const savedErrors = normalizeFacturaValidationIssues(saved?.validation_errors).filter(
+      const savedIssues = normalizeFacturaValidationIssues(saved?.validation_errors);
+      const savedErrors = savedIssues.filter(
         (issue) => issue.severity === 'error',
       );
-      if (!saved || savedErrors.length > 0) {
+      const savedOperationalErrors = savedErrors.filter(
+        (issue) => !isFacturaERPDuplicateIssue(issue),
+      );
+      const savedDuplicateNotice = getFacturaERPAlreadyRegisteredNotice(
+        savedIssues,
+        preflight.duplicate,
+      );
+      if (!saved || savedOperationalErrors.length > 0) {
         setModalMessage({
           type: 'error',
           text: sanitizeUserFacingErrorMessage(
-            savedErrors.map((issue) => issue.message).join(' ') ||
+            savedOperationalErrors.map((issue) => issue.message).join(' ') ||
               'No se pudo preparar la factura para envio.',
           ),
         });
+        return;
+      }
+      if (savedDuplicateNotice) {
+        setDuplicateCandidate(preflight.duplicate);
+        setModalMessage(null);
         return;
       }
 
@@ -2693,16 +2714,14 @@ const Facturas = () => {
       setLastSavedEditorSnapshot(
         createEditorSnapshot(validated, validatedLineas),
       );
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(validated.id);
-      setModalMessage({
-        type: 'success',
-        text: 'Validación ERP superada. Revisa el resultado y confirma el alta de gestión.',
-      });
+      await commitValidatedFacturaToERP(validated, validationRequestId);
     } catch (error) {
       setModalMessage({ type: 'error', text: getErrorMessage(error, 'No se pudo enviar la factura.') });
     } finally {
       setSending(false);
-      setValidatingERP(false);
     }
   };
 
@@ -2738,6 +2757,8 @@ const Facturas = () => {
       setLastSavedEditorSnapshot(
         createEditorSnapshot(accounted, accountedLineas),
       );
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(accounted.id);
       setModalMessage(
         accounted.accounting_status === 'created'
@@ -2777,33 +2798,24 @@ const Facturas = () => {
 
     try {
       const saved = await extractFacturaFromPdf(selectedPdf, createEmptyDraft());
-      const savedForEditor = {
-        ...saved,
-        fr_sufa:
-          tipoFacturaRadioValue(
-            saved.fr_sufa,
-            saved.match_evidence,
-            saved.proveedor_codigo,
-          ) || null,
-      };
       const savedLineas = getLineas(saved);
 
-      setFacturas((current) => replaceFactura(current, savedForEditor));
+      setFacturas((current) => replaceFactura(current, saved));
       setFacturasTotal((current) => current + 1);
-      setDraft(savedForEditor);
+      setDraft(saved);
       setLineas(savedLineas);
-      setShowAccountingBreakdown(shouldOpenAccountingBreakdownFor(savedForEditor, savedLineas));
-      // La extracción ya se ha persistido. Si vino sin tipo o con un código
-      // histórico no binario, OT queda como cambio visible pendiente de guardar.
+      setShowAccountingBreakdown(shouldOpenAccountingBreakdownFor(saved, savedLineas));
       setLastSavedEditorSnapshot(createEditorSnapshot(saved, savedLineas));
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(saved.id);
       setPdfFile(null);
       setFacturaUploadStep('done');
       setModalOpen(false);
-      navigate(`/facturas-recibidas/${encodeURIComponent(saved.id)}`, { replace: true });
+      navigate(buildFacturaRecibidaDetailPath(encodeURIComponent(saved.id)), { replace: true });
       setModalMessage({
         type: 'success',
-        text: 'Factura registrada. Revisa los datos antes de validar.',
+        text: 'Factura registrada. Revisa los datos antes de enviarla al ERP.',
       });
     } catch (error) {
       window.clearTimeout(analyzingTimer);
@@ -2811,6 +2823,8 @@ const Facturas = () => {
       setLineas(createEmptyGastos());
       setShowAccountingBreakdown(true);
       setLastSavedEditorSnapshot(null);
+      setIsEditingDetail(false);
+      detailEditBaselineRef.current = null;
       setLoadedDetailId(null);
       setPdfFile(selectedPdf);
       setPdfUrl(null);
@@ -2849,25 +2863,6 @@ const Facturas = () => {
       setModalMessage({ type: 'error', text: getErrorMessage(error, 'No se pudo descartar la factura.') });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleDiscardFromList = async (factura: FacturaRecibida) => {
-    if (isERPReadOnlyFactura(factura)) {
-      return;
-    }
-
-    setBusyFacturaId(factura.id);
-    setLoadError(null);
-
-    try {
-      const saved = await saveFacturaRecibida({ ...factura, estado: 'descartada' }, getLineas(factura), false);
-      setFacturas((current) => current.filter((item) => item.id !== saved.id));
-      setFacturasTotal((current) => Math.max(0, current - 1));
-    } catch (error) {
-      setLoadError(getErrorMessage(error, 'No se pudo descartar la factura.'));
-    } finally {
-      setBusyFacturaId(null);
     }
   };
 
@@ -2912,8 +2907,8 @@ const Facturas = () => {
     ? draft?.accounting_error ?? null
     : draft?.erp_error ?? draft?.accounting_error ?? null;
   const reconciliationRequestId = getFacturaERPReconciliationRequestId(draft);
-  const detailERPStatus = erpStatusMeta(detailERPState);
-  const isReadOnlyDetail = isERPReadOnlyFactura(draft);
+  const isPermanentReadOnlyDetail = detailIsReadOnly;
+  const isReadOnlyDetail = isPermanentReadOnlyDetail || (isDetailMode && !isEditingDetail);
   const accountingDetailStatus = String(
     draft?.accounting_status ?? 'not_requested',
   )
@@ -2938,24 +2933,54 @@ const Facturas = () => {
   const duplicateERPPunteosReadOnly = verifiedDuplicateERPId !== null;
   const punteosReadOnly = isReadOnlyDetail || duplicateERPPunteosReadOnly;
   const providerLabel = providerKind === 'agricultor' ? 'Proveedor' : 'Acreedor';
-  const detailStatusText = hasLegacyUnscopedERPError
-    ? 'Pendiente de revisión'
-    : draft?.estado
-      ? estadoLabels[draft.estado]
-      : detailERPStatus.text;
-  const detailReadOnlyStatusText =
-    draft?.estado === 'enviada_erp' ||
-    detailERPState === 'confirmed' ||
-    detailERPState === 'registered'
-      ? 'Enviada'
-      : isERPReferenceFactura(draft)
-        ? 'Referencia ERP'
-      : detailERPStatus.text;
   const isERPValidationCurrent =
     draft?.erp_validation_status === 'valid' &&
     Boolean(draft.erp_validation_request_id) &&
     !hasUnsavedDetailChanges;
+  const requiresERPValidation = !isERPValidationCurrent;
+  const shouldShowERPPrimaryAction = Boolean(
+    !isPermanentReadOnlyDetail || reconciliationRequestId || canContinueAccounting,
+  );
+  const erpPrimaryActionDisabled = Boolean(
+    saving ||
+      sending ||
+      accountingERP ||
+      extractingIa ||
+      isEditingDetail ||
+      Boolean(erpAlreadyRegisteredNotice) ||
+      draft?.estado === 'descartada' ||
+      (canContinueAccounting
+        ? !erpRuntimeChecked || !canCommitAccounting
+        : reconciliationRequestId
+          ? false
+          : !erpRuntimeChecked ||
+            !canCommitManagement ||
+            (requiresERPValidation && !canValidateWithERP) ||
+            detailERPState === 'confirmed' ||
+            detailERPState === 'sending' ||
+            detailERPState === 'uncertain' ||
+            (draft?.contabilizar === 'S' && !canCommitAccounting)),
+  );
+  const erpPrimaryActionLabel = erpAlreadyRegisteredNotice
+    ? 'Ya registrada en ERP'
+    : accountingERP
+      ? 'Completando…'
+      : sending
+        ? reconciliationRequestId
+          ? 'Comprobando…'
+          : 'Enviando…'
+        : canContinueAccounting
+          ? 'Completar contabilización'
+          : reconciliationRequestId
+            ? 'Comprobar envío'
+            : 'Enviar a ERP';
+  const erpPrimaryActionClass = erpAlreadyRegisteredNotice
+    ? 'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 text-sm font-semibold text-amber-900 shadow-sm disabled:cursor-not-allowed disabled:opacity-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100'
+    : 'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70';
   const erpCapabilityMessage = (() => {
+    if (erpAlreadyRegisteredNotice) {
+      return null;
+    }
     if (!erpRuntimeChecked) {
       return 'Comprobando la conexión con el ERP…';
     }
@@ -2968,22 +2993,20 @@ const Facturas = () => {
     if (canContinueAccounting) {
       return canCommitAccounting
         ? null
-        : 'La contabilización está desactivada en este momento.';
+        : 'No se puede completar la contabilización ahora. Inténtalo más tarde.';
     }
-    if (reconciliationRequestId && !canCommitManagement) {
-      return 'Las altas nuevas están deshabilitadas; la comprobación del intento existente sigue disponible.';
+    if (reconciliationRequestId) {
+      return 'Hay un envío pendiente de confirmar. Pulsa «Comprobar envío» para consultar su estado.';
     }
-    if (!erpRuntime) {
-      return 'No se ha podido conectar con el ERP. El envío permanece desactivado.';
-    }
-    if (!canValidateWithERP) {
-      return 'No se puede conectar con el ERP en este momento.';
-    }
-    if (!canCommitManagement) {
-      return 'Puedes validar la factura, pero el envío está desactivado.';
+    if (
+      !erpRuntime ||
+      !canCommitManagement ||
+      (requiresERPValidation && !canValidateWithERP)
+    ) {
+      return 'El ERP no está disponible. Puedes seguir editando y guardar; envía la factura cuando vuelva la conexión.';
     }
     if (draft?.contabilizar === 'S' && !canCommitAccounting) {
-      return 'El envío con contabilización está desactivado.';
+      return 'La contabilización no está disponible. Puedes guardar la factura y enviarla más tarde.';
     }
     return null;
   })();
@@ -3059,6 +3082,7 @@ const Facturas = () => {
   );
   const vencimientosDifference = Number(draft?.total ?? 0) - vencimientosTotal;
   const assignTotalToFirstVencimiento = async () => {
+    if (!canEditDraft) return;
     const hasOtherAmounts = vencimientos
       .slice(1)
       .some((vencimiento) => Math.abs(Number(vencimiento.importe ?? 0)) > ACCOUNTING_AMOUNT_TOLERANCE);
@@ -3097,6 +3121,7 @@ const Facturas = () => {
         : `${accountingLineCount} gastos - ${formatMoney(lineasBaseTotal)}`;
 
   const addAccountingLine = () => {
+    if (!canEditDraft) return;
     if (nextHiddenAccountingLineIndex < 0) return;
     setRevealedEmptyGastoIndexes((current) =>
       Array.from(new Set([...current, nextHiddenAccountingLineIndex])).sort((left, right) => left - right),
@@ -3246,7 +3271,7 @@ const Facturas = () => {
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span>
-              {catalogError} Los valores guardados se conservan, pero no se ofrecen sustitutos inventados.
+              {catalogError}
             </span>
             <button
               type="button"
@@ -3299,10 +3324,7 @@ const Facturas = () => {
                 key={factura.id}
                 factura={factura}
                 isSelected={draft?.id === factura.id}
-                isReadOnly={isERPReadOnlyFactura(factura)}
-                loadingFacturaId={busyFacturaId}
                 onOpen={openFactura}
-                onDelete={handleDiscardFromList}
               />
             ))}
           </div>
@@ -3374,124 +3396,99 @@ const Facturas = () => {
               </p>
             ) : null}
             <FacturaAsientoViewer factura={draft} gastos={lineas} />
-            {!isReadOnlyDetail || reconciliationRequestId || canContinueAccounting ? (
+            {!isPermanentReadOnlyDetail ? (
               <>
-                {!isReadOnlyDetail ? (
-                  <>
-                    <button
-                      type="button"
-                      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
-                      disabled={saving || sending || accountingERP || validatingERP}
-                      onClick={() => void handleDiscard()}
-                    >
-                      <Trash2 size={15} />
-                      Eliminar
-                    </button>
-                    <button
-                      type="button"
-                      className={saveButtonClass}
-                      disabled={saving || sending || accountingERP || validatingERP || !hasUnsavedDetailChanges}
-                      onClick={() => void persistFactura(false)}
-                    >
-                      {saving ? <Loader2 className="animate-spin" size={15} /> : showSaveFeedback ? <CheckCircle2 size={15} /> : <Save size={15} />}
-                      {saveButtonLabel}
-                    </button>
-                  </>
-                ) : null}
-                {!isReadOnlyDetail && !reconciliationRequestId ? (
+                {isEditingDetail ? (
                   <button
                     type="button"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-white px-3 text-sm font-semibold text-primary shadow-sm transition-colors hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-900"
-                    disabled={
-                      saving ||
-                      sending ||
-                      accountingERP ||
-                      validatingERP ||
-                      !erpRuntimeChecked ||
-                      !canValidateWithERP ||
-                      detailERPState === 'confirmed' ||
-                      detailERPState === 'sending' ||
-                      detailERPState === 'uncertain' ||
-                      draft.estado === 'descartada'
-                    }
-                    onClick={() => void handleSendERP('validate')}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:hover:bg-slate-800"
+                    disabled={saving || sending || accountingERP}
+                    onClick={cancelDetailEditing}
                   >
-                    {validatingERP ? (
-                      <Loader2 className="animate-spin" size={15} />
-                    ) : (
-                      <CheckCircle2 size={15} />
-                    )}
-                    {validatingERP
-                      ? 'Validando…'
-                      : isERPValidationCurrent
-                        ? 'Validada con ERP'
-                        : 'Validar con ERP'}
+                    <X size={15} />
+                    Cancelar
                   </button>
-                ) : null}
-                {!isReadOnlyDetail || reconciliationRequestId ? (
+                ) : (
+                  <button
+                    type="button"
+                    className={showSaveFeedback
+                      ? saveButtonClass
+                      : 'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:hover:bg-slate-800'}
+                    disabled={saving || sending || accountingERP || showSaveFeedback}
+                    onClick={beginDetailEditing}
+                  >
+                    {showSaveFeedback ? <CheckCircle2 size={15} /> : <Edit size={15} />}
+                    {showSaveFeedback ? (saveFeedback ?? 'Guardada') : 'Editar'}
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
-                  disabled={
-                    saving ||
-                    sending ||
-                    accountingERP ||
-                    validatingERP ||
-                    extractingIa ||
-                    detailERPState === 'confirmed' ||
-                    detailERPState === 'sending' ||
-                    (detailERPState === 'uncertain' && !reconciliationRequestId) ||
-                    (!reconciliationRequestId &&
-                      (!erpRuntimeChecked ||
-                        !canCommitManagement ||
-                        (draft.contabilizar === 'S' && !canCommitAccounting))) ||
-                    (!reconciliationRequestId && !isERPValidationCurrent) ||
-                    draft.estado === 'descartada'
-                  }
-                  onClick={() => void handleSendERP('commit')}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-400/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
+                  disabled={saving || sending || accountingERP}
+                  onClick={() => void handleDiscard()}
                 >
-                  {sending ? <Loader2 className="animate-spin" size={15} /> : <CheckCircle2 size={15} />}
-                  {detailERPState === 'confirmed'
-                    ? 'Enviado a ERP'
-                    : detailERPState === 'sending'
-                      ? 'Enviando a ERP'
-                      : detailERPState === 'uncertain'
-                      ? reconciliationRequestId
-                        ? 'Reconciliar con ERP'
-                        : 'Pendiente de reconciliacion'
-                  : draft.contabilizar === 'S'
-                    ? 'Enviar y contabilizar'
-                    : 'Enviar a ERP'}
+                  <Trash2 size={15} />
+                  Eliminar
                 </button>
-                ) : null}
-                {canContinueAccounting ? (
+                {isEditingDetail ? (
                   <button
                     type="button"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
-                    disabled={
-                      saving ||
-                      sending ||
-                      accountingERP ||
-                      validatingERP ||
-                      !erpRuntimeChecked ||
-                      !canCommitAccounting
-                    }
-                    onClick={() => void handleAccountERP()}
+                    className={saveButtonClass}
+                    disabled={saving || sending || accountingERP || !hasUnsavedDetailChanges}
+                    onClick={() => void persistFactura(false)}
                   >
-                    {accountingERP ? (
-                      <Loader2 className="animate-spin" size={15} />
-                    ) : (
-                      <Calculator size={15} />
-                    )}
-                    {accountingERP ? 'Contabilizando…' : 'Contabilizar'}
+                    {saving ? <Loader2 className="animate-spin" size={15} /> : showSaveFeedback ? <CheckCircle2 size={15} /> : <Save size={15} />}
+                    {saveButtonLabel}
                   </button>
+                ) : null}
+              </>
+            ) : null}
+            {shouldShowERPPrimaryAction ? (
+              <>
+                <button
+                  type="button"
+                  className={erpPrimaryActionClass}
+                  disabled={erpPrimaryActionDisabled}
+                  title={
+                    isEditingDetail
+                      ? 'Guarda o cancela la edición antes de enviar al ERP.'
+                      : erpAlreadyRegisteredNotice?.text
+                  }
+                  aria-describedby={
+                    erpAlreadyRegisteredNotice
+                      ? 'factura-erp-registration-note'
+                      : undefined
+                  }
+                  onClick={() =>
+                    void (canContinueAccounting
+                      ? handleAccountERP()
+                      : handleSendERP())
+                  }
+                >
+                  {sending || accountingERP ? (
+                    <Loader2 className="animate-spin" size={15} />
+                  ) : erpAlreadyRegisteredNotice ? (
+                    <Database aria-hidden="true" size={15} />
+                  ) : (
+                    <CheckCircle2 size={15} />
+                  )}
+                  {erpPrimaryActionLabel}
+                </button>
+                {erpAlreadyRegisteredNotice ? (
+                  <span
+                    id="factura-erp-registration-note"
+                    role="status"
+                    className="sr-only"
+                  >
+                    {erpAlreadyRegisteredNotice.text}
+                  </span>
                 ) : null}
               </>
             ) : null}
           </div>
         </div>
 
-        <div className="mt-2 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+        <div className="mt-2">
           <p className="flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium text-slate-500 dark:text-slate-400">
             <span>
               Proveedor:{' '}
@@ -3502,29 +3499,9 @@ const Facturas = () => {
               <strong className="font-bold text-slate-950 dark:text-slate-100">{invoiceNumber(draft)}</strong>
             </span>
           </p>
-          <dl className="flex flex-wrap gap-x-5 gap-y-1 text-sm font-medium text-slate-500 dark:text-slate-400 lg:justify-end">
-            <div className="flex gap-1">
-              <dt>Documento:</dt>
-              <dd className="font-bold text-slate-950 dark:text-slate-100">
-                {isReadOnlyDetail ? detailReadOnlyStatusText : detailStatusText}
-              </dd>
-            </div>
-            <div className="flex gap-1">
-              <dt>Registro ERP:</dt>
-              <dd className="font-bold text-slate-950 dark:text-slate-100">
-                {detailERPStatus.text}
-              </dd>
-            </div>
-            <div className="flex gap-1">
-              <dt>Contabilidad:</dt>
-              <dd className="font-bold text-slate-950 dark:text-slate-100">
-                {getFacturaAccountingStatusText(draft, erpRuntime)}
-              </dd>
-            </div>
-          </dl>
         </div>
         {erpCapabilityMessage &&
-        (!isReadOnlyDetail ||
+        (!isPermanentReadOnlyDetail ||
           Boolean(reconciliationRequestId) ||
           canContinueAccounting ||
           accountingAwaitingCheck) ? (
@@ -3542,8 +3519,7 @@ const Facturas = () => {
         erpError={visibleERPError}
         errors={visibleErrors}
         warnings={visibleWarnings}
-        duplicateCandidate={duplicateCandidate}
-        catalogError={catalogError}
+        catalogError={erpAlreadyRegisteredNotice ? null : catalogError}
         catalogErrorTitle={catalogErrorTitle}
         catalogLoading={catalogLoading}
         onRetryCatalog={() => void loadCatalogs(failedCatalogKeys)}
@@ -4056,17 +4032,17 @@ const Facturas = () => {
                       <button
                         type="button"
                         className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 bg-white px-3 text-xs font-bold hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900/60 dark:bg-amber-950/40"
-                        disabled={isReadOnlyDetail ? punteoReferencesLoading : punteosLoading}
+                        disabled={isPermanentReadOnlyDetail ? punteoReferencesLoading : punteosLoading}
                         onClick={() =>
-                          void (isReadOnlyDetail ? loadPunteoReferences() : loadPunteables())
+                          void (isPermanentReadOnlyDetail ? loadPunteoReferences() : loadPunteables())
                         }
                       >
-                        {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading) ? (
+                        {(isPermanentReadOnlyDetail ? punteoReferencesLoading : punteosLoading) ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
                           <RefreshCw className="h-3.5 w-3.5" />
                         )}
-                        {(isReadOnlyDetail ? punteoReferencesLoading : punteosLoading)
+                        {(isPermanentReadOnlyDetail ? punteoReferencesLoading : punteosLoading)
                           ? 'Recuperando...'
                           : 'Reintentar'}
                       </button>

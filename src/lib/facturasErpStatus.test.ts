@@ -7,6 +7,7 @@ import {
   isFacturaERPConfirmed,
   isFacturaERPLegacyUnscopedError,
   normalizeFacturaERPReferenceStatus,
+  requireFacturaERPCommitRequestId,
 } from '@/lib/facturasErpStatus';
 
 describe('estado independiente del registro ERP', () => {
@@ -181,5 +182,38 @@ describe('estado independiente del registro ERP', () => {
       erp_business_fingerprint: null,
       erp_reference_status: 'unverified',
     });
+  });
+
+  it('solo permite confirmar con el mismo request_id que validó la factura', () => {
+    const requestId = '857a3a94-35ca-4d23-a52c-822f22b450ab';
+
+    expect(
+      requireFacturaERPCommitRequestId(
+        {
+          erp_validation_status: 'valid',
+          erp_validation_request_id: requestId,
+        },
+        requestId,
+      ),
+    ).toBe(requestId);
+  });
+
+  it.each([
+    {
+      erp_validation_status: 'not_validated',
+      erp_validation_request_id: 'request-id',
+    },
+    {
+      erp_validation_status: 'valid',
+      erp_validation_request_id: null,
+    },
+    {
+      erp_validation_status: 'valid',
+      erp_validation_request_id: 'otro-request-id',
+    },
+  ])('cierra el envío si la revisión ERP no coincide: %o', (factura) => {
+    expect(() =>
+      requireFacturaERPCommitRequestId(factura, 'request-id'),
+    ).toThrow('No se ha enviado la factura.');
   });
 });
